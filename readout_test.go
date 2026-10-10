@@ -100,7 +100,10 @@ type readoutMeta struct {
 	Sha256         string `json:"sha256"`
 }
 
-func loadReadoutFixture(t *testing.T) readoutFixture {
+// loadReadoutFixture returns the recorded scenarios and the provenance the
+// generator wrote beside them. The provenance is not just a digest check: it
+// carries the answer token id the read after a thought closes on.
+func loadReadoutFixture(t *testing.T) (readoutFixture, readoutMeta) {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("testdata", "readout_parity.json"))
 	if err != nil {
@@ -116,7 +119,18 @@ func loadReadoutFixture(t *testing.T) readoutFixture {
 	if len(fixture.Tokenizer.Words) == 0 {
 		t.Fatal("the readout fixture holds no tokenizer words")
 	}
-	return fixture
+	metaRaw, err := os.ReadFile(filepath.Join("testdata", "readout_parity.meta.json"))
+	if err != nil {
+		t.Fatalf("reading the readout provenance: %v", err)
+	}
+	var meta readoutMeta
+	if err := json.Unmarshal(metaRaw, &meta); err != nil {
+		t.Fatalf("parsing the readout provenance: %v", err)
+	}
+	if meta.AnswerTokenID == 0 {
+		t.Fatal("the readout provenance records no answer token id")
+	}
+	return fixture, meta
 }
 
 // TestReadoutFixtureProvenance checks the fixture against the provenance the
@@ -126,14 +140,7 @@ func TestReadoutFixtureProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the readout fixture: %v", err)
 	}
-	metaRaw, err := os.ReadFile(filepath.Join("testdata", "readout_parity.meta.json"))
-	if err != nil {
-		t.Fatalf("reading the readout provenance: %v", err)
-	}
-	var meta readoutMeta
-	if err := json.Unmarshal(metaRaw, &meta); err != nil {
-		t.Fatalf("parsing the readout provenance: %v", err)
-	}
+	fixture, meta := loadReadoutFixture(t)
 	if meta.ReadoutVersion != DE2ReadoutVersion {
 		t.Errorf("the fixture was recorded against %q, and this package implements %q",
 			meta.ReadoutVersion, DE2ReadoutVersion)
@@ -145,7 +152,6 @@ func TestReadoutFixtureProvenance(t *testing.T) {
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != meta.Sha256 {
 		t.Fatalf("the readout fixture hashes to %s, the provenance records %s", got, meta.Sha256)
 	}
-	fixture := loadReadoutFixture(t)
 	if len(fixture.Scenarios) != meta.Scenarios {
 		t.Errorf("the fixture has %d scenarios, the provenance records %d",
 			len(fixture.Scenarios), meta.Scenarios)
@@ -163,7 +169,7 @@ func TestReadoutFixtureProvenance(t *testing.T) {
 
 // TestReadoutReplay is the gate: the same requests, and the same results.
 func TestReadoutReplay(t *testing.T) {
-	fixture := loadReadoutFixture(t)
+	fixture, meta := loadReadoutFixture(t)
 	for _, scenario := range fixture.Scenarios {
 		t.Run(scenario.Name, func(t *testing.T) {
 			replay := &replayServer{t: t}
@@ -199,7 +205,7 @@ func TestReadoutReplay(t *testing.T) {
 					// thinking prompt's ids, the thought's ids, one terminator.
 					ids := append([]int(nil), thought.PromptIDs...)
 					ids = append(ids, thought.TokenIDs...)
-					ids = append(ids, fixture.Meta().AnswerTokenID)
+					ids = append(ids, meta.AnswerTokenID)
 					if !equalInts(ids, step.PromptIDs) {
 						t.Errorf("the read after the thought uses %v, and the Python client used %v",
 							ids, step.PromptIDs)
@@ -478,20 +484,6 @@ func derefString(value *string) string {
 	return *value
 }
 
-// Meta re-reads the fixture's provenance, for the answer token id the replay
-// needs. It is small enough to read twice rather than thread through the test.
-func (f readoutFixture) Meta() readoutMeta {
-	raw, err := os.ReadFile(filepath.Join("testdata", "readout_parity.meta.json"))
-	if err != nil {
-		return readoutMeta{AnswerTokenID: 101}
-	}
-	var meta readoutMeta
-	if err := json.Unmarshal(raw, &meta); err != nil || meta.AnswerTokenID == 0 {
-		return readoutMeta{AnswerTokenID: 101}
-	}
-	return meta
-}
-
 // TestReadoutRejectsAnAmbiguousFallback pins the one place this port is stricter
 // than the Python client: `prompt_logprobs: 0` returns the prompt's own token and
 // nothing else, so more than one entry is a server this client will not guess at.
@@ -551,4 +543,79 @@ func TestNewReadoutRequiresAnEndpoint(t *testing.T) {
 	if revisioned.tokenizerSource != "org/tok@abc" {
 		t.Errorf("the tokenizer source is %q, want org/tok@abc", revisioned.tokenizerSource)
 	}
+}
+
+// TestReadoutResponseShapes covers the responses the replay fixture does not
+// carry: a completion with no choice, and a usage block a server left out.
+func TestReadoutResponseShapes(t *testing.T) {
+	t.Run("no choices", func(t *testing.T) {
+		readout := stubReadout(t, `{"choices":[],"usage":{"prompt_tokens":3}}`)
+		_, err := readout.ReadCodes(context.Background(), "<model>"+AnswerPrefix,
+			testSlots(t, readout, 2), false)
+		if err == nil {
+			t.Fatal("a completion with no choices should be an error")
+		}
+		if !strings.Contains(err.Error(), "no choices") {
+			t.Errorf("the error is %v, want one naming the missing choice", err)
+		}
+	})
+
+	t.Run("no usage", func(t *testing.T) {
+		// The Python client tolerates a server that reports no prompt_tokens, so
+		// this does too: the check has nothing to compare against.
+		readout := stubReadout(t, `{"choices":[{"text":"A","logprobs":{"top_logprobs":[`+
+			`{"token_id:65":-0.5,"token_id:66":-1.5}]}}]}`)
+		read, err := readout.ReadCodes(context.Background(), "<model>"+AnswerPrefix,
+			testSlots(t, readout, 2), false)
+		if err != nil {
+			t.Fatalf("ReadCodes: %v", err)
+		}
+		if read.PromptTokens != 0 {
+			t.Errorf("prompt tokens = %d, want 0 for a server that reported none", read.PromptTokens)
+		}
+		if read.Requests != 1 {
+			t.Errorf("requests = %d, want 1", read.Requests)
+		}
+	})
+}
+
+// TestThinkRejectsABadBudget checks the one argument the Python client validates
+// before it spends a request.
+func TestThinkRejectsABadBudget(t *testing.T) {
+	readout := stubReadout(t, `{"choices":[{"token_ids":[]}]}`)
+	for _, budget := range []int{0, -1} {
+		if _, err := readout.Think(context.Background(), "<model>"+AnswerPrefix, budget, false); err == nil {
+			t.Errorf("a budget of %d should be refused", budget)
+		}
+	}
+}
+
+// stubReadout is a Readout over a server that answers every request with the
+// same body, with the fixture's stub tokenizer installed.
+func stubReadout(t *testing.T, body string) *Readout {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, body)
+	}))
+	t.Cleanup(server.Close)
+	readout, err := NewReadout(ReadoutConfig{BaseURL: server.URL, Model: "de2-test",
+		HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("NewReadout: %v", err)
+	}
+	readout.SetTokenizer(newFixtureTokenizer(map[string]int{
+		AnswerPrefix: 101, "AA": 1114113, "AB": 1114114, "A": 65, "B": 66}))
+	return readout
+}
+
+// testSlots is the first count codes, resolved through the readout's own
+// tokenizer so the ids match what stubReadout's server is keyed by.
+func testSlots(t *testing.T, readout *Readout, count int) []Slot {
+	t.Helper()
+	slots, err := readout.CodeSlots(count)
+	if err != nil {
+		t.Fatalf("CodeSlots(%d): %v", count, err)
+	}
+	return slots
 }

@@ -122,7 +122,10 @@ is a case where the Python client picks something and this port refuses to:
 
 The Python client also accepts any JSON value from the endpoint and rejects a
 non-object after parsing; this port decodes straight into the object type, so a
-JSON array fails with the same "did not return a JSON object" error.
+JSON array fails with the same "did not return a JSON object" error. And where
+the Python client indexes `data["choices"][0]` and lets a missing or empty
+`choices` raise `KeyError` or `IndexError`, this port returns a `ReadoutError`
+saying which read came back without a choice.
 
 **Lazy loading.** The Python client loads the tokenizer inside
 `Readout.ensure_tokenizer`. The Go client does the same, holding the tokenizer
@@ -176,25 +179,26 @@ This port has produced no measurements of its own against a served model.
   rather than being shaped by it. Duplicate object keys, `-0`, out-of-range
   exponents, invalid UTF-8 and Python's `str.strip()` whitespace set have their
   own unit tests; each was checked against CPython's `json` module directly.
-- **Readout.** 18 scenarios, 53 recorded exchanges, replayed request for request
+- **Readout.** 19 scenarios, 57 recorded exchanges, replayed request for request
   and field for field: widths 2, 26, 27, 128, 129 and 256 (the last two crossing
   the 128-candidate block boundary), a server that honours `logprob_token_ids`,
   one that ignores it and one that rejects it with a 400 (and stays downgraded
   across a second read), a server that keys the logprobs by decoded text rather
   than `token_id:<id>`, the debug read, the thinking read closed by the model and
-  cut by the budget, the read after a thought, and four failures: a server whose
-  `usage.prompt_tokens` disagrees with the client's tokenization, a fallback that
-  returns nothing, a thinking response with no `token_ids`, and a prompt that
-  does not end on the terminator (which sends no request at all). Every request
-  body the Go client sends is compared to the Python client's byte for byte
-  after JSON decoding, and every result -- logprobs, probabilities, request and
-  prompt-token counts, missing codes, ranks, sampled text, debug top-logprobs,
-  thought ids and closure -- is compared to the Python client's. The stub
-  tokenizer is rebuilt from the fixture's recorded word list, so a divergence in
-  the two implementations surfaces as a wrong token count rather than passing.
-  `testdata/readout_parity.meta.json` records the Python revision, the readout
-  version, the limits, the counts and a sha256 of the fixture; the test fails if
-  the fixture disagrees with it.
+  cut by the budget, the read after a thought, the fallback after a thought
+  (where the code is appended as a token id rather than as text), and four
+  failures: a server whose `usage.prompt_tokens` disagrees with the client's
+  tokenization, a fallback that returns nothing, a thinking response with no
+  `token_ids`, and a prompt that does not end on the terminator (which sends no
+  request at all). Every request body the Go client sends is compared to the
+  Python client's after JSON decoding, and every result -- logprobs,
+  probabilities, request and prompt-token counts, missing codes, ranks, sampled
+  text, debug top-logprobs, thought ids and closure -- is compared to the Python
+  client's. The stub tokenizer is rebuilt from the fixture's recorded word list,
+  so a divergence in the two implementations surfaces as a wrong token count
+  rather than passing. `testdata/readout_parity.meta.json` records the Python
+  revision, the readout version, the limits, the counts and a sha256 of the
+  fixture; the test fails if the fixture disagrees with it.
 - **Tokenizer identity.** The test checks the loaded tokenizer's vocab size
   (262,144) and `<channel|>` id (101) before running the vectors, so a fallback
   to a different revision fails loudly. Set `SHISA_DE_TOKENIZER_REQUIRE=1` to

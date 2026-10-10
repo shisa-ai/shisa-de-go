@@ -305,6 +305,27 @@ def scenarios() -> list[dict]:
          "exchanges": recorder.take(), "result": read_record(read)},
     ]})
 
+    # The fallback after a thought, which is the one place the prompt is token
+    # ids rather than text: the code is appended as its token id, not as text.
+    server = StubDE2Server(
+        logprob=lambda code: 0.0 if code == "A" else -6.0,
+        candidate_ids="ignored", top_k=1,
+        thought=[ord(c) for c in " thinking"] + [ANSWER_TOKEN_ID],
+        after_thought=lambda code: 0.0 if code == "A" else -6.0)
+    recorder = Recorder(server)
+    prompt = render(recorder, 3, thinking=True, repeat=1)
+    slots = recorder.readout.code_slots(3)
+    thought = recorder.readout.think(prompt, 1024, debug=True)
+    think_exchanges = recorder.take()
+    after = thought.prompt_ids + thought.token_ids + [recorder.readout.answer_prefix_id()]
+    read = recorder.readout.read_codes(after, slots, debug=True)
+    out.append({"name": "post-thought-fallback", "steps": [
+        {"op": "think", "prompt": prompt, "budget": 1024, "debug": True,
+         "exchanges": think_exchanges, "thought": thought_record(thought)},
+        {"op": "read-codes-after-thought", "prompt_ids": after, "codes": 3, "debug": True,
+         "exchanges": recorder.take(), "result": read_record(read)},
+    ]})
+
     # Error scenarios. Each breaks one thing.
     out.append(simple("error-prompt-tokens", 3, StubDE2Server(prompt_tokens_delta=1),
                       error_match=r"counted \d+ prompt tokens where the client tokenized \d+"))
