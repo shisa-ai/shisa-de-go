@@ -28,7 +28,7 @@ func loadPinned(t *testing.T) *Tokenizer {
 	}
 	candidates = append(candidates, filepath.Join("testdata", "tokenizer.json"))
 	for _, revision := range []string{pinnedSnapshot, "main"} {
-		if path, ok := findInHubCache(pinnedRepo, revision); ok {
+		if path, ok := Lookup(pinnedRepo, revision); ok {
 			candidates = append(candidates, path)
 		}
 	}
@@ -260,7 +260,7 @@ func BenchmarkEncodeWidePrompt(b *testing.B) {
 func loadPinnedBench(b *testing.B) *Tokenizer {
 	b.Helper()
 	for _, revision := range []string{pinnedSnapshot, "main"} {
-		if path, ok := findInHubCache(pinnedRepo, revision); ok {
+		if path, ok := Lookup(pinnedRepo, revision); ok {
 			tokenizer, err := FromFile(path)
 			if err != nil {
 				b.Fatalf("loading %s: %v", path, err)

@@ -9,12 +9,13 @@ client deliberately behaves differently.
 
 | Python | Go |
 | --- | --- |
-| `shisa_de/readout.py` | `readout.go` |
+| `shisa_de/readout.py` | `readout.go`, `render.go` |
 | `shisa_de/policy.py` | `policy.go` |
 | `shisa_de/calibration.py` | `calibration.go` |
 | `shisa_de/family.py` | `family.go` |
 | `shisa_de/questions.py` | `questions.go` |
 | `shisa_de/client.py` | `client.go` |
+| `json.dumps` / `json.loads` | `pyjson.go` |
 | `shisa_de/overflow.py` | not ported; DE-1 only |
 | `shisa_de/images.py` | not ported yet |
 | `shisa_de/data/*.json` | `data/*.json`, embedded with `go:embed` |

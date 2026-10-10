@@ -177,7 +177,7 @@ fewer, body bullets for the change and the validation.
 - `docs/READOUT-DE2.md` and `README.md` are the high-conflict files; two agents
   editing them at once will conflict. Coordinate before editing either.
 - Readout versions live in one place, `readout.go`: one per family in
-  `ReadoutVersions`. Do not define a copy elsewhere.
+  `ReadoutVersionFor`. Do not define a copy elsewhere.
 - The Python repository is the reference. Do not change it from here, and do not
   copy a fix into this port without checking whether it belongs upstream too.
 

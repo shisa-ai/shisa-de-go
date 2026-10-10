@@ -47,7 +47,7 @@ func Resolve(source string) (string, error) {
 		return source, nil
 	}
 	repo, revision := splitRevision(source)
-	if path, ok := findInHubCache(repo, revision); ok {
+	if path, ok := Lookup(repo, revision); ok {
 		return path, nil
 	}
 	return Fetch(repo, revision)
@@ -141,9 +141,12 @@ func hubToken() string {
 	return ""
 }
 
-// findInHubCache looks for the tokenizer in a Hugging Face hub cache, so a
-// tokenizer the Python client already downloaded is reused.
-func findInHubCache(repo, revision string) (string, bool) {
+// Lookup finds the tokenizer in a Hugging Face hub cache without downloading
+// anything, so a tokenizer the Python client already fetched is reused.
+//
+// It reports false when no cache holds one. Use Resolve to download when it
+// does not.
+func Lookup(repo, revision string) (string, bool) {
 	roots := []string{}
 	if dir := os.Getenv(HubCacheEnv); dir != "" {
 		roots = append(roots, dir)
