@@ -38,13 +38,14 @@ through the other family's contract.
 
 Two layers, one contract. This is the target layout: M1 and M2 landed the
 codebook, the tokenizer, the renderer, family resolution, the question types and
-the Python-JSON writer; the rows marked planned do not exist yet. The Key Files
-table below says what is in the tree.
+the Python-JSON writer; M3 landed the DE-2 readout itself. The rows marked
+planned do not exist yet. The Key Files table below says what is in the tree.
 
 - `readout.go` — the raw reads: render the repeated prompt, request every
   option's code by token id, softmax over the codes, optionally generate a
-  bounded thought and read the codes again after it. (Planned past the scaffold
-  constants, the readout identities and `Softmax`.)
+  bounded thought and read the codes again after it.
+- `endpoint.go` — the HTTP layer under those reads: the two completion request
+  shapes, the response shapes, and the error conventions.
 - `policy.go` — sequences the reads: twice, then think when unsure. (Planned.)
 - `client.go` — the friendly layer. `Classify` for label sets, `Decide` for
   typed questions. (Planned.)
@@ -75,6 +76,7 @@ What must not change casually:
 | `docs/PORT.md` | How the Go port maps onto the Python reference, and where it deliberately differs |
 | `README.md` | The API surface users see first |
 | `readout.go` | Rendering, code resolution, boundary checks, requests, thought generation, softmax, readout versions |
+| `endpoint.go` | The completion request and response shapes, the JSON POST/GET helpers, and `ReadoutHTTPError` |
 | `render.go` | The pinned Gemma chat-template renderer for the two DE-2 message shapes |
 | `pyjson.go` | `json.dumps(value, ensure_ascii=False)` and `json.loads` equivalents, because the user turn is serialized into the prompt |
 | `questions.go` | `Noul`, `Choice`, `Score` and their wire shapes |
@@ -82,10 +84,10 @@ What must not change casually:
 | `tokenizer/` | The pure-Go Hugging Face BPE tokenizer. No cgo |
 | `data/codebook-de2.json` | The 256 DE-2 answer codes, in order, with the audit they came from |
 | `data/calibration-de2.json` | The DE-2 record: temperatures per read with the fit's provenance, and one withheld earlier fit |
-| `policy.go` | Planned (M3): the DE-2 policy: repeated read, gate, thought, read after it |
+| `policy.go` | Planned (M4): the DE-2 policy: repeated read, gate, thought, read after it |
 | `calibration.go` | Planned (M4): temperature scaling, the confidence statistic, record selection, and `Calibration.Applicability` |
-| `client.go` | Planned (M5): `DecisionModel.Classify`, `DecisionModel.Decide`, `Health`, `Decision`, `Answer` |
-| `cmd/shisa-de/` | Planned (M6): `shisa-de doctor`, `ask`, `explain` |
+| `client.go` | Planned (M4): `DecisionModel.Classify`, `DecisionModel.Decide`, `Health`, `Decision`, `Answer` |
+| `cmd/shisa-de/` | Planned (M5): `shisa-de doctor`, `ask`, `explain` |
 
 ## Workflow Expectations
 
@@ -105,7 +107,7 @@ What must not change casually:
 - New behavior gets a test against the stub tokenizer and a stub server, and a
   live test only when the behavior depends on the served model.
 - Keep the package importable without network access. The tokenizer is loaded
-  lazily, once, behind a `sync.Once`; nothing downloads at package init.
+  lazily, on the first read, and nothing downloads at package init.
 - Go style: `gofmt`, exported identifiers documented, errors wrapped with `%w`
   and tested with `errors.Is` / `errors.As`. No cgo. No `init()` that does work.
 - Prefer returning `error` over panicking. Panics are reserved for programming
@@ -138,7 +140,8 @@ What must not change casually:
 | Build and vet | `go build ./...` and `go vet ./...` |
 | Offline suite | `go test ./...` |
 | Tokenizer parity | `go test ./tokenizer/` (reads the pinned tokenizer from the hub cache or `SHISA_DE_TOKENIZER_JSON`; `SHISA_DE_TOKENIZER_REQUIRE=1` fails instead of skipping) |
-| Live suite, hosted DE-2 | Planned with the readout (M3): `SHISA_DE_LIVE=1 go test ./... -run Live`. No test in the tree matches that name yet, so the command passes without running anything |
+| Readout replay | `go test . -run TestReadout` (replays recorded Python request/response pairs through an `httptest` stub; offline) |
+| Live suite, hosted DE-2 | Planned (M6): `SHISA_DE_LIVE=1 go test ./... -run Live`. No test in the tree matches that name yet, so the command passes without running anything |
 | Endpoint check | Planned: `shisa-de doctor`, and `shisa-de doctor --probe` to spend two requests on the reads |
 | Readout walkthrough | Planned: `shisa-de explain --labels spam,ham` |
 
@@ -152,6 +155,15 @@ outputs against a second fixture. Regenerate both with
 `testdata/tokenizer_parity.meta.json`; the test fails if the fixture disagrees
 with the provenance. A parity test that has no vectors is a skip, not a pass,
 and `SHISA_DE_TOKENIZER_REQUIRE=1` turns that skip into a failure.
+
+The render and readout suites compare against fixtures produced by running the
+Python client. `scripts/gen_render_parity.py` writes the rendered prompts, their
+token ids and the `json.dumps` fixed points;
+`scripts/gen_readout_parity.py` writes every request body and response body the
+Python readout sent and received, in order, plus what it made of them. Each
+writes a `.meta.json` with the provenance and a digest of the fixture, and each
+test fails when the fixture disagrees with it. Both need the Python repository
+next to this one; neither needs network access.
 
 ## Evidence Rules
 

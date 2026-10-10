@@ -8,9 +8,11 @@ probabilities, and request usage, not generated prose. The client loads only a
 tokenizer; model weights stay on the server.
 
 **Status: early port.** Landed so far: the pinned codebook, the pure-Go
-tokenizer, the DE-2 prompt renderer, the question types, family resolution and
-the Python-compatible JSON writer and reader. The readout, policy, calibration,
-client and CLI are still to come, so nothing sends a request yet.
+tokenizer, the DE-2 prompt renderer, the question types, family resolution, the
+Python-compatible JSON writer and reader, and the DE-2 readout itself -- the
+code read, the fallback for a server without `logprob_token_ids`, the bounded
+thought and the read after it. The policy, calibration, client and CLI are still
+to come.
 
 The contract this port implements is
 [`docs/READOUT-DE2.md`](docs/READOUT-DE2.md), copied verbatim from the Python
@@ -34,7 +36,7 @@ The tokenizer is pure Go, so the build needs no cgo and no Python. The
 tokenizer parity tests compare against golden vectors derived from
 `transformers`; they skip when the vectors are absent.
 
-Live tests that spend real API requests are planned with the readout (M3):
+Live tests that spend real API requests are planned (M6):
 
 ```bash
 SHISA_DE_LIVE=1 SHISA_API_KEY=... go test ./... -run Live

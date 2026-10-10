@@ -9,13 +9,14 @@ client deliberately behaves differently.
 
 | Python | Go |
 | --- | --- |
-| `shisa_de/readout.py` | `readout.go`, `render.go` |
+| `shisa_de/readout.py` | `readout.go`, `render.go`, `endpoint.go` |
 | `shisa_de/policy.py` | `policy.go` (planned) |
 | `shisa_de/calibration.py` | `calibration.go` (planned) |
 | `shisa_de/family.py` | `family.go` |
 | `shisa_de/questions.py` | `questions.go` |
 | `shisa_de/client.py` | `client.go` (planned) |
 | `json.dumps` / `json.loads` | `pyjson.go` |
+| `httpx` | `net/http` in `endpoint.go` |
 | `shisa_de/overflow.py` | not ported; DE-1 only |
 | `shisa_de/images.py` | not ported yet |
 | `shisa_de/data/*.json` | `data/*.json`, embedded with `go:embed` |
@@ -29,7 +30,8 @@ The tokenizer has no Python counterpart as a module: the Python client calls
 
 The file mapping is the target layout, not a description of the tree: M1 landed
 the codebook and the tokenizer; M2 landed the renderer, family resolution, the
-question types and the Python-JSON writer. Rows marked planned are M3 or later.
+question types and the Python-JSON writer; M3 landed the DE-2 readout and its
+HTTP layer. Rows marked planned are M4 or later.
 
 ## Deliberate differences
 
@@ -42,9 +44,12 @@ DE-2 reads.
 `tokenizer.apply_chat_template(...)`, which runs the checkpoint's own Jinja
 template. This port renders the two message shapes the readout uses with a
 pinned function. It is byte-identical for those shapes and for no others, which
-is the whole of what the readout needs.
+is the whole of what the readout needs. The system line is a parameter, as it is
+in the Python client (`Readout(system_prompt=...)`); the thinking render always
+uses the thinking line whatever the parameter holds, because that line is part
+of the read rather than a preference.
 
-What guards the pin: `TestRenderParity` compares 33 rendered prompts byte for
+What guards the pin: `TestRenderParity` compares 35 rendered prompts byte for
 byte against the Python client, and that is the check on the render itself. The
 runtime checks catch a different failure -- a client/server tokenizer mismatch.
 Every read checks that the prompt ends on `AnswerPrefix`, and the first read
@@ -100,9 +105,29 @@ vocabulary, so this only matters for hand-built or model-generated id lists.
 Python exception classes; callers use `errors.As`. `ReadoutHTTPError` keeps its
 `status` and `detail` fields.
 
+**The readout is stricter about three things the Python client tolerates.** Each
+is a case where the Python client picks something and this port refuses to:
+
+- The `prompt_logprobs` fallback reads the first entry of the last prompt
+  position, whatever the map holds. `prompt_logprobs: 0` asks for the prompt's
+  own token and nothing else, so a response with more than one entry there is a
+  server answering a different question; this port errors rather than scoring a
+  token nobody asked about.
+- `CodeRead.Sampled` is a `string`, not `str | None`. A response that omits
+  `choices[0].text` gives `""` here and `None` there. Nothing reads the value as
+  anything but provenance, and Go's zero value carries the same meaning.
+- One response body is capped at 8 MB before it is read. The Python client
+  reads whatever arrives. The largest honest response here is one position of
+  top-logprobs, so the cap only refuses a runaway body.
+
+The Python client also accepts any JSON value from the endpoint and rejects a
+non-object after parsing; this port decodes straight into the object type, so a
+JSON array fails with the same "did not return a JSON object" error.
+
 **Lazy loading.** The Python client loads the tokenizer inside
-`Readout.ensure_tokenizer`. The Go client does the same behind a `sync.Once`, so
-nothing downloads at package init.
+`Readout.ensure_tokenizer`. The Go client does the same, holding the tokenizer
+and the resolved slots behind one mutex, so concurrent first calls serialize on
+one load and a failed load leaves nothing behind to be retried.
 
 **Concurrency.** `ThreadPoolExecutor` becomes goroutines with a bounded worker
 pool.
@@ -131,25 +156,45 @@ This port has produced no measurements of its own against a served model.
   either fixture disagrees with it. Regenerate with
   `scripts/gen_tokenizer_parity.py`, which pins the revision it passes to
   `from_pretrained`.
-- **Render.** All 33 fixture renders are byte-identical to what
+- **Render.** All 35 fixture renders are byte-identical to what
   `Readout._payload` and `Readout.render` produced for the same case: both
-  template shapes (the repeated/direct read and the thinking read), the
-  empty-description rule, non-string descriptions, 17 evidence shapes, widths
-  2/26/27/77/256, and long evidence. Each fixture prompt also re-tokenizes to
-  the same ids the Python client produced. The readout page's 238 and 137 token
-  counts are pinned; the fixture's third pin (216, the Japanese choice) is a
-  regression check and is not a published value.
+  template shapes (the repeated/direct read and the thinking read), a
+  caller-supplied system line for each shape, the empty-description rule,
+  non-string descriptions, 17 evidence shapes, widths 2/26/27/77/256, and long
+  evidence. Each fixture prompt also re-tokenizes to the same ids the Python
+  client produced. The readout page's 238 and 137 token counts are pinned; the
+  fixture's third pin (216, the Japanese choice) is a regression check and is
+  not a published value.
   `testdata/render_parity.meta.json` records the model, the revision, the
   library versions, the counts and a sha256 of the fixture, and the test fails
   if the fixture disagrees with it. Regenerate with
   `scripts/gen_render_parity.py`, which pins the revision it passes to
   `Readout` as `tokenizer_revision`.
-- **Python JSON.** 37 fixed points, produced by Python's own `json.dumps`: the
-  33 payloads above replayed through `DecodeJSON` then `PythonJSON`, plus
+- **Python JSON.** 39 fixed points, produced by Python's own `json.dumps`: the
+  35 payloads above replayed through `DecodeJSON` then `PythonJSON`, plus
   scalar, float, string and nested values. The fixtures constrain the encoder
   rather than being shaped by it. Duplicate object keys, `-0`, out-of-range
   exponents, invalid UTF-8 and Python's `str.strip()` whitespace set have their
   own unit tests; each was checked against CPython's `json` module directly.
+- **Readout.** 18 scenarios, 53 recorded exchanges, replayed request for request
+  and field for field: widths 2, 26, 27, 128, 129 and 256 (the last two crossing
+  the 128-candidate block boundary), a server that honours `logprob_token_ids`,
+  one that ignores it and one that rejects it with a 400 (and stays downgraded
+  across a second read), a server that keys the logprobs by decoded text rather
+  than `token_id:<id>`, the debug read, the thinking read closed by the model and
+  cut by the budget, the read after a thought, and four failures: a server whose
+  `usage.prompt_tokens` disagrees with the client's tokenization, a fallback that
+  returns nothing, a thinking response with no `token_ids`, and a prompt that
+  does not end on the terminator (which sends no request at all). Every request
+  body the Go client sends is compared to the Python client's byte for byte
+  after JSON decoding, and every result -- logprobs, probabilities, request and
+  prompt-token counts, missing codes, ranks, sampled text, debug top-logprobs,
+  thought ids and closure -- is compared to the Python client's. The stub
+  tokenizer is rebuilt from the fixture's recorded word list, so a divergence in
+  the two implementations surfaces as a wrong token count rather than passing.
+  `testdata/readout_parity.meta.json` records the Python revision, the readout
+  version, the limits, the counts and a sha256 of the fixture; the test fails if
+  the fixture disagrees with it.
 - **Tokenizer identity.** The test checks the loaded tokenizer's vocab size
   (262,144) and `<channel|>` id (101) before running the vectors, so a fallback
   to a different revision fails loudly. Set `SHISA_DE_TOKENIZER_REQUIRE=1` to
