@@ -309,6 +309,10 @@ const DefaultTimeout = 120 * time.Second
 // It is safe for concurrent use. The tokenizer is loaded on first use and, like
 // the Python client, a failed load is retried on the next call rather than
 // remembered.
+//
+// NewReadout is the only supported constructor: the zero value has no endpoint
+// and no HTTP client, and every method on it returns an error rather than
+// pretending to read something.
 type Readout struct {
 	baseURL           string
 	model             string
@@ -325,9 +329,18 @@ type Readout struct {
 	mu sync.Mutex
 	// tokenizer, slots and boundaryChecked are the lazily built state, all
 	// under mu so concurrent reads can share them.
-	tokenizer       Tokenizer
-	slots           map[string]Slot
-	boundaryChecked map[string]bool
+	tokenizer Tokenizer
+	slots     map[string]Slot
+	// boundaryChecked records, per code, the token id whose boundary was
+	// approved. The id is part of the record: an approval is a statement about
+	// one code *and* one token id, and a caller can hand `ReadCodes` a Slot
+	// whose Code is approved and whose TokenID is not.
+	boundaryChecked map[string]int
+	// tokenizerGeneration counts tokenizer swaps, so a read that captured a
+	// tokenizer can tell whether the readout still holds it. A read that lost
+	// the race re-checks its codes without caching them, rather than leaving
+	// approvals for a tokenizer it no longer has.
+	tokenizerGeneration uint64
 	// candidateIDs is cleared the first time a server rejects
 	// `logprob_token_ids`, after which codes are read from the top-k with the
 	// per-code fallback.
@@ -390,7 +403,7 @@ func NewReadout(config ReadoutConfig) (*Readout, error) {
 		family:            FamilyDE2,
 		familySource:      familySource,
 		slots:             map[string]Slot{},
-		boundaryChecked:   map[string]bool{},
+		boundaryChecked:   map[string]int{},
 		candidateIDs:      true,
 	}, nil
 }
@@ -408,14 +421,15 @@ func (r *Readout) ResolvedFamily() (Family, FamilySource) {
 // Every answer id and boundary approval resolved from the previous tokenizer is
 // discarded, because they describe that tokenizer: keeping them would let a
 // read tokenize the prompt with one and validate the codes against another. A
-// read already in flight keeps the tokenizer it started with, so it stays
-// consistent either way.
+// read already in flight keeps the tokenizer it started with and does not
+// approve anything for the new one, so it stays consistent either way.
 func (r *Readout) SetTokenizer(t Tokenizer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tokenizer = t
 	r.slots = map[string]Slot{}
-	r.boundaryChecked = map[string]bool{}
+	r.boundaryChecked = map[string]int{}
+	r.tokenizerGeneration++
 }
 
 // ensureTokenizerLocked returns the tokenizer, loading it once. The caller holds
@@ -440,6 +454,19 @@ func (r *Readout) ensureTokenizer() (Tokenizer, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.ensureTokenizerLocked()
+}
+
+// tokenizerSnapshot returns the tokenizer and the generation it belongs to, so a
+// read can use one tokenizer throughout and know whether it is still the
+// readout's.
+func (r *Readout) tokenizerSnapshot() (Tokenizer, uint64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tok, err := r.ensureTokenizerLocked()
+	if err != nil {
+		return nil, 0, err
+	}
+	return tok, r.tokenizerGeneration, nil
 }
 
 // Slot resolves one answer code to its token.
@@ -528,21 +555,26 @@ func (r *Readout) answerPrefixIDFor(tok Tokenizer) (int, error) {
 // code instead of once per code per question: a 256-option question would
 // otherwise re-tokenize its whole prompt 256 times.
 func (r *Readout) CheckCodeBoundary(promptIDs []int, slots []Slot) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	tok, err := r.ensureTokenizerLocked()
+	tok, generation, err := r.tokenizerSnapshot()
 	if err != nil {
 		return err
 	}
-	return r.checkCodeBoundaryFor(tok, promptIDs, slots)
+	return r.checkCodeBoundaryFor(tok, generation, promptIDs, slots)
 }
 
 // checkCodeBoundaryFor checks against one tokenizer. It takes the lock for the
 // approval cache but not for the tokenizer, which the caller already holds, so a
 // whole read stays on one tokenizer even if another goroutine swaps it.
-func (r *Readout) checkCodeBoundaryFor(tok Tokenizer, promptIDs []int, slots []Slot) error {
+//
+// The cache is only read and only written when the readout still holds the
+// tokenizer the caller passed. A read that lost a SetTokenizer race re-checks
+// its codes and caches nothing, so it cannot leave approvals that a later read
+// under the new tokenizer would trust.
+func (r *Readout) checkCodeBoundaryFor(tok Tokenizer, generation uint64, promptIDs []int,
+	slots []Slot) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	current := r.tokenizerGeneration == generation
 	prefixID, err := r.answerPrefixIDFor(tok)
 	if err != nil {
 		return err
@@ -554,8 +586,10 @@ func (r *Readout) checkCodeBoundaryFor(tok Tokenizer, promptIDs []int, slots []S
 			AnswerPrefix, prefixID, r.tokenizerSource, r.model)}
 	}
 	for _, slot := range slots {
-		if r.boundaryChecked[slot.Code] {
-			continue
+		if current {
+			if approved, ok := r.boundaryChecked[slot.Code]; ok && approved == slot.TokenID {
+				continue
+			}
 		}
 		combined := tok.Encode(AnswerPrefix + slot.Code)
 		if len(combined) != 2 || combined[0] != prefixID || combined[1] != slot.TokenID {
@@ -564,7 +598,9 @@ func (r *Readout) checkCodeBoundaryFor(tok Tokenizer, promptIDs []int, slots []S
 					"token %d. The tokenizer (%q) does not match the served model (%q).",
 				slot.Code, AnswerPrefix, slot.TokenID, r.tokenizerSource, r.model)}
 		}
-		r.boundaryChecked[slot.Code] = true
+		if current {
+			r.boundaryChecked[slot.Code] = slot.TokenID
+		}
 	}
 	return nil
 }
@@ -612,12 +648,12 @@ func (r *Readout) ReadCodesAfterThought(ctx context.Context, promptIDs []int, sl
 }
 
 func (r *Readout) readCodes(ctx context.Context, prompt renderedPrompt, slots []Slot, debug bool) (CodeRead, error) {
-	tok, err := r.ensureTokenizer()
+	tok, generation, err := r.tokenizerSnapshot()
 	if err != nil {
 		return CodeRead{}, err
 	}
 	promptIDs := prompt.tokenIDs(tok)
-	if err := r.checkCodeBoundaryFor(tok, promptIDs, slots); err != nil {
+	if err := r.checkCodeBoundaryFor(tok, generation, promptIDs, slots); err != nil {
 		return CodeRead{}, err
 	}
 
@@ -870,7 +906,11 @@ func (r *Readout) ListModels(ctx context.Context) ([]string, error) {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := getJSON(ctx, r.client, r.baseURL+"/v1/models", r.headers, &response); err != nil {
+	client, err := r.httpClient()
+	if err != nil {
+		return nil, err
+	}
+	if err := getJSON(ctx, client, r.baseURL+"/v1/models", r.headers, &response); err != nil {
 		return nil, err
 	}
 	ids := make([]string, len(response.Data))
@@ -881,7 +921,21 @@ func (r *Readout) ListModels(ctx context.Context) ([]string, error) {
 }
 
 func (r *Readout) completions(ctx context.Context, body completionRequest, into *completionResponse) error {
-	return postJSON(ctx, r.client, r.baseURL+"/v1/completions", r.headers, body, into)
+	client, err := r.httpClient()
+	if err != nil {
+		return err
+	}
+	return postJSON(ctx, client, r.baseURL+"/v1/completions", r.headers, body, into)
+}
+
+// httpClient refuses the zero value. A `Readout{}` has no client, and a nil
+// *http.Client panics inside net/http instead of returning an error; every other
+// unusable readout reports why.
+func (r *Readout) httpClient() (*http.Client, error) {
+	if r.client == nil {
+		return nil, &ReadoutError{Message: "the readout has no HTTP client; build it with NewReadout"}
+	}
+	return r.client, nil
 }
 
 func (r *Readout) usesCandidateIDs() bool {

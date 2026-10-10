@@ -122,7 +122,7 @@ Python client indexes `data["choices"][0]` and raises `KeyError` or
 `IndexError`, while this port returns a `ReadoutError` saying which read came
 back without a choice.
 
-**The readout is stricter about four things the Python client tolerates.** Each
+**The readout is stricter about three things the Python client tolerates.** Each
 is a case where the Python client picks something and this port refuses to:
 
 - The `prompt_logprobs` fallback reads the first entry of the last prompt
@@ -131,10 +131,6 @@ is a case where the Python client picks something and this port refuses to:
   server answering a different question; this port errors rather than scoring a
   token nobody asked about. A null entry at that position is an error too, where
   the Python client reads `None` through and reports the code as unreturned.
-- A `token_ids` element that is not a JSON integer is an error, including
-  `null`. Go's decoder turns a null element into token 0 and leaves it, so a
-  plain `[]int` would continue a thought with a token the server never
-  produced; the Python client checks the element type and this port does too.
 - `CodeRead.Sampled` is a `string`, not `str | None`. A response that omits
   `choices[0].text` gives `""` here and `None` there. Nothing reads the value as
   anything but provenance, and Go's zero value carries the same meaning.
@@ -144,6 +140,14 @@ is a case where the Python client picks something and this port refuses to:
   than one position of top-logprobs, so it is sized for a prompt far longer than
   any DE-2 prompt is.
 
+A fourth difference is a Go decoding hazard rather than a divergence, and both
+clients refuse it: a `token_ids` element that is not a JSON integer, including
+`null`. Go's decoder turns a null element into token 0 and leaves it, so a plain
+`[]int` would continue a thought with a token the server never produced; the
+Python client's `isinstance` check rejects the same shapes. The Go type
+(`TokenIDList`) exists to make the decoder do what the Python client does, and
+is not a licence to accept less.
+
 **Go's zero values cannot express two of the Python constructor arguments.**
 `ReadoutConfig.SystemPrompt` of `""` renders `DirectSystem`, so Python's explicit
 empty system line cannot be asked for; and `ReadoutConfig.MaxLogprobs` of 0 sends
@@ -152,12 +156,24 @@ every code fall back. Both mappings are documented on the fields; neither is
 reachable from a normal caller.
 
 **Field-level decoding is typed where Python coerces.** `usage.prompt_tokens`,
-`rank`, `choices[0].text` and a model entry's `id` are decoded into Go types, so
-a string where a number belongs, or a number where a string belongs, fails the
-response rather than being coerced. The Python client's `int(... or 0)`,
+`rank`, `choices[0].text`, a model entry's `id`, and every value in the
+`top_logprobs` and `prompt_logprobs` maps are decoded into Go types, so a string
+where a number belongs, or a number where a string belongs, fails the response
+rather than being coerced. The Python client's `int(... or 0)`,
 `entry.get("rank")` and `entry.get("id")` accept the coercion and yield `None`
-for a missing id where this port yields `""`. No OpenAI-compatible server sends
-any of these shapes.
+for a missing id where this port yields `""`; its logprob maps hold any JSON
+value and fail later, inside `math.exp`, where this port refuses the response.
+No OpenAI-compatible server sends any of these shapes.
+
+**`Softmax` sums in a fixed key order, not the caller's.** Python's `softmax`
+sums `weights.values()` in the dict order it was given, which `read_codes` sets
+to option order, and on CPython 3.12+ it sums with Neumaier compensation. This
+port sorts the keys (shortest first, then lexicographic, which is the codebook's
+own order) and sums left to right, so the result is reproducible under Go's
+randomized map iteration and matches Python for the codebook-ordered prefix the
+readout always passes. It is a relative 1e-16 or so from Python's arithmetic in
+general, and the replay gate compares the probabilities with a 1e-12 relative
+tolerance rather than exactly for that reason.
 
 **A mid-read capability downgrade re-reads every code, as Python does.** When a
 server rejects `logprob_token_ids` after an earlier block was accepted, both
@@ -256,10 +272,19 @@ This port has produced no measurements of its own against a served model.
   reports no `usage`, a null or fractional `token_ids` element, a null
   `prompt_logprobs` entry (which used to panic), a body past the response cap,
   the DE-1 refusals for a model id, a tokenizer source and a declaration, the
-  `ReadoutHTTPError`-is-a-`ReadoutError` taxonomy, the bearer header and the
-  model listing, a tokenizer swap discarding the ids resolved from the old one,
-  and eight concurrent readers. `go test -race` is what decides the concurrency
-  claim.
+  `ReadoutHTTPError`-is-a-`ReadoutError` taxonomy (and a `ReadoutHTTPError`
+  built without its embed, which must not panic or hand back a nil
+  `*ReadoutError`), the bearer header and the model listing, a tokenizer swap
+  discarding both the ids and the boundary approvals resolved from the old one,
+  the exported `Slot`, `Render`, `AnswerPrefixID` and `CheckCodeBoundary` entry
+  points, a zero-value `Readout` reporting itself, the `closeEnough` helper
+  directly, and eight concurrent readers. `go test -race` is what decides the
+  concurrency claim.
+
+Every recorded exchange now carries the request method, path and the two headers
+the client sets (`Content-Type`, and `Authorization` when a key is configured),
+and the replay server compares all of them, so a readout that posted to the
+wrong path or dropped a header fails the gate.
 - **Tokenizer identity.** The test checks the loaded tokenizer's vocab size
   (262,144) and `<channel|>` id (101) before running the vectors, so a fallback
   to a different revision fails loudly. Set `SHISA_DE_TOKENIZER_REQUIRE=1` to

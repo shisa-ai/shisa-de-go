@@ -185,9 +185,15 @@ class Recorder:
 
     def _handle(self, request: httpx.Request) -> httpx.Response:
         response = self.server(request)
+        # Only the headers the readout sets itself: httpx adds its own
+        # (accept, user-agent, content-length, ...) that say nothing about the
+        # client under test.
+        headers = {name.lower(): value for name, value in request.headers.items()
+                   if name.lower() in ("content-type", "authorization")}
         self.exchanges.append({
             "method": request.method,
             "path": request.url.path,
+            "headers": headers,
             "request": json.loads(request.content),
             "status": response.status_code,
             "response": response.json(),

@@ -25,9 +25,29 @@ type ReadoutHTTPError struct {
 	Detail string
 }
 
+// Error is spelled out rather than promoted, so a ReadoutHTTPError built without
+// its embedded error reports a bad value instead of panicking on a nil pointer.
+// The only construction inside this package sets the embed.
+func (e *ReadoutHTTPError) Error() string {
+	if e == nil {
+		return "shisade: <nil ReadoutHTTPError>"
+	}
+	if e.ReadoutError == nil {
+		return fmt.Sprintf("shisade: HTTP %d: %s", e.Status, e.Detail)
+	}
+	return e.ReadoutError.Error()
+}
+
 // Unwrap is what makes an HTTP failure a ReadoutError as well. errors.As finds
-// the embedded error through it.
-func (e *ReadoutHTTPError) Unwrap() error { return e.ReadoutError }
+// the embedded error through it. A nil embed unwraps to nothing rather than to a
+// typed nil, which errors.As would otherwise match and hand back as a
+// *ReadoutError that is nil.
+func (e *ReadoutHTTPError) Unwrap() error {
+	if e == nil || e.ReadoutError == nil {
+		return nil
+	}
+	return e.ReadoutError
+}
 
 // The wire shapes of one /v1/completions call.
 //

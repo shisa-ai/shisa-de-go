@@ -61,11 +61,12 @@ type readoutStep struct {
 }
 
 type replayPair struct {
-	Method   string          `json:"method"`
-	Path     string          `json:"path"`
-	Request  json.RawMessage `json:"request"`
-	Status   int             `json:"status"`
-	Response json.RawMessage `json:"response"`
+	Method   string            `json:"method"`
+	Path     string            `json:"path"`
+	Headers  map[string]string `json:"headers"`
+	Request  json.RawMessage   `json:"request"`
+	Status   int               `json:"status"`
+	Response json.RawMessage   `json:"response"`
 }
 
 type replayStepError struct {
@@ -97,6 +98,7 @@ type thoughtResult struct {
 type readoutMeta struct {
 	PythonRepo     string `json:"python_repo"`
 	ReadoutVersion string `json:"readout_version"`
+	ThinkSystem    string `json:"think_system"`
 	MaxCodes       int    `json:"max_codes"`
 	MaxOptions     int    `json:"max_options"`
 	AnswerTokenID  int    `json:"answer_token_id"`
@@ -153,6 +155,10 @@ func TestReadoutFixtureProvenance(t *testing.T) {
 	if meta.ReadoutVersion != DE2ReadoutVersion {
 		t.Errorf("the fixture was recorded against %q, and this package implements %q",
 			meta.ReadoutVersion, DE2ReadoutVersion)
+	}
+	if meta.ThinkSystem != ThinkSystem {
+		t.Errorf("the fixture was recorded with the thinking system line %q, and this package "+
+			"renders %q", meta.ThinkSystem, ThinkSystem)
 	}
 	if meta.MaxCodes != MaxCodes || meta.MaxOptions != MaxOptions {
 		t.Errorf("the fixture records limits %d/%d, want %d/%d",
@@ -380,6 +386,17 @@ func (s *replayServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if exchange.Path != "" && r.URL.Path != exchange.Path {
 		s.t.Errorf("request %d went to %s, want %s", s.at, r.URL.Path, exchange.Path)
+	}
+	// Only the headers the Python client set itself: the Go client sets the same
+	// two and Go's transport adds its own the fixture never recorded.
+	for name, want := range exchange.Headers {
+		if got := r.Header.Get(name); got != want {
+			s.t.Errorf("request %d sent %s: %q, want %q", s.at, name, got, want)
+		}
+	}
+	if r.Header.Get("Content-Type") != "application/json" {
+		s.t.Errorf("request %d sent Content-Type %q, want application/json",
+			s.at, r.Header.Get("Content-Type"))
 	}
 	var got, want any
 	if err := json.Unmarshal(body, &got); err != nil {
@@ -851,11 +868,12 @@ func TestReadoutResponseCap(t *testing.T) {
 		t.Error("a truncated body is not JSON, so it should not parse either")
 	}
 
-	// The real cap has to clear the largest honest response: the
-	// `prompt_logprobs: 0` fallback returns one entry per prompt token, and the
-	// pinned prompts are about 8,500 tokens.
-	if maxResponseBytes < 16<<20 {
-		t.Errorf("maxResponseBytes is %d, too small for a long prompt's fallback", maxResponseBytes)
+	// The cap is pinned exactly, not as a lower bound: it has to clear the
+	// largest honest response (`prompt_logprobs: 0` returns one entry per prompt
+	// token, and the pinned prompts are about 8,500), and a shrink that still
+	// cleared a lax bound would otherwise pass.
+	if maxResponseBytes != 64<<20 {
+		t.Errorf("maxResponseBytes is %d, want %d", maxResponseBytes, 64<<20)
 	}
 }
 
@@ -965,5 +983,222 @@ func TestReadoutLocalFilesOnly(t *testing.T) {
 	var readoutError *ReadoutError
 	if !errors.As(err, &readoutError) {
 		t.Errorf("the error is %T, want it wrapped in a *ReadoutError", err)
+	}
+}
+
+// TestCheckCodeBoundaryIsCallable pins the exported boundary check. It used to
+// take the readout mutex and then call a helper that took it again, so every
+// call hung while holding the lock; nothing in the tree called it.
+func TestCheckCodeBoundaryIsCallable(t *testing.T) {
+	readout := stubReadout(t, `{"choices":[{"text":"A"}]}`)
+	slots := testSlots(t, readout, 2)
+	prefixID, err := readout.AnswerPrefixID()
+	if err != nil {
+		t.Fatalf("AnswerPrefixID: %v", err)
+	}
+	if err := readout.CheckCodeBoundary([]int{prefixID}, slots); err != nil {
+		t.Fatalf("CheckCodeBoundary: %v", err)
+	}
+	if err := readout.CheckCodeBoundary([]int{prefixID, prefixID}, slots); err != nil {
+		t.Fatalf("CheckCodeBoundary with a longer prompt: %v", err)
+	}
+	// The second call must not hang either: the approvals are cached, and the
+	// cache is read under the same lock.
+	if err := readout.CheckCodeBoundary([]int{prefixID}, slots); err != nil {
+		t.Fatalf("CheckCodeBoundary on the cached path: %v", err)
+	}
+	if err := readout.CheckCodeBoundary([]int{prefixID + 1}, slots); err == nil {
+		t.Error("a prompt that does not end on the terminator should be refused")
+	}
+}
+
+// TestCheckCodeBoundaryRefusesAForeignTokenID covers the cache keyed by code
+// alone: a slot carrying an approved code but a token id the current tokenizer
+// never produced must not skip the per-code check. `Slot` is exported with
+// exported fields and the read methods take `[]Slot`, so a caller can build one.
+func TestCheckCodeBoundaryRefusesAForeignTokenID(t *testing.T) {
+	readout := stubReadout(t, `{"choices":[{"text":"A"}]}`)
+	slots := testSlots(t, readout, 1)
+	prefixID, err := readout.AnswerPrefixID()
+	if err != nil {
+		t.Fatalf("AnswerPrefixID: %v", err)
+	}
+	if err := readout.CheckCodeBoundary([]int{prefixID}, slots); err != nil {
+		t.Fatalf("CheckCodeBoundary: %v", err)
+	}
+	forged := []Slot{{Code: slots[0].Code, TokenID: 999, Text: slots[0].Text}}
+	err = readout.CheckCodeBoundary([]int{prefixID}, forged)
+	if err == nil {
+		t.Fatal("an approved code with a foreign token id should not skip the check")
+	}
+	if !strings.Contains(err.Error(), "boundary moves") {
+		t.Errorf("the error is %v, want the boundary-moves error", err)
+	}
+}
+
+// TestSetTokenizerForgetsBoundaryApprovals checks the approval half of the
+// invalidation, not just the slot half.
+func TestSetTokenizerForgetsBoundaryApprovals(t *testing.T) {
+	readout := stubReadout(t, `{"choices":[{"text":"A"}]}`)
+	slots := testSlots(t, readout, 1)
+	prefixID, err := readout.AnswerPrefixID()
+	if err != nil {
+		t.Fatalf("AnswerPrefixID: %v", err)
+	}
+	if err := readout.CheckCodeBoundary([]int{prefixID}, slots); err != nil {
+		t.Fatalf("CheckCodeBoundary: %v", err)
+	}
+	// The same code, an id only the first tokenizer produces, and the same
+	// terminator, so only the per-code half can catch it.
+	readout.SetTokenizer(newFixtureTokenizer(map[string]int{AnswerPrefix: 101, "A": 9001}))
+	if err := readout.CheckCodeBoundary([]int{prefixID}, slots); err == nil {
+		t.Error("an approval from the previous tokenizer should not survive the swap")
+	}
+}
+
+// TestCloseEnough is the direct test the helper never had. Every probability in
+// the replay fixture agrees far inside the tolerance, so without this a
+// `closeEnough` that returned true unconditionally would pass the gate.
+func TestCloseEnough(t *testing.T) {
+	cases := []struct {
+		name      string
+		got, want map[string]float64
+		ok        bool
+	}{
+		{"equal", map[string]float64{"A": 0.25, "B": 0.75},
+			map[string]float64{"A": 0.25, "B": 0.75}, true},
+		{"reordered", map[string]float64{"B": 0.75, "A": 0.25},
+			map[string]float64{"A": 0.25, "B": 0.75}, true},
+		{"missing key", map[string]float64{"A": 0.25},
+			map[string]float64{"A": 0.25, "B": 0.75}, false},
+		{"extra key", map[string]float64{"A": 0.25, "B": 0.75, "C": 0},
+			map[string]float64{"A": 0.25, "B": 0.75}, false},
+		{"wrong key", map[string]float64{"A": 0.25, "Z": 0.75},
+			map[string]float64{"A": 0.25, "B": 0.75}, false},
+		{"out of tolerance", map[string]float64{"A": 0.25, "B": 0.750001},
+			map[string]float64{"A": 0.25, "B": 0.75}, false},
+		{"inside tolerance", map[string]float64{"A": 0.25, "B": 0.75 + 1e-14},
+			map[string]float64{"A": 0.25, "B": 0.75}, true},
+		{"NaN got", map[string]float64{"A": 0.25, "B": math.NaN()},
+			map[string]float64{"A": 0.25, "B": 0.75}, false},
+		{"NaN want", map[string]float64{"A": 0.25, "B": 0.75},
+			map[string]float64{"A": 0.25, "B": math.NaN()}, false},
+		{"Inf got", map[string]float64{"A": 0.25, "B": math.Inf(1)},
+			map[string]float64{"A": 0.25, "B": 0.75}, false},
+		{"Inf want", map[string]float64{"A": 0.25, "B": 0.75},
+			map[string]float64{"A": 0.25, "B": math.Inf(-1)}, false},
+		// The absolute floor: a near-zero probability is compared absolutely, so
+		// a relative test that divided by ~0 cannot pass anything.
+		{"near zero inside the floor", map[string]float64{"A": 1, "B": 1e-12},
+			map[string]float64{"A": 1, "B": 0}, false},
+		{"near zero equal", map[string]float64{"A": 1, "B": 1e-12},
+			map[string]float64{"A": 1, "B": 1e-12}, true},
+		{"both empty", map[string]float64{}, map[string]float64{}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := closeEnough(tc.got, tc.want, 1e-12); got != tc.ok {
+				t.Errorf("closeEnough = %v, want %v", got, tc.ok)
+			}
+		})
+	}
+}
+
+// TestZeroReadoutReportsItself checks that the zero value fails the way every
+// other unusable readout does, rather than panicking inside net/http.
+func TestZeroReadoutReportsItself(t *testing.T) {
+	var readout Readout
+	_, err := readout.ListModels(context.Background())
+	if err == nil {
+		t.Fatal("a zero Readout should not list models")
+	}
+	if !strings.Contains(err.Error(), "NewReadout") {
+		t.Errorf("the error is %v, want one naming the constructor", err)
+	}
+	_, err = readout.ReadCodes(context.Background(), "<model>"+AnswerPrefix, nil, false)
+	if err == nil {
+		t.Error("a zero Readout should not read codes")
+	}
+}
+
+// TestReadoutHTTPErrorWithoutAnEmbed covers the value a caller can build from
+// outside the package: it must report itself rather than panic, and errors.As
+// must not hand back a nil *ReadoutError.
+func TestReadoutHTTPErrorWithoutAnEmbed(t *testing.T) {
+	err := &ReadoutHTTPError{Status: 503, Detail: "unavailable"}
+	if message := err.Error(); !strings.Contains(message, "503") {
+		t.Errorf("Error() = %q, want one naming the status", message)
+	}
+	if unwrapped := errors.Unwrap(err); unwrapped != nil {
+		t.Errorf("Unwrap() = %v, want nil", unwrapped)
+	}
+	var readoutError *ReadoutError
+	if errors.As(err, &readoutError) {
+		t.Errorf("errors.As found a %v inside an HTTP error with no embed", readoutError)
+	}
+}
+
+// TestReadoutSlot covers the exported code resolver: a code must be exactly one
+// token, which is what the whole readout depends on.
+func TestReadoutSlot(t *testing.T) {
+	readout := stubReadout(t, `{"choices":[{"text":"A"}]}`)
+	slot, err := readout.Slot("A")
+	if err != nil {
+		t.Fatalf("Slot: %v", err)
+	}
+	if slot.Code != "A" || slot.TokenID != 65 || slot.Text != "A" {
+		t.Errorf("Slot = %+v, want A at 65", slot)
+	}
+	// The cache answers the second call without the tokenizer.
+	again, err := readout.Slot("A")
+	if err != nil || again != slot {
+		t.Errorf("the second Slot call gave %+v (%v)", again, err)
+	}
+	// A code the tokenizer does not hold as one token cannot be read.
+	if _, err := readout.Slot("not-a-code"); err == nil {
+		t.Error("a multi-token code should be refused")
+	}
+	if _, err := readout.CodeSlots(0); err != nil {
+		t.Errorf("CodeSlots(0): %v", err)
+	}
+}
+
+// TestReadoutRenderIsThePackageRender checks the method the client layer will
+// call, and that it carries the readout's own system line.
+func TestReadoutRenderIsThePackageRender(t *testing.T) {
+	readout, err := NewReadout(ReadoutConfig{BaseURL: "http://x", Model: "shisa-ai/shisa-de-2",
+		SystemPrompt: "You are a careful classifier."})
+	if err != nil {
+		t.Fatalf("NewReadout: %v", err)
+	}
+	question := NewChoice("Is this spam?", []Option{
+		{Key: "yes", Description: "Yes"}, {Key: "no", Description: "No"}})
+	state := map[string]any{"text": "hello"}
+	options := RenderOptions{Repeat: 2, OptionLimit: MaxCodes}
+
+	got, err := readout.Render(state, question, options)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if !strings.Contains(got, "You are a careful classifier.") {
+		t.Errorf("the readout's system line is missing: %q", truncate(got))
+	}
+	// An explicit option overrides the readout's line.
+	options.SystemPrompt = "Another line."
+	overridden, err := readout.Render(state, question, options)
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if strings.Contains(overridden, "careful classifier") || !strings.Contains(overridden, "Another line.") {
+		t.Errorf("the explicit system line was not used: %q", truncate(overridden))
+	}
+	// The method and the package function agree when neither is overridden.
+	direct, err := Render(state, question, RenderOptions{Repeat: 2, OptionLimit: MaxCodes,
+		SystemPrompt: "You are a careful classifier."})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	if got != direct {
+		t.Error("Readout.Render and Render disagree on the same options")
 	}
 }
