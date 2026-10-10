@@ -14,7 +14,11 @@ through the other family's contract.
 - **This port implements DE-2 only** (`de2-codebook-v1`). DE-1 is not read.
   A model that resolves to DE-1 is an error, never an assumption: reading a
   checkpoint through the wrong family's contract returns answers nobody has
-  measured, and this client has no DE-1 answers to return.
+  measured, and this client has no DE-1 answers to return. The guard is
+  `RequireDE2`, called from `NewReadout` before anything is loaded or sent, so a
+  caller holding a `Readout` directly cannot bypass it. `ResolvedFamily` reports
+  which contract was chosen and whether it was declared, named by the model id,
+  named by the tokenizer source, or assumed.
 - `docs/READOUT-DE2.md` is the contract and is copied verbatim from the Python
   repository. The code implements that page; the page does not describe the
   code. If they disagree, the page is right and the code is a bug — unless the
@@ -81,7 +85,7 @@ What must not change casually:
 | `pyjson.go` | `json.dumps(value, ensure_ascii=False)` and `json.loads` equivalents, because the user turn is serialized into the prompt |
 | `questions.go` | `Noul`, `Choice`, `Score` and their wire shapes |
 | `family.go` | Resolves DE-1/DE-2 from a declaration, the model id or the tokenizer, and says which |
-| `tokenizer/` | The pure-Go Hugging Face BPE tokenizer. No cgo |
+| `tokenizer/` | The pure-Go Hugging Face BPE tokenizer. No cgo. `LoadWith`/`ResolveWith` take a local-only policy |
 | `data/codebook-de2.json` | The 256 DE-2 answer codes, in order, with the audit they came from |
 | `data/calibration-de2.json` | The DE-2 record: temperatures per read with the fit's provenance, and one withheld earlier fit |
 | `policy.go` | Planned (M4): the DE-2 policy: repeated read, gate, thought, read after it |
@@ -141,6 +145,7 @@ What must not change casually:
 | Offline suite | `go test ./...` |
 | Tokenizer parity | `go test ./tokenizer/` (reads the pinned tokenizer from the hub cache or `SHISA_DE_TOKENIZER_JSON`; `SHISA_DE_TOKENIZER_REQUIRE=1` fails instead of skipping) |
 | Readout replay | `go test . -run TestReadout` (replays recorded Python request/response pairs through an `httptest` stub; offline) |
+| Race detector | `go test -race ./...` (the concurrency claim for `Readout` rests on this) |
 | Live suite, hosted DE-2 | Planned (M6): `SHISA_DE_LIVE=1 go test ./... -run Live`. No test in the tree matches that name yet, so the command passes without running anything |
 | Endpoint check | Planned: `shisa-de doctor`, and `shisa-de doctor --probe` to spend two requests on the reads |
 | Readout walkthrough | Planned: `shisa-de explain --labels spam,ham` |

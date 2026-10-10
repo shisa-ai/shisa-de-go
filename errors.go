@@ -2,6 +2,8 @@ package shisade
 
 // Errors this package returns. Callers distinguish them with errors.As, in the
 // same places the Python client catches ReadoutError and QuestionError.
+// ReadoutHTTPError is a ReadoutError as well, because the Python class it
+// replaces subclasses it; QuestionError is separate on both sides.
 
 // ReadoutError reports that the readout could not produce an answer: a request
 // failed, the server and the client disagree about the tokenizer, or a code

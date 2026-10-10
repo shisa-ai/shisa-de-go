@@ -15,13 +15,19 @@ import (
 // thing about a rejected request is what the server said about it. The DE-2 code
 // read uses Status to notice a server that does not know `logprob_token_ids` and
 // ask again without it.
+//
+// It is also a ReadoutError, as it is in the Python client
+// (`ReadoutHTTPError(ReadoutError)`): a caller that handles a failed read
+// handles a rejected request too, without having to name both types.
 type ReadoutHTTPError struct {
-	Message string
-	Status  int
-	Detail  string
+	*ReadoutError
+	Status int
+	Detail string
 }
 
-func (e *ReadoutHTTPError) Error() string { return "shisade: " + e.Message }
+// Unwrap is what makes an HTTP failure a ReadoutError as well. errors.As finds
+// the embedded error through it.
+func (e *ReadoutHTTPError) Unwrap() error { return e.ReadoutError }
 
 // The wire shapes of one /v1/completions call.
 //
@@ -66,7 +72,7 @@ type completionChoice struct {
 	// is distinguishable from one that sends an empty list. The thinking read
 	// needs the tokens themselves and errors on the former, but an empty list is
 	// a real answer: the model produced no thought before closing it.
-	TokenIDs *[]int `json:"token_ids"`
+	TokenIDs *TokenIDList `json:"token_ids"`
 	Logprobs *struct {
 		// One map per generated position; this client reads position 0. With
 		// `return_tokens_as_token_ids` the keys are `token_id:<id>`, otherwise
@@ -83,6 +89,33 @@ type completionChoice struct {
 type promptLogprobEntry struct {
 	Logprob *float64 `json:"logprob"`
 	Rank    *int     `json:"rank"`
+}
+
+// TokenIDList is a `token_ids` array in which every element has to be a JSON
+// integer.
+//
+// Go's decoder accepts `null` into an int element and leaves the zero value, so
+// a plain `[]int` turns `[null, 101]` into a thought holding token 0 and marked
+// closed -- an invented token the server never produced, continued as if it had.
+// The Python client rejects any element that is not an integer, and so does
+// this.
+type TokenIDList []int
+
+func (l *TokenIDList) UnmarshalJSON(data []byte) error {
+	var raw []json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	ids := make([]int, len(raw))
+	for i, item := range raw {
+		var id *int
+		if err := json.Unmarshal(item, &id); err != nil || id == nil {
+			return fmt.Errorf("token_ids[%d] is not an integer: %s", i, item)
+		}
+		ids[i] = *id
+	}
+	*l = ids
+	return nil
 }
 
 // topLogprobs is the first generated position's logprobs, or an empty map when
@@ -132,6 +165,13 @@ func getJSON(ctx context.Context, client *http.Client, url string, headers http.
 }
 
 func doJSON(client *http.Client, request *http.Request, headers http.Header, into any) error {
+	return doJSONLimit(client, request, headers, into, maxResponseBytes)
+}
+
+// doJSONLimit is doJSON with the response cap given, so a test can exercise the
+// truncation without moving 64 MB over a socket.
+func doJSONLimit(client *http.Client, request *http.Request, headers http.Header, into any,
+	limit int64) error {
 	url := request.URL.String()
 	for key, values := range headers {
 		for _, value := range values {
@@ -145,7 +185,7 @@ func doJSON(client *http.Client, request *http.Request, headers http.Header, int
 	defer response.Body.Close()
 	// The body is capped so a server that streams an error page cannot exhaust
 	// memory here; the Python client keeps the first 400 characters of it.
-	raw, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes))
+	raw, err := io.ReadAll(io.LimitReader(response.Body, limit))
 	if err != nil {
 		return &ReadoutError{Message: fmt.Sprintf("reading the response from %s", url), Err: err}
 	}
@@ -158,9 +198,10 @@ func doJSON(client *http.Client, request *http.Request, headers http.Header, int
 			detail = string(runes[:400])
 		}
 		return &ReadoutHTTPError{
-			Message: fmt.Sprintf("%s returned HTTP %d: %s", url, response.StatusCode, detail),
-			Status:  response.StatusCode,
-			Detail:  detail,
+			ReadoutError: &ReadoutError{Message: fmt.Sprintf(
+				"%s returned HTTP %d: %s", url, response.StatusCode, detail)},
+			Status: response.StatusCode,
+			Detail: detail,
 		}
 	}
 	if err := json.Unmarshal(raw, into); err != nil {
@@ -172,11 +213,14 @@ func doJSON(client *http.Client, request *http.Request, headers http.Header, int
 	return nil
 }
 
-// maxResponseBytes caps one response body. A 256-option prompt is about 35 KB of
-// text, and the largest thing a server sends back here is one position of
-// top-logprobs, so 8 MB leaves room for any honest response and refuses a
-// runaway one.
-const maxResponseBytes = 8 << 20
+// maxResponseBytes caps one response body, so a server that streams an error
+// page cannot exhaust memory here. It has to clear the largest honest response,
+// which is not one position of top-logprobs but the `prompt_logprobs: 0`
+// fallback: that returns one entry per prompt token, so a very long prompt on a
+// server without `logprob_token_ids` is the big case. At roughly 40 bytes an
+// entry, 64 MB covers a prompt of well over a million tokens, and the pinned
+// DE-2 prompts are about 8,500. The Python client reads whatever arrives.
+const maxResponseBytes = 64 << 20
 
 // firstChoice is the choice a completion must carry, or an error naming what the
 // response had instead.

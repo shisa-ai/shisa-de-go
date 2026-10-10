@@ -16,8 +16,11 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/shisa-ai/shisa-de-go/tokenizer"
 )
 
 // The DE-2 readout replay gate.
@@ -58,6 +61,8 @@ type readoutStep struct {
 }
 
 type replayPair struct {
+	Method   string          `json:"method"`
+	Path     string          `json:"path"`
 	Request  json.RawMessage `json:"request"`
 	Status   int             `json:"status"`
 	Response json.RawMessage `json:"response"`
@@ -129,6 +134,10 @@ func loadReadoutFixture(t *testing.T) (readoutFixture, readoutMeta) {
 	}
 	if meta.AnswerTokenID == 0 {
 		t.Fatal("the readout provenance records no answer token id")
+	}
+	if meta.PythonRepo == "" {
+		t.Fatal("the readout provenance records no Python revision, so the fixture " +
+			"cannot be traced to the client that produced it")
 	}
 	return fixture, meta
 }
@@ -312,9 +321,25 @@ func requireReadoutError(t *testing.T, err error, want *replayStepError) {
 	if err == nil {
 		t.Fatalf("the read succeeded, and the fixture records %s: %s", want.Type, want.Message)
 	}
-	var readoutError *ReadoutError
-	if !errors.As(err, &readoutError) {
-		t.Fatalf("the error is %T (%v), want a *ReadoutError", err, err)
+	// The Python class is asserted too, so a scenario recorded from a different
+	// exception than the one it names fails here rather than passing quietly.
+	switch want.Type {
+	case "ReadoutError":
+		var readoutError *ReadoutError
+		if !errors.As(err, &readoutError) {
+			t.Fatalf("the error is %T (%v), want a *ReadoutError", err, err)
+		}
+		var httpError *ReadoutHTTPError
+		if errors.As(err, &httpError) {
+			t.Errorf("the error is %v, and the Python client raised %s", err, want.Type)
+		}
+	case "ReadoutHTTPError":
+		var httpError *ReadoutHTTPError
+		if !errors.As(err, &httpError) {
+			t.Fatalf("the error is %T (%v), want a *ReadoutHTTPError", err, err)
+		}
+	default:
+		t.Fatalf("the fixture records the error class %q, which this test does not know", want.Type)
 	}
 	if want.Match == "" {
 		t.Fatal("the fixture's error has no match pattern")
@@ -350,6 +375,12 @@ func (s *replayServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	exchange := s.exchanges[s.at]
 	s.at++
+	if exchange.Method != "" && r.Method != exchange.Method {
+		s.t.Errorf("request %d used %s, want %s", s.at, r.Method, exchange.Method)
+	}
+	if exchange.Path != "" && r.URL.Path != exchange.Path {
+		s.t.Errorf("request %d went to %s, want %s", s.at, r.URL.Path, exchange.Path)
+	}
 	var got, want any
 	if err := json.Unmarshal(body, &got); err != nil {
 		s.t.Errorf("the request is not JSON: %v", err)
@@ -465,12 +496,24 @@ func equalStrings(got, want []string) bool {
 	return true
 }
 
+// closeEnough compares two distributions to a relative tolerance, with an
+// absolute floor so a probability near zero is still compared. A NaN on either
+// side fails: NaN != NaN, and a comparison written as `abs(got-want) > tol`
+// would let a readout that returned NaN for every code pass the gate.
 func closeEnough(got, want map[string]float64, tolerance float64) bool {
 	if len(got) != len(want) {
 		return false
 	}
 	for key, value := range want {
-		if math.Abs(got[key]-value) > tolerance {
+		actual, ok := got[key]
+		if !ok {
+			return false
+		}
+		if math.IsNaN(actual) || math.IsNaN(value) ||
+			math.IsInf(actual, 0) || math.IsInf(value, 0) {
+			return false
+		}
+		if math.Abs(actual-value) > tolerance*math.Max(math.Abs(value), 1e-9) {
 			return false
 		}
 	}
@@ -618,4 +661,309 @@ func testSlots(t *testing.T, readout *Readout, count int) []Slot {
 		t.Fatalf("CodeSlots(%d): %v", count, err)
 	}
 	return slots
+}
+
+// TestNewReadoutRefusesDE1 is the DE-2-only guard. This client implements one
+// contract, and a checkpoint read through the other one returns answers nobody
+// has measured, so the readout refuses it before it loads or sends anything.
+func TestNewReadoutRefusesDE1(t *testing.T) {
+	cases := []struct {
+		name   string
+		config ReadoutConfig
+	}{
+		{"model id", ReadoutConfig{BaseURL: "http://x", Model: "shisa-ai/shisa-de-1"}},
+		{"bare model id", ReadoutConfig{BaseURL: "http://x", Model: "de-1"}},
+		{"tokenizer source", ReadoutConfig{BaseURL: "http://x", Model: "local-vllm",
+			Tokenizer: "shisa-ai/shisa-de-1"}},
+		{"declared", ReadoutConfig{BaseURL: "http://x", Model: "local-vllm", Family: "de1"}},
+		{"declared over a de2 model", ReadoutConfig{BaseURL: "http://x",
+			Model: "shisa-ai/shisa-de-2", Family: "DE-1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewReadout(tc.config)
+			if err == nil {
+				t.Fatal("a DE-1 checkpoint should not be read through the DE-2 contract")
+			}
+			var unsupported *UnsupportedFamilyError
+			if !errors.As(err, &unsupported) {
+				t.Fatalf("the error is %T (%v), want a *UnsupportedFamilyError", err, err)
+			}
+			if unsupported.Family != FamilyDE1 {
+				t.Errorf("the error names %s, want %s", unsupported.Family, FamilyDE1)
+			}
+		})
+	}
+}
+
+// TestNewReadoutRecordsTheFamily checks the provenance a caller reads back, and
+// that an id saying nothing is reported as an assumption rather than a
+// detection.
+func TestNewReadoutRecordsTheFamily(t *testing.T) {
+	cases := []struct {
+		config ReadoutConfig
+		want   FamilySource
+	}{
+		{ReadoutConfig{BaseURL: "http://x", Model: "shisa-ai/shisa-de-2"}, SourceModelID},
+		{ReadoutConfig{BaseURL: "http://x", Model: "local-vllm",
+			Tokenizer: "shisa-ai/shisa-de-2"}, SourceTokenizer},
+		{ReadoutConfig{BaseURL: "http://x", Model: "local-vllm"}, SourceAssumed},
+		{ReadoutConfig{BaseURL: "http://x", Model: "local-vllm", Family: "de-2"}, SourceDeclared},
+	}
+	for _, tc := range cases {
+		readout, err := NewReadout(tc.config)
+		if err != nil {
+			t.Fatalf("NewReadout(%q): %v", tc.config.Model, err)
+		}
+		family, source := readout.ResolvedFamily()
+		if family != FamilyDE2 || source != tc.want {
+			t.Errorf("%q resolves to %s (%s), want %s (%s)",
+				tc.config.Model, family, source, FamilyDE2, tc.want)
+		}
+	}
+}
+
+// TestReadoutHTTPErrorIsAReadoutError checks the taxonomy the Python client has
+// and depends on: `ReadoutHTTPError(ReadoutError)`, so one handler covers a
+// failed read and a rejected request.
+func TestReadoutHTTPErrorIsAReadoutError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "extra_forbidden: logprob_token_ids", http.StatusBadRequest)
+	}))
+	defer server.Close()
+	readout, err := NewReadout(ReadoutConfig{BaseURL: server.URL, Model: "de2-test",
+		HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("NewReadout: %v", err)
+	}
+	readout.SetTokenizer(newFixtureTokenizer(map[string]int{AnswerPrefix: 101, "A": 65}))
+
+	_, err = readout.ReadCodes(context.Background(), "<model>"+AnswerPrefix,
+		testSlots(t, readout, 1), false)
+	if err == nil {
+		t.Fatal("a 400 should fail the read")
+	}
+	var httpError *ReadoutHTTPError
+	if !errors.As(err, &httpError) {
+		t.Fatalf("the error is %T (%v), want a *ReadoutHTTPError", err, err)
+	}
+	var readoutError *ReadoutError
+	if !errors.As(err, &readoutError) {
+		t.Fatalf("errors.As missed the ReadoutError inside %v", err)
+	}
+	if httpError.Status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", httpError.Status)
+	}
+	if !strings.Contains(httpError.Detail, "logprob_token_ids") {
+		t.Errorf("detail = %q, want the server's message", httpError.Detail)
+	}
+}
+
+// TestReadoutRejectsMalformedResponses covers the responses that would otherwise
+// be read as something the server did not send.
+func TestReadoutRejectsMalformedResponses(t *testing.T) {
+	t.Run("null token id", func(t *testing.T) {
+		// Go's decoder turns a null element into token 0; continuing a thought
+		// with an invented token is worse than an error.
+		readout := stubReadout(t, `{"choices":[{"token_ids":[null,101]}]}`)
+		_, err := readout.Think(context.Background(), "<model>"+AnswerPrefix, 16, false)
+		if err == nil {
+			t.Fatal("a null token id should not become token 0")
+		}
+		if !strings.Contains(err.Error(), "token_ids[0]") {
+			t.Errorf("the error is %v, want one naming the bad element", err)
+		}
+	})
+
+	t.Run("fractional token id", func(t *testing.T) {
+		readout := stubReadout(t, `{"choices":[{"token_ids":[1.5]}]}`)
+		if _, err := readout.Think(context.Background(), "<model>"+AnswerPrefix, 16, false); err == nil {
+			t.Error("a fractional token id should be refused")
+		}
+	})
+
+	t.Run("null fallback entry", func(t *testing.T) {
+		// `prompt_logprobs: 0` with a null entry at the answer boundary used to
+		// dereference a nil map value and panic.
+		readout := stubReadout(t, `{"choices":[{"text":"A","logprobs":{"top_logprobs":[{}]},`+
+			`"prompt_logprobs":[null,{"65":null}]}]}`)
+		_, err := readout.ReadCodes(context.Background(), "<model>"+AnswerPrefix,
+			testSlots(t, readout, 1), false)
+		if err == nil {
+			t.Fatal("a null fallback entry should be an error")
+		}
+		if !strings.Contains(err.Error(), "null entry") {
+			t.Errorf("the error is %v, want one naming the null entry", err)
+		}
+	})
+
+	t.Run("null token_ids field", func(t *testing.T) {
+		readout := stubReadout(t, `{"choices":[{"token_ids":null}]}`)
+		_, err := readout.Think(context.Background(), "<model>"+AnswerPrefix, 16, false)
+		if err == nil || !strings.Contains(err.Error(), "return_token_ids") {
+			t.Errorf("a null token_ids field gave %v, want the missing-token_ids error", err)
+		}
+	})
+}
+
+// TestSetTokenizerDiscardsDerivedState checks that swapping the tokenizer does
+// not leave ids and boundary approvals resolved from the previous one behind.
+func TestSetTokenizerDiscardsDerivedState(t *testing.T) {
+	readout := stubReadout(t, `{"choices":[{"text":"A"}]}`)
+	slots := testSlots(t, readout, 2)
+	if slots[0].TokenID != 65 {
+		t.Fatalf("the first stub tokenizer resolves A to %d", slots[0].TokenID)
+	}
+	// A second tokenizer that resolves the same codes to different ids, with the
+	// same terminator. Without invalidation the old slots would be reused.
+	readout.SetTokenizer(newFixtureTokenizer(map[string]int{
+		AnswerPrefix: 101, "A": 9001, "B": 9002}))
+	again := testSlots(t, readout, 2)
+	if again[0].TokenID != 9001 {
+		t.Errorf("A resolves to %d after the swap, want 9001: the slot cache is stale",
+			again[0].TokenID)
+	}
+}
+
+// TestReadoutResponseCap pins the truncation that stops a runaway body, and the
+// size of the real cap.
+func TestReadoutResponseCap(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, strings.Repeat("x", 64))
+	}))
+	defer server.Close()
+	client := server.Client()
+
+	var into map[string]any
+	request, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	if err := doJSONLimit(client, request, nil, &into, 32); err == nil {
+		t.Error("a body past the cap should not parse")
+	}
+	request, err = http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	if err := doJSONLimit(client, request, nil, &into, 64); err == nil {
+		t.Error("a truncated body is not JSON, so it should not parse either")
+	}
+
+	// The real cap has to clear the largest honest response: the
+	// `prompt_logprobs: 0` fallback returns one entry per prompt token, and the
+	// pinned prompts are about 8,500 tokens.
+	if maxResponseBytes < 16<<20 {
+		t.Errorf("maxResponseBytes is %d, too small for a long prompt's fallback", maxResponseBytes)
+	}
+}
+
+// TestReadoutSendsTheBearerToken checks the header the endpoint authenticates
+// with, which nothing else in the tree exercises.
+func TestReadoutSendsTheBearerToken(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"data":[{"id":"shisa-ai/shisa-de-2"},{"id":"other"}]}`)
+	}))
+	defer server.Close()
+	readout, err := NewReadout(ReadoutConfig{BaseURL: server.URL, Model: "shisa-ai/shisa-de-2",
+		APIKey: "secret", HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("NewReadout: %v", err)
+	}
+	models, err := readout.ListModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if got != "Bearer secret" {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer secret")
+	}
+	if len(models) != 2 || models[0] != "shisa-ai/shisa-de-2" {
+		t.Errorf("models = %v", models)
+	}
+
+	// No key, no header.
+	got = "unset"
+	anon, err := NewReadout(ReadoutConfig{BaseURL: server.URL, Model: "shisa-ai/shisa-de-2",
+		HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("NewReadout: %v", err)
+	}
+	if _, err := anon.ListModels(context.Background()); err != nil {
+		t.Fatalf("ListModels: %v", err)
+	}
+	if got != "" {
+		t.Errorf("Authorization = %q with no API key, want it absent", got)
+	}
+}
+
+// TestReadoutConcurrentReads exercises the claim that a Readout is safe for
+// concurrent use: the tokenizer load, the slot cache, the boundary approvals and
+// the capability flag are all shared state, and the race detector is what
+// decides whether the mutex covers them.
+func TestReadoutConcurrentReads(t *testing.T) {
+	fixture, _ := loadReadoutFixture(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"choices":[{"text":"A","logprobs":{"top_logprobs":[`+
+			`{"token_id:65":-0.1,"token_id:66":-1.1}]}}],"usage":{"prompt_tokens":8}}`)
+	}))
+	defer server.Close()
+	readout, err := NewReadout(ReadoutConfig{BaseURL: server.URL, Model: "de2-test",
+		HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("NewReadout: %v", err)
+	}
+	readout.SetTokenizer(newFixtureTokenizer(fixture.Tokenizer.Words))
+
+	prompt := "<model>" + AnswerPrefix
+	var group sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			for i := 0; i < 8; i++ {
+				slots, err := readout.CodeSlots(2)
+				if err != nil {
+					t.Errorf("CodeSlots: %v", err)
+					return
+				}
+				if _, err := readout.ReadCodes(context.Background(), prompt, slots, false); err != nil {
+					t.Errorf("ReadCodes: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	group.Wait()
+}
+
+// TestReadoutLocalFilesOnly checks that the config flag reaches the tokenizer
+// resolver: an uncached source is refused rather than fetched. A fetch would
+// fail with the hub's own error, so the sentinel is what proves the local-only
+// path was taken.
+func TestReadoutLocalFilesOnly(t *testing.T) {
+	readout, err := NewReadout(ReadoutConfig{
+		BaseURL:        "http://replay.invalid",
+		Model:          "shisa-ai/shisa-de-2",
+		Tokenizer:      "shisa-ai/this-repository-does-not-exist-local-only-test@0000000000000000000000000000000000000000",
+		LocalFilesOnly: true,
+	})
+	if err != nil {
+		t.Fatalf("NewReadout: %v", err)
+	}
+	_, err = readout.CodeSlots(1)
+	if err == nil {
+		t.Fatal("an uncached tokenizer should not resolve with LocalFilesOnly")
+	}
+	if !errors.Is(err, tokenizer.ErrNotCached) {
+		t.Fatalf("the error is %v, want tokenizer.ErrNotCached", err)
+	}
+	var readoutError *ReadoutError
+	if !errors.As(err, &readoutError) {
+		t.Errorf("the error is %T, want it wrapped in a *ReadoutError", err)
+	}
 }

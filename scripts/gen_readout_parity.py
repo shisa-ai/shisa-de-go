@@ -95,13 +95,15 @@ class StubDE2Server:
 
     `logprob(code)` scores a code; `thought` is the token ids a thinking request
     generates. `candidate_ids` chooses how the server treats `logprob_token_ids`:
-    honoured, ignored (an older server), or rejected with a 400. The remaining
+    honoured, ignored (an older server), rejected with a 400, or late (honoured
+    until `reject_after` requests have carried it, then rejected). The remaining
     knobs break one thing at a time, for the error scenarios.
     """
 
     def __init__(self, logprob=None, thought=None, candidate_ids="honoured", top_k=20,
                  after_thought=None, prompt_tokens_delta=0, omit_token_ids=False,
-                 fallback_empty=False, text_keys=False):
+                 fallback_empty=False, text_keys=False, omit_text=False, topk_score=None,
+                 reject_after=None):
         self.tokenizer = CodeStubTokenizer()
         self.logprob = logprob or (lambda code: 0.0 if code == "A" else -6.0)
         self.after_thought = after_thought or self.logprob
@@ -112,6 +114,15 @@ class StubDE2Server:
         self.omit_token_ids = omit_token_ids
         self.fallback_empty = fallback_empty
         self.text_keys = text_keys
+        self.omit_text = omit_text
+        # topk_score is what the top-k ranks by, when it differs from the
+        # logprob_token_ids values: the case where a mid-read downgrade changes
+        # an answer.
+        self.topk_score = topk_score or self.logprob
+        # reject_after is how many requests with logprob_token_ids to accept
+        # before rejecting the field, so a downgrade can happen mid-read.
+        self.reject_after = reject_after
+        self.seen_candidate_requests = 0
         self.code_of = {self.tokenizer.encode(code)[0]: code for code in codebook()}
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -134,23 +145,29 @@ class StubDE2Server:
                                "decoded_token": self.code_of[ids[-1]]}}
             return httpx.Response(200, json={"choices": [{"prompt_logprobs": [None, entry]}],
                                              "usage": usage})
-        if "logprob_token_ids" in body and self.candidate_ids == "rejected":
-            return httpx.Response(400, json={"error": {"message": "extra_forbidden: logprob_token_ids"}})
-        if "logprob_token_ids" in body and self.candidate_ids == "honoured":
+        if "logprob_token_ids" in body and self.candidate_ids != "ignored":
+            self.seen_candidate_requests += 1
+            if self.candidate_ids == "rejected" or (
+                    self.candidate_ids == "late" and self.reject_after is not None and
+                    self.seen_candidate_requests > self.reject_after):
+                return httpx.Response(
+                    400, json={"error": {"message": "extra_forbidden: logprob_token_ids"}})
             assert len(body["logprob_token_ids"]) <= 128
             top = {f"token_id:{token}": score(self.code_of[token])
                    for token in body["logprob_token_ids"]}
         else:
-            ranked = sorted(codebook(), key=lambda code: -score(code))[:self.top_k]
-            top = {code: score(code) for code in ranked}
+            ranked = sorted(codebook(), key=lambda code: -self.topk_score(code))[:self.top_k]
+            top = {code: self.topk_score(code) for code in ranked}
         if self.text_keys:
             # A server that ignores `return_tokens_as_token_ids` and keys the
             # logprobs by decoded text instead.
             top = {self.code_of[int(key.split(":")[1])] if key.startswith("token_id:") else key: value
                    for key, value in top.items()}
         best = max(codebook(), key=score)
-        return httpx.Response(200, json={
-            "choices": [{"text": best, "logprobs": {"top_logprobs": [top]}}], "usage": usage})
+        choice = {"logprobs": {"top_logprobs": [top]}}
+        if not self.omit_text:
+            choice["text"] = best
+        return httpx.Response(200, json={"choices": [choice], "usage": usage})
 
 
 # -- recording ----------------------------------------------------------------
@@ -169,6 +186,8 @@ class Recorder:
     def _handle(self, request: httpx.Request) -> httpx.Response:
         response = self.server(request)
         self.exchanges.append({
+            "method": request.method,
+            "path": request.url.path,
             "request": json.loads(request.content),
             "status": response.status_code,
             "response": response.json(),
@@ -208,6 +227,9 @@ def error_record(exc: Exception, match: str) -> dict:
     """`match` is a short pattern the message must contain, the way the Python
     test suite matches errors: the full wording is not the contract, but the
     reason has to be the same one."""
+    if not re.search(match, str(exc)):
+        raise SystemExit(f"the scenario expected an error matching {match!r} and the "
+                         f"Python client raised {type(exc).__name__}: {exc}")
     return {"type": type(exc).__name__, "message": str(exc), "match": match}
 
 
@@ -245,6 +267,9 @@ def scenarios() -> list[dict]:
     for count in (2, 26, 27, 128, 129, 256):
         out.append(simple(f"codes-{count}", count, StubDE2Server()))
     out.append(simple("codes-3-debug", 3, StubDE2Server(), debug=True))
+    # A server that sends no `choices[0].text`, which is the one place the
+    # Python client's `str | None` and Go's string differ.
+    out.append(simple("codes-no-text", 2, StubDE2Server(omit_text=True)))
     # A server that ignores `return_tokens_as_token_ids` and keys the logprobs by
     # decoded text, which is the other half of the code lookup.
     out.append(simple("codes-text-keys", 26, StubDE2Server(
@@ -266,6 +291,21 @@ def scenarios() -> list[dict]:
                       "note": step, "exchanges": recorder.take(),
                       "result": read_record(read)})
     out.append({"name": "codes-topk-rejected", "steps": steps})
+
+    # A downgrade that happens after the first block was accepted. Python then
+    # re-reads every code in one request without the field, so the retry's top-k
+    # replaces the codes the first block already read; the top-k scores differ
+    # from the candidate-id scores here so that replacement is visible.
+    late = StubDE2Server(logprob=lambda code: -0.001 * codebook().index(code),
+                         topk_score=lambda code: -0.5 - 0.001 * codebook().index(code),
+                         candidate_ids="late", reject_after=1, top_k=256)
+    recorder = Recorder(late)
+    prompt = render(recorder, 129)
+    slots = recorder.readout.code_slots(129)
+    read = recorder.readout.read_codes(prompt, slots)
+    out.append({"name": "codes-late-downgrade", "steps": [{
+        "op": "read-codes", "prompt": prompt, "codes": 129, "debug": False,
+        "exchanges": recorder.take(), "result": read_record(read)}]})
 
     # The thinking read, closed by the model and cut by the budget.
     for name, thought, budget in (
@@ -341,6 +381,9 @@ def scenarios() -> list[dict]:
         result = {}
     except Exception as exc:  # noqa: BLE001
         result = {"error": error_record(exc, r"return_token_ids")}
+    if not result:
+        raise SystemExit("error-no-token-ids: the Python client accepted a response with no "
+                         "token_ids, so there is nothing to record")
     out.append({"name": "error-no-token-ids", "steps": [{
         "op": "think", "prompt": prompt, "budget": 1024, "debug": False,
         "exchanges": recorder.take(), **result}]})
@@ -353,6 +396,9 @@ def scenarios() -> list[dict]:
         result = {}
     except Exception as exc:  # noqa: BLE001
         result = {"error": error_record(exc, r"does not end on")}
+    if not result:
+        raise SystemExit("error-boundary: the Python client accepted a prompt that does not "
+                         "end on the terminator, so there is nothing to record")
     out.append({"name": "error-boundary", "steps": [{
         "op": "read-codes", "prompt": "<sys>x<user>y<model>", "codes": 2, "debug": False,
         "exchanges": recorder.take(), **result}]})

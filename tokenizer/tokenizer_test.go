@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -441,4 +442,44 @@ func loadPinnedBench(b *testing.B) *Tokenizer {
 		b.Fatalf("%s: %v", path, err)
 	}
 	return tokenizer
+}
+
+// TestLocalFilesOnlyNeverFetches checks the policy the readout's
+// `LocalFilesOnly` turns on: a source that is not a readable file and not in the
+// cache is refused rather than downloaded. The test would need network access to
+// fail in the wrong direction, so it asserts the error identity and that the
+// repository id is one the hub could not have cached.
+func TestLocalFilesOnlyNeverFetches(t *testing.T) {
+	missing := "shisa-ai/this-repository-does-not-exist-local-only-test@0000000000000000000000000000000000000000"
+	_, err := ResolveWith(missing, ResolveOptions{LocalFilesOnly: true})
+	if err == nil {
+		t.Fatal("a source that is not cached should not resolve with LocalFilesOnly")
+	}
+	if !errors.Is(err, ErrNotCached) {
+		t.Errorf("the error is %v, want ErrNotCached", err)
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("the error is %v, want one naming the source", err)
+	}
+
+	// A file on disk resolves either way, because no fetch is involved.
+	path := filepath.Join(t.TempDir(), "tokenizer.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
+	resolved, err := ResolveWith(path, ResolveOptions{LocalFilesOnly: true})
+	if err != nil {
+		t.Fatalf("ResolveWith(%s): %v", path, err)
+	}
+	if resolved != path {
+		t.Errorf("resolved to %q, want %q", resolved, path)
+	}
+
+	// The pinned repository is in the cache on a machine that has run the
+	// parity suite, so local-only resolution must not change what it finds.
+	if _, err := ResolveWith(PinnedRepo+"@"+PinnedSnapshot, ResolveOptions{LocalFilesOnly: true}); err != nil {
+		if !errors.Is(err, ErrNotCached) {
+			t.Errorf("the pinned repository gave %v, want a path or ErrNotCached", err)
+		}
+	}
 }

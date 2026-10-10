@@ -36,7 +36,7 @@ type RenderOptions struct {
 // against this literal. A checkpoint with a different template needs this
 // function changed.
 //
-// What guards the pin: TestRenderParity, which compares 33 rendered prompts
+// What guards the pin: TestRenderParity, which compares 35 rendered prompts
 // byte for byte against the Python client, is the guard for the render itself.
 // The runtime checks catch something else -- a client/server tokenizer
 // mismatch. Every read checks that the prompt ends on AnswerPrefix, and the

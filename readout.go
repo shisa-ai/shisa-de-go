@@ -96,13 +96,19 @@ func CalibrationCompatibleWith(fitted, current string) bool {
 // even when they outrank a valid option.
 //
 // The sum runs in a fixed order -- shortest key first, then lexicographic,
-// which is the codebook's own order -- so the result is reproducible. A Go map
-// iterates in a randomized order, and summing floats in a different order
-// changes the last bits. The order is also the one the Python client sums in
-// (it rebuilds `logprobs` in option order before normalizing), so this is as
-// close to its arithmetic as a plain left-to-right sum gets; it is not
-// bit-identical on CPython 3.12+, where `sum()` is Neumaier-compensated. The
-// difference is a relative 1e-16 or so and cannot move an argmax or the gate.
+// which is the codebook's own order for a codebook-ordered prefix -- so the
+// result is reproducible. A Go map iterates in a randomized order, and summing
+// floats in a different order changes the last bits.
+//
+// The order is the one the Python client sums in when the codes are given in
+// codebook order, which is how `ReadCodes` gives them: it rebuilds `logprobs`
+// in option order before normalizing. It is not the same sum in general --
+// Python preserves whatever order the caller's slot list had, and this sorts --
+// and it is not bit-identical on CPython 3.12+, where `sum()` is
+// Neumaier-compensated. The difference is a relative 1e-16 or so, which moves a
+// probability by far less than the 0.7 gate's distance from any measured value,
+// but it is not zero and it is not a guarantee about the gate.
+//
 // The returned map carries no order, so a caller that needs the option order
 // keeps its own list of codes.
 func Softmax(logprobs map[string]float64) (map[string]float64, error) {
@@ -272,8 +278,15 @@ type ReadoutConfig struct {
 	Tokenizer string
 	// TokenizerRevision pins the snapshot when the tokenizer is fetched.
 	TokenizerRevision string
-	// LocalFilesOnly refuses to fetch a tokenizer from the hub.
+	// LocalFilesOnly refuses to fetch a tokenizer from the hub. A source that is
+	// neither a readable file nor already cached is an error rather than a
+	// download, as the Python client's `local_files_only=True` does.
 	LocalFilesOnly bool
+	// Family declares which DE contract to read through, overriding what the
+	// model id and the tokenizer source say. Empty means "not declared", so
+	// resolution falls through to those. This client implements DE-2 only, so a
+	// declaration that is not DE-2 is refused.
+	Family string
 	// Timeout bounds one request. Zero means DefaultTimeout.
 	Timeout time.Duration
 	// SystemPrompt is the direct read's system line. Empty means DirectSystem.
@@ -306,6 +319,8 @@ type Readout struct {
 	maxLogprobs       int
 	client            *http.Client
 	headers           http.Header
+	family            Family
+	familySource      FamilySource
 
 	mu sync.Mutex
 	// tokenizer, slots and boundaryChecked are the lazily built state, all
@@ -320,12 +335,23 @@ type Readout struct {
 }
 
 // NewReadout builds a readout. Nothing is fetched until the first read.
+//
+// The DE contract is resolved here, before anything is loaded or sent, and
+// anything but DE-2 is refused: this client implements one contract, and
+// reading a checkpoint through the other one returns answers nobody has
+// measured. The Python client makes the same decision in `DecisionModel`, one
+// layer up; here it is in the readout too, because a caller can hold a Readout
+// directly and it is the thing that spends requests.
 func NewReadout(config ReadoutConfig) (*Readout, error) {
 	if strings.TrimSpace(config.BaseURL) == "" {
 		return nil, &ReadoutError{Message: "the readout needs a base URL"}
 	}
 	if strings.TrimSpace(config.Model) == "" {
 		return nil, &ReadoutError{Message: "the readout needs a model id"}
+	}
+	familySource, err := RequireDE2(config.Model, config.Tokenizer, config.Family)
+	if err != nil {
+		return nil, err
 	}
 	source := config.Tokenizer
 	if source == "" {
@@ -361,18 +387,35 @@ func NewReadout(config ReadoutConfig) (*Readout, error) {
 		maxLogprobs:       maxLogprobs,
 		client:            client,
 		headers:           headers,
+		family:            FamilyDE2,
+		familySource:      familySource,
 		slots:             map[string]Slot{},
 		boundaryChecked:   map[string]bool{},
 		candidateIDs:      true,
 	}, nil
 }
 
+// ResolvedFamily is the contract this readout reads through and where that came
+// from. It is always DE-2; the source says whether the model id, the tokenizer
+// source or a declaration named it, or whether it was assumed.
+func (r *Readout) ResolvedFamily() (Family, FamilySource) {
+	return r.family, r.familySource
+}
+
 // SetTokenizer installs a tokenizer instead of loading the source's. The offline
 // tests use it; a caller normally lets the readout load on first use.
+//
+// Every answer id and boundary approval resolved from the previous tokenizer is
+// discarded, because they describe that tokenizer: keeping them would let a
+// read tokenize the prompt with one and validate the codes against another. A
+// read already in flight keeps the tokenizer it started with, so it stays
+// consistent either way.
 func (r *Readout) SetTokenizer(t Tokenizer) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.tokenizer = t
+	r.slots = map[string]Slot{}
+	r.boundaryChecked = map[string]bool{}
 }
 
 // ensureTokenizerLocked returns the tokenizer, loading it once. The caller holds
@@ -382,7 +425,9 @@ func (r *Readout) ensureTokenizerLocked() (Tokenizer, error) {
 	if r.tokenizer != nil {
 		return r.tokenizer, nil
 	}
-	loaded, err := tokenizer.Load(r.tokenizerSource)
+	loaded, err := tokenizer.LoadWith(r.tokenizerSource, tokenizer.ResolveOptions{
+		LocalFilesOnly: r.localFilesOnly,
+	})
 	if err != nil {
 		return nil, &ReadoutError{
 			Message: fmt.Sprintf("loading the tokenizer %q", r.tokenizerSource), Err: err}
@@ -433,9 +478,13 @@ func (r *Readout) CodeSlots(count int) ([]Slot, error) {
 	if err != nil {
 		return nil, err
 	}
+	// One lock for the whole list, so a concurrent SetTokenizer cannot leave
+	// half the slots resolved from one tokenizer and half from another.
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	slots := make([]Slot, len(codes))
 	for i, code := range codes {
-		slot, err := r.Slot(code)
+		slot, err := r.slotLocked(code)
 		if err != nil {
 			return nil, err
 		}
@@ -450,14 +499,17 @@ func (r *Readout) CodeSlots(count int) ([]Slot, error) {
 func (r *Readout) AnswerPrefixID() (int, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.answerPrefixIDLocked()
-}
-
-func (r *Readout) answerPrefixIDLocked() (int, error) {
 	tok, err := r.ensureTokenizerLocked()
 	if err != nil {
 		return 0, err
 	}
+	return r.answerPrefixIDFor(tok)
+}
+
+// answerPrefixIDFor resolves the terminator against one tokenizer, so a read
+// that already holds a tokenizer keeps using it rather than picking up a
+// replacement part way through.
+func (r *Readout) answerPrefixIDFor(tok Tokenizer) (int, error) {
 	ids := tok.Encode(AnswerPrefix)
 	if len(ids) != 1 || tok.Decode(ids) != AnswerPrefix {
 		return 0, &ReadoutError{Message: fmt.Sprintf(
@@ -478,15 +530,20 @@ func (r *Readout) answerPrefixIDLocked() (int, error) {
 func (r *Readout) CheckCodeBoundary(promptIDs []int, slots []Slot) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.checkCodeBoundaryLocked(promptIDs, slots)
-}
-
-func (r *Readout) checkCodeBoundaryLocked(promptIDs []int, slots []Slot) error {
 	tok, err := r.ensureTokenizerLocked()
 	if err != nil {
 		return err
 	}
-	prefixID, err := r.answerPrefixIDLocked()
+	return r.checkCodeBoundaryFor(tok, promptIDs, slots)
+}
+
+// checkCodeBoundaryFor checks against one tokenizer. It takes the lock for the
+// approval cache but not for the tokenizer, which the caller already holds, so a
+// whole read stays on one tokenizer even if another goroutine swaps it.
+func (r *Readout) checkCodeBoundaryFor(tok Tokenizer, promptIDs []int, slots []Slot) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	prefixID, err := r.answerPrefixIDFor(tok)
 	if err != nil {
 		return err
 	}
@@ -560,7 +617,7 @@ func (r *Readout) readCodes(ctx context.Context, prompt renderedPrompt, slots []
 		return CodeRead{}, err
 	}
 	promptIDs := prompt.tokenIDs(tok)
-	if err := r.CheckCodeBoundary(promptIDs, slots); err != nil {
+	if err := r.checkCodeBoundaryFor(tok, promptIDs, slots); err != nil {
 		return CodeRead{}, err
 	}
 
@@ -575,9 +632,14 @@ func (r *Readout) readCodes(ctx context.Context, prompt renderedPrompt, slots []
 	}
 	for start := 0; start < len(slots); {
 		useCandidateIDs := r.usesCandidateIDs()
-		block := slots[start:]
-		if useCandidateIDs && len(block) > CandidateIDLimit {
-			block = block[:CandidateIDLimit]
+		block := slots
+		if useCandidateIDs {
+			// vLLM caps the list at 128 ids, so a wider question reads its
+			// candidates in consecutive blocks over the same prompt.
+			block = slots[start:]
+			if len(block) > CandidateIDLimit {
+				block = block[:CandidateIDLimit]
+			}
 		}
 		logprobs := r.maxLogprobs
 		withTokenIDs := true
@@ -719,6 +781,14 @@ func (r *Readout) letterLogprob(ctx context.Context, prompt renderedPrompt, slot
 				"prompt_logprobs: 0 returns one", slot.Code, len(entries))}
 	}
 	for _, entry := range entries {
+		if entry == nil {
+			// A null entry at the answer boundary is not a logprob. Go's
+			// decoder turns `null` into a nil map entry, and reading through it
+			// would panic in a library that promises errors.
+			return nil, nil, promptTokens, &ReadoutError{Message: fmt.Sprintf(
+				"the prompt_logprobs fallback for code %q returned a null entry at the "+
+					"answer boundary", slot.Code)}
+		}
 		return entry.Logprob, entry.Rank, promptTokens, nil
 	}
 	return nil, nil, promptTokens, nil
@@ -740,7 +810,7 @@ func (r *Readout) Think(ctx context.Context, prompt string, budget int, debug bo
 	if err != nil {
 		return Thought{}, err
 	}
-	closeID, err := r.AnswerPrefixID()
+	closeID, err := r.answerPrefixIDFor(tok)
 	if err != nil {
 		return Thought{}, err
 	}

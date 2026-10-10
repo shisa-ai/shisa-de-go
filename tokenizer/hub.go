@@ -40,6 +40,11 @@ const (
 // skip on it.
 var ErrNoPinnedTokenizer = errors.New("tokenizer: no pinned tokenizer.json found")
 
+// ErrNotCached reports a source that local-only resolution could not find: not
+// a readable file, and not in the hub cache. It is returned instead of a
+// download, so a caller that asked for local files never reaches the network.
+var ErrNotCached = errors.New("tokenizer: not in the local cache")
+
 // The identity of the checkpoint this port targets. VerifyPinned checks a
 // loaded tokenizer against these, so a fallback to a different revision of the
 // same model fails loudly instead of producing confusing id mismatches.
@@ -103,16 +108,32 @@ func LoadPinned(repo, revision string) (*Tokenizer, string, error) {
 // A source that names an existing file is read directly. Anything else is
 // treated as a Hugging Face repository id and fetched through the hub cache.
 func Load(source string) (*Tokenizer, error) {
-	path, err := Resolve(source)
+	return LoadWith(source, ResolveOptions{})
+}
+
+// LoadWith is Load with the resolution policy made explicit.
+func LoadWith(source string, options ResolveOptions) (*Tokenizer, error) {
+	path, err := ResolveWith(source, options)
 	if err != nil {
 		return nil, err
 	}
 	return FromFile(path)
 }
 
+// ResolveOptions selects how a tokenizer source is resolved.
+type ResolveOptions struct {
+	// LocalFilesOnly refuses to fetch. A source that is neither a readable file
+	// nor already in the hub cache is an error rather than a download, which is
+	// what the Python client's `local_files_only=True` does.
+	LocalFilesOnly bool
+}
+
 // Resolve returns a local path to the tokenizer.json for a source, downloading
 // it from the Hugging Face hub if it is not already on disk.
-func Resolve(source string) (string, error) {
+func Resolve(source string) (string, error) { return ResolveWith(source, ResolveOptions{}) }
+
+// ResolveWith is Resolve with the resolution policy made explicit.
+func ResolveWith(source string, options ResolveOptions) (string, error) {
 	if source == "" {
 		return "", errors.New("tokenizer: no tokenizer source given")
 	}
@@ -125,6 +146,9 @@ func Resolve(source string) (string, error) {
 	}
 	if path, ok := Lookup(repo, revision); ok {
 		return path, nil
+	}
+	if options.LocalFilesOnly {
+		return "", fmt.Errorf("%w: %s", ErrNotCached, source)
 	}
 	return Fetch(repo, revision)
 }
