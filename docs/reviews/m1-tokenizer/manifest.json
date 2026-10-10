@@ -1,0 +1,17 @@
+{
+  "topic": "m1-tokenizer",
+  "displayTopic": "m1-tokenizer",
+  "reportRoot": "docs/reviews",
+  "configSources": [
+    "/home/morpheus/.config/jouzu/agent/review-cycles.json"
+  ],
+  "skippedConfigSources": [],
+  "policy": {
+    "maxCycles": 3,
+    "rerunOnSeverityAtLeast": "HIGH",
+    "fixAllNonCounterproductive": true,
+    "alwaysWriteReport": true
+  },
+  "overLimitApproved": false,
+  "updatedAt": "2026-10-10T01:13:31.359Z"
+}

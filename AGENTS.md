@@ -21,7 +21,7 @@ through the other family's contract.
   page itself was wrong, in which case both change together. `docs/READOUT.md`
   (DE-1) is copied too, because DE-2 reuses its scaffold, but nothing in it is
   implemented here.
-- Source of truth for readout identities: `readout.go` (`ReadoutVersions`, one
+- Source of truth for readout identities: `readout.go` (`ReadoutVersionFor`, one
   current version per family, and `calibrationCompatible`).
 - A calibration record is applied on its own only to the checkpoint it was
   fitted on, under a readout its fit still describes. The DE-2 record holds one
@@ -130,7 +130,7 @@ What must not change casually:
 | --- | --- |
 | Build and vet | `go build ./...` and `go vet ./...` |
 | Offline suite | `go test ./...` |
-| Tokenizer parity | `go test ./tokenizer/ -run Parity` (needs `SHISA_DE_TOKENIZER_JSON`) |
+| Tokenizer parity | `go test ./tokenizer/` (reads the pinned tokenizer from the hub cache or `SHISA_DE_TOKENIZER_JSON`; `SHISA_DE_TOKENIZER_REQUIRE=1` fails instead of skipping) |
 | Live suite, hosted DE-2 | `SHISA_DE_LIVE=1 go test ./... -run Live` |
 | Endpoint check | `shisa-de doctor`, and `shisa-de doctor --probe` to spend two requests on the reads |
 | Readout walkthrough | `shisa-de explain --labels spam,ham` |
@@ -139,9 +139,12 @@ The live suite spends real requests and needs `SHISA_API_KEY`. It is skipped
 unless `SHISA_DE_LIVE=1`.
 
 The tokenizer parity suite compares this package's ids against
-`tokenizers`-derived golden vectors checked into `testdata/`. Regenerate them
-with the Python repository's `scripts/` when the pinned snapshot changes; a
-parity test that has no vectors is a skip, not a pass.
+`transformers`-derived golden vectors checked into `testdata/`, and its decode
+outputs against a second fixture. Regenerate both with
+`scripts/gen_tokenizer_parity.py`, which pins the revision and writes
+`testdata/tokenizer_parity.meta.json`; the test fails if the fixture disagrees
+with the provenance. A parity test that has no vectors is a skip, not a pass,
+and `SHISA_DE_TOKENIZER_REQUIRE=1` turns that skip into a failure.
 
 ## Evidence Rules
 

@@ -3,35 +3,57 @@
 
 The Go tokenizer is a reimplementation of Hugging Face's BPE. The only way to
 know it is faithful is to compare it against Hugging Face on the same strings,
-so this script records (text, token ids) pairs from `transformers` and the Go
-test replays them.
+so this script records what `transformers` produces and the Go test replays it.
 
     python scripts/gen_tokenizer_parity.py
 
-Needs `transformers` (no torch) and network access to the Hub on first run. The
-tokenizer is the pinned one: `shisa-ai/shisa-de-2`, snapshot
-8f21734b27b3462471c4662d5638e52195b005a3, as recorded in
-data/codebook-de2.json.
+Needs `transformers` (no torch) and network access to the Hub on first run.
 
-Output: testdata/tokenizer_parity.json, a list of {"text": ..., "ids": [...]}.
-Regenerate when the pinned snapshot changes, and record the snapshot in the
-commit that does.
+Three files are written:
+
+  testdata/tokenizer_parity.json         a list of {"text", "ids"}
+  testdata/tokenizer_decode_parity.json  a list of {"ids", "text"}
+  testdata/tokenizer_parity.meta.json    the provenance: model, revision,
+                                         library versions, counts
+
+The model and revision are pinned below and passed to `from_pretrained`, so
+regenerating cannot silently swap the oracle. The Go test reads the meta file
+and asserts the counts, so a corpus that shrinks is a failure rather than a
+smaller green run.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import pathlib
 import random
 import sys
 
+import tokenizers
+import transformers
 from transformers import AutoTokenizer
 
 MODEL = "shisa-ai/shisa-de-2"
+REVISION = "8f21734b27b3462471c4662d5638e52195b005a3"
 HERE = pathlib.Path(__file__).resolve().parent
-OUT = HERE.parent / "testdata" / "tokenizer_parity.json"
-PY_REPO = pathlib.Path.home() / "data" / "dev" / "shisa" / "shisa-de"
+TESTDATA = HERE.parent / "testdata"
+OUT = TESTDATA / "tokenizer_parity.json"
+DECODE_OUT = TESTDATA / "tokenizer_decode_parity.json"
+META_OUT = TESTDATA / "tokenizer_parity.meta.json"
+
+# The Python reference checkout, used for real source text. Override with
+# SHISA_DE_PY_REPO; the corpus fails loudly if a file it names is missing.
+PY_REPO = pathlib.Path(os.environ.get("SHISA_DE_PY_REPO", pathlib.Path.home() / "data" / "dev" / "shisa" / "shisa-de"))
+PY_FILES = ("shisa_de/readout.py", "shisa_de/client.py", "shisa_de/policy.py")
+LOCAL_FILES = ("README.md", "AGENTS.md", "docs/READOUT-DE2.md")
+
+
+def read_required(path: pathlib.Path) -> str:
+    if not path.exists():
+        raise SystemExit(f"corpus input missing: {path} (set SHISA_DE_PY_REPO for the Python checkout)")
+    return path.read_text(encoding="utf-8")
 
 
 def corpus() -> list[str]:
@@ -47,6 +69,10 @@ def corpus() -> list[str]:
         "<|image>", "<|audio>", "<|image|>", "<|audio|>", "<image|>", "<audio|>",
         "<|video|>", "<|tool><|tool_call>", "<|tool_call><|tool_response>",
         "<|tool_response>x", "a<|turn>b", "<channel|>A", "<channel|>AA",
+        # Adjacent <unk> is the case that catches fuse_unk applied to added
+        # tokens: Hugging Face gives [3, 3], not [3].
+        "<unk><unk>", "<unk><unk><unk>", "a<unk><unk>b", "<unk> <unk>",
+        "<unk><|turn><unk>",
     ]
     texts.extend(added)
 
@@ -115,18 +141,14 @@ def corpus() -> list[str]:
     ])
 
     # Real text from the repository, which is what a caller will actually send.
-    for name in ("README.md", "AGENTS.md", "docs/READOUT-DE2.md"):
-        path = HERE.parent / name
-        if path.exists():
-            body = path.read_text(encoding="utf-8")
-            for start in range(0, min(len(body), 24_000), 2_000):
-                texts.append(body[start:start + 2_000])
-    for name in ("shisa_de/readout.py", "shisa_de/client.py", "shisa_de/policy.py"):
-        path = PY_REPO / name
-        if path.exists():
-            body = path.read_text(encoding="utf-8")
-            for start in range(0, min(len(body), 20_000), 2_000):
-                texts.append(body[start:start + 2_000])
+    for name in LOCAL_FILES:
+        body = read_required(HERE.parent / name)
+        for start in range(0, min(len(body), 24_000), 2_000):
+            texts.append(body[start:start + 2_000])
+    for name in PY_FILES:
+        body = read_required(PY_REPO / name)
+        for start in range(0, min(len(body), 20_000), 2_000):
+            texts.append(body[start:start + 2_000])
 
     # Random strings over an alphabet that mixes ASCII, punctuation, the
     # word-boundary marker, control characters and multi-byte scripts.
@@ -158,16 +180,69 @@ def corpus() -> list[str]:
     return unique
 
 
+def decode_cases() -> list[list[int]]:
+    """Id sequences whose decode is compared, including byte-fallback runs."""
+    cases: list[list[int]] = []
+
+    # Every code, alone and after the closing channel token.
+    codebook = json.loads((HERE.parent / "data" / "codebook-de2.json").read_text())
+    for code, ids in list(codebook["token_ids"].items())[:32]:
+        cases.append([ids])
+        cases.append([codebook["token_ids"]["A"], ids])
+
+    # Byte-fallback runs: the pinned vocab's byte tokens are ids 238..493.
+    def bytes_ids(values: list[int]) -> list[int]:
+        return [238 + value for value in values]
+
+    cases.extend([
+        bytes_ids([0x80]),                       # one invalid byte
+        bytes_ids([0x80, 0x81]),                 # two invalid bytes
+        bytes_ids([0xFF]),                       # an invalid byte
+        bytes_ids([0xE1, 0x80, 0xC2]),           # an invalid sequence
+        bytes_ids([0xE6, 0x97]),                 # a truncated character
+        bytes_ids([0xF0, 0x9F, 0x99]),           # a truncated emoji
+        bytes_ids([0xF0, 0x9F, 0x99, 0x82]),     # a valid emoji
+        bytes_ids([0xC2, 0xA9]),                 # a valid two-byte character
+        bytes_ids([0xE1, 0x80, 0x80]),           # a valid three-byte character
+        bytes_ids([0xE6, 0x97, 0xA5]),           # a valid CJK character
+        bytes_ids([0xC2, 0xA9, 0xFF]),           # valid then invalid
+        bytes_ids([0xFF, 0xC2, 0xA9]),           # invalid then valid
+        bytes_ids([0xC2, 0xA9, 0x80, 0xC2, 0xA9]),  # a run split around an invalid byte
+        bytes_ids([0xED, 0xA0, 0x80]),           # an encoded surrogate
+    ])
+
+    # A byte run broken by an ordinary token.
+    a = 236776
+    cases.extend([[a] + bytes_ids([0xE6, 0x97]), bytes_ids([0xE6, 0x97]) + [a]])
+    return cases
+
+
 def main() -> int:
-    tokenizer = AutoTokenizer.from_pretrained(MODEL)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL, revision=REVISION)
     texts = corpus()
     vectors = [{"text": text, "ids": tokenizer.encode(text, add_special_tokens=False)}
                for text in texts]
-    total_ids = sum(len(v["ids"]) for v in vectors)
-    total_bytes = sum(len(v["text"]) for v in vectors)
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps(vectors, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"{OUT}: {len(vectors)} strings, {total_ids} ids, {total_bytes} bytes of text",
+    decodes = [{"ids": ids, "text": tokenizer.decode(ids)} for ids in decode_cases()]
+
+    TESTDATA.mkdir(parents=True, exist_ok=True)
+    body = json.dumps(vectors, ensure_ascii=False) + "\n"
+    OUT.write_text(body, encoding="utf-8")
+    DECODE_OUT.write_text(json.dumps(decodes, ensure_ascii=False) + "\n", encoding="utf-8")
+
+    total_ids = sum(len(vector["ids"]) for vector in vectors)
+    meta = {
+        "model": MODEL,
+        "revision": REVISION,
+        "transformers": transformers.__version__,
+        "tokenizers": tokenizers.__version__,
+        "strings": len(vectors),
+        "ids": total_ids,
+        "decode_cases": len(decodes),
+        "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+    }
+    META_OUT.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    print(f"{OUT}: {len(vectors)} strings, {total_ids} ids; "
+          f"{DECODE_OUT}: {len(decodes)} cases; {META_OUT}: {meta['sha256'][:12]}",
           file=sys.stderr)
     return 0
 

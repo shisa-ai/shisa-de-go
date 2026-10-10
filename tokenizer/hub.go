@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,7 +24,54 @@ const (
 	// before downloading, so a tokenizer the Python client already fetched is
 	// reused rather than fetched twice.
 	HubCacheEnv = "HF_HUB_CACHE"
+	// TokenizerJSONEnv names a tokenizer.json to load directly. It is read by
+	// LoadPinned, which the tests use.
+	TokenizerJSONEnv = "SHISA_DE_TOKENIZER_JSON"
+	// RequireEnv turns LoadPinned's "not found" into an error instead of a
+	// skip, so CI can require that the parity suite actually ran.
+	RequireEnv = "SHISA_DE_TOKENIZER_REQUIRE"
+	// DownloadEnv lets LoadPinned fetch the pinned tokenizer when it is not on
+	// this machine.
+	DownloadEnv = "SHISA_DE_TOKENIZER_DOWNLOAD"
 )
+
+// ErrNoPinnedTokenizer reports that no tokenizer.json for the pinned revision
+// is on this machine. Callers that can tolerate that, such as the parity test,
+// skip on it.
+var ErrNoPinnedTokenizer = errors.New("tokenizer: no pinned tokenizer.json found")
+
+// LoadPinned finds a pinned tokenizer.json without fetching it and reports
+// which path it used, so a caller can check its identity.
+//
+// It looks at TokenizerJSONEnv first, then the testdata directories, then the
+// Hugging Face hub cache for the named revision. A path named by
+// TokenizerJSONEnv that cannot be read is an error rather than a fall-through:
+// a typo must not become a different tokenizer.
+func LoadPinned(repo, revision string) (*Tokenizer, string, error) {
+	if path := strings.TrimSpace(os.Getenv(TokenizerJSONEnv)); path != "" {
+		if !exists(path) {
+			return nil, path, fmt.Errorf("tokenizer: %s=%s is not a readable file", TokenizerJSONEnv, path)
+		}
+		tokenizer, err := FromFile(path)
+		return tokenizer, path, err
+	}
+	candidates := []string{
+		filepath.Join("testdata", "tokenizer.json"),
+		filepath.Join("..", "testdata", "tokenizer.json"),
+		filepath.Join("tokenizer", "testdata", "tokenizer.json"),
+	}
+	if path, ok := Lookup(repo, revision); ok {
+		candidates = append(candidates, path)
+	}
+	for _, path := range candidates {
+		if !exists(path) {
+			continue
+		}
+		tokenizer, err := FromFile(path)
+		return tokenizer, path, err
+	}
+	return nil, "", ErrNoPinnedTokenizer
+}
 
 // Load resolves a tokenizer source and loads it.
 //
@@ -47,6 +95,9 @@ func Resolve(source string) (string, error) {
 		return source, nil
 	}
 	repo, revision := splitRevision(source)
+	if err := checkSource(repo, revision); err != nil {
+		return "", err
+	}
 	if path, ok := Lookup(repo, revision); ok {
 		return path, nil
 	}
@@ -63,26 +114,40 @@ func splitRevision(source string) (repo, revision string) {
 	return repo, revision
 }
 
+// maxTokenizerBytes bounds a download. The pinned tokenizer.json is about
+// 32 MB; anything past this is not a tokenizer, and refusing it stops an error
+// page or a runaway response from filling the disk.
+const maxTokenizerBytes = 256 << 20
+
 // Fetch downloads tokenizer.json for a repository into the cache and returns
-// the local path. A file already in the cache is returned as is.
+// the local path. A usable file already in the cache is returned as is; a cache
+// entry that does not parse is treated as absent and replaced, so one bad
+// download cannot poison the cache permanently.
 func Fetch(repo, revision string) (string, error) {
-	if repo == "" {
-		return "", errors.New("tokenizer: no repository given")
-	}
 	if revision == "" {
 		revision = "main"
 	}
-	dest := filepath.Join(cacheDir(), filepath.FromSlash(repo), revision, "tokenizer.json")
-	if info, err := os.Stat(dest); err == nil && info.Size() > 0 {
-		return dest, nil
+	if err := checkSource(repo, revision); err != nil {
+		return "", err
+	}
+	dir, err := cacheDir()
+	if err != nil {
+		return "", err
+	}
+	dest := filepath.Join(dir, filepath.FromSlash(repo), revision, "tokenizer.json")
+	if exists(dest) {
+		if _, err := FromFile(dest); err == nil {
+			return dest, nil
+		}
 	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return "", fmt.Errorf("tokenizer: creating the cache directory: %w", err)
 	}
-	url := fmt.Sprintf("https://huggingface.co/%s/resolve/%s/tokenizer.json", repo, revision)
-	request, err := http.NewRequest(http.MethodGet, url, nil)
+	endpoint := fmt.Sprintf("https://huggingface.co/%s/resolve/%s/tokenizer.json",
+		escapePath(repo), escapePath(revision))
+	request, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
-		return "", fmt.Errorf("tokenizer: building the request for %s: %w", url, err)
+		return "", fmt.Errorf("tokenizer: building the request for %s: %w", endpoint, err)
 	}
 	request.Header.Set("Accept", "application/json")
 	if token := hubToken(); token != "" {
@@ -91,13 +156,13 @@ func Fetch(repo, revision string) (string, error) {
 	client := &http.Client{Timeout: 10 * time.Minute}
 	response, err := client.Do(request)
 	if err != nil {
-		return "", fmt.Errorf("tokenizer: fetching %s: %w", url, err)
+		return "", fmt.Errorf("tokenizer: fetching %s: %w", endpoint, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode >= 400 {
 		detail, _ := io.ReadAll(io.LimitReader(response.Body, 400))
 		return "", fmt.Errorf("tokenizer: %s returned HTTP %d: %s",
-			url, response.StatusCode, strings.TrimSpace(string(detail)))
+			endpoint, response.StatusCode, strings.TrimSpace(string(detail)))
 	}
 	// Write beside the destination and rename, so a concurrent reader never
 	// sees a half-written tokenizer.
@@ -106,12 +171,21 @@ func Fetch(repo, revision string) (string, error) {
 		return "", fmt.Errorf("tokenizer: creating a temporary file: %w", err)
 	}
 	defer os.Remove(temp.Name())
-	if _, err := io.Copy(temp, response.Body); err != nil {
+	written, err := io.Copy(temp, io.LimitReader(response.Body, maxTokenizerBytes+1))
+	if err != nil {
 		temp.Close()
 		return "", fmt.Errorf("tokenizer: writing %s: %w", dest, err)
 	}
+	if written > maxTokenizerBytes {
+		temp.Close()
+		return "", fmt.Errorf("tokenizer: %s returned more than %d bytes", endpoint, maxTokenizerBytes)
+	}
 	if err := temp.Close(); err != nil {
 		return "", fmt.Errorf("tokenizer: writing %s: %w", dest, err)
+	}
+	// A body that is not a tokenizer is never installed, whatever its status.
+	if _, err := FromFile(temp.Name()); err != nil {
+		return "", fmt.Errorf("tokenizer: %s did not return a tokenizer: %w", endpoint, err)
 	}
 	if err := os.Rename(temp.Name(), dest); err != nil {
 		return "", fmt.Errorf("tokenizer: installing %s: %w", dest, err)
@@ -119,16 +193,52 @@ func Fetch(repo, revision string) (string, error) {
 	return dest, nil
 }
 
-// cacheDir is where this package keeps downloaded tokenizers.
-func cacheDir() string {
+// checkSource rejects a repository or revision that would escape the cache
+// directory or change the request's meaning. A revision may contain slashes,
+// because branch names do, but never an empty or ".." component.
+func checkSource(repo, revision string) error {
+	if repo == "" {
+		return errors.New("tokenizer: no repository given")
+	}
+	if revision == "" {
+		return errors.New("tokenizer: no revision given")
+	}
+	for _, source := range []struct{ what, value string }{{"repository", repo}, {"revision", revision}} {
+		value := source.value
+		if strings.HasPrefix(value, "/") || strings.ContainsAny(value, "\\?#\x00") {
+			return &ErrUnsupported{What: fmt.Sprintf("%s %q", source.what, value)}
+		}
+		for _, part := range strings.Split(value, "/") {
+			if part == "" || part == "." || part == ".." {
+				return &ErrUnsupported{What: fmt.Sprintf("%s %q", source.what, value)}
+			}
+		}
+	}
+	return nil
+}
+
+// escapePath escapes each path segment of a repository or revision while
+// keeping the slashes that separate them.
+func escapePath(value string) string {
+	parts := strings.Split(value, "/")
+	for i, part := range parts {
+		parts[i] = url.PathEscape(part)
+	}
+	return strings.Join(parts, "/")
+}
+
+// cacheDir is where this package keeps downloaded tokenizers. It does not fall
+// back to a shared temporary directory: a predictable path under /tmp is one
+// another user can create first.
+func cacheDir() (string, error) {
 	if dir := os.Getenv(CacheEnv); dir != "" {
-		return dir
+		return dir, nil
 	}
 	base, err := os.UserCacheDir()
 	if err != nil {
-		base = os.TempDir()
+		return "", fmt.Errorf("tokenizer: no cache directory; set %s: %w", CacheEnv, err)
 	}
-	return filepath.Join(base, "shisa-de", "tokenizer")
+	return filepath.Join(base, "shisa-de", "tokenizer"), nil
 }
 
 // hubToken is the Hugging Face access token, from either of its names.
@@ -144,9 +254,17 @@ func hubToken() string {
 // Lookup finds the tokenizer in a Hugging Face hub cache without downloading
 // anything, so a tokenizer the Python client already fetched is reused.
 //
+// It resolves only the revision asked for: a snapshot hash is looked up as that
+// snapshot, and anything else through the refs directory. It never substitutes
+// a different snapshot, because the caller cannot see which revision it got and
+// a silent substitution would defeat an explicit pin.
+//
 // It reports false when no cache holds one. Use Resolve to download when it
 // does not.
 func Lookup(repo, revision string) (string, bool) {
+	if checkSource(repo, revision) != nil {
+		return "", false
+	}
 	roots := []string{}
 	if dir := os.Getenv(HubCacheEnv); dir != "" {
 		roots = append(roots, dir)
@@ -160,24 +278,18 @@ func Lookup(repo, revision string) (string, bool) {
 	folder := "models--" + strings.ReplaceAll(repo, "/", "--")
 	for _, root := range roots {
 		base := filepath.Join(root, folder)
-		// A revision that names a snapshot directly.
 		if isSnapshot(revision) {
 			path := filepath.Join(base, "snapshots", revision, "tokenizer.json")
 			if exists(path) {
 				return path, true
 			}
+			continue
 		}
-		// Otherwise the ref is resolved through the refs directory.
 		if target, err := os.ReadFile(filepath.Join(base, "refs", filepath.FromSlash(revision))); err == nil {
 			path := filepath.Join(base, "snapshots", strings.TrimSpace(string(target)), "tokenizer.json")
 			if exists(path) {
 				return path, true
 			}
-		}
-		// Otherwise any snapshot that has one.
-		matches, _ := filepath.Glob(filepath.Join(base, "snapshots", "*", "tokenizer.json"))
-		if len(matches) > 0 {
-			return matches[0], true
 		}
 	}
 	return "", false

@@ -11,7 +11,12 @@ import (
 	"github.com/shisa-ai/shisa-de-go/tokenizer"
 )
 
-// The pinned checkpoint, as recorded in data/codebook-de2.json.
+// The pinned tokenizer is the one the render fixtures and the parity vectors
+// were generated from: scripts/gen_tokenizer_parity.py, model
+// shisa-ai/shisa-de-2, revision 8f21734b27b3462471c4662d5638e52195b005a3. The
+// codebook's token_ids were audited on
+// google/gemma-4-26B-A4B-it@4d7ae4984b7db7de8f8457170b3f1a419ee76d52
+// (data/codebook-de2.json).
 const (
 	pinnedRepo     = "shisa-ai/shisa-de-2"
 	pinnedSnapshot = "8f21734b27b3462471c4662d5638e52195b005a3"
@@ -273,28 +278,22 @@ func TestRenderDefaultOptionLimit(t *testing.T) {
 	}
 }
 
+// pinnedTokenizer returns the pinned tokenizer, or nil when it is not on this
+// machine and the test should skip.
 func pinnedTokenizer(t *testing.T) *tokenizer.Tokenizer {
 	t.Helper()
-	candidates := []string{}
-	if path := os.Getenv("SHISA_DE_TOKENIZER_JSON"); path != "" {
-		candidates = append(candidates, path)
-	}
-	candidates = append(candidates, filepath.Join("testdata", "tokenizer.json"))
-	for _, revision := range []string{pinnedSnapshot, "main"} {
-		if path, ok := tokenizer.Lookup(pinnedRepo, revision); ok {
-			candidates = append(candidates, path)
+	loaded, path, err := tokenizer.LoadPinned(pinnedRepo, pinnedSnapshot)
+	if errors.Is(err, tokenizer.ErrNoPinnedTokenizer) {
+		if os.Getenv(tokenizer.RequireEnv) == "1" {
+			t.Fatalf("no tokenizer.json found and %s=1", tokenizer.RequireEnv)
 		}
+		return nil
 	}
-	for _, path := range candidates {
-		info, err := os.Stat(path)
-		if err != nil || info.Size() == 0 {
-			continue
-		}
-		loaded, err := tokenizer.FromFile(path)
-		if err != nil {
-			t.Fatalf("loading %s: %v", path, err)
-		}
-		return loaded
+	if err != nil {
+		t.Fatalf("loading the pinned tokenizer: %v", err)
 	}
-	return nil
+	if loaded.Len() != 262144 {
+		t.Fatalf("%s has %d vocab entries, want 262144: not the pinned tokenizer", path, loaded.Len())
+	}
+	return loaded
 }

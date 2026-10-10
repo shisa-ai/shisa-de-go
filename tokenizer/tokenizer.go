@@ -1,11 +1,12 @@
 // Package tokenizer implements the Hugging Face BPE tokenizer the DE-2 readout
 // needs, in pure Go.
 //
-// It implements exactly what the readout uses: encoding a rendered prompt to
-// token ids, and decoding ids back to text for the answer-boundary check.
-// Truncation, padding, offsets, post-processing and training are not
-// implemented. A tokenizer file that needs one of those, or a pattern type this
-// package does not implement, is rejected rather than approximated.
+// It implements exactly the pinned pipeline and nothing else: the pinned
+// tokenizer's normalizer, pre-tokenizer and decoder are checked against the
+// file, and a file that declares anything different is rejected rather than
+// approximated. Truncation, padding, offsets and training are not implemented.
+// The post-processor is parsed but never applied, which matches encoding with
+// add_special_tokens=False.
 //
 // The pipeline is Hugging Face's: the raw text is split on the added tokens,
 // each remaining piece is normalized, pre-tokenized, and merged with the BPE
@@ -16,6 +17,7 @@ package tokenizer
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"sort"
 	"strconv"
@@ -42,7 +44,7 @@ type merge struct {
 // Tokenizer is a loaded Hugging Face BPE tokenizer.
 type Tokenizer struct {
 	vocab  map[string]int32
-	byID   []string
+	byID   map[int32]string
 	merges map[pair]merge
 	added  *addedVocab
 
@@ -64,6 +66,7 @@ type tokenizerFile struct {
 	Normalizer   stageSpec       `json:"normalizer"`
 	PreTokenizer stageSpec       `json:"pre_tokenizer"`
 	Model        modelSpec       `json:"model"`
+	Decoder      json.RawMessage `json:"decoder"`
 	PostProcess  json.RawMessage `json:"post_processor"`
 }
 
@@ -80,12 +83,24 @@ type stageSpec struct {
 	Invert   bool   `json:"invert"`
 }
 
+// decoderSpec covers the decoder stage. Only the pinned Sequence is understood.
+type decoderSpec struct {
+	Type    string `json:"type"`
+	Pattern struct {
+		String string `json:"String"`
+		Regex  string `json:"Regex"`
+	} `json:"pattern"`
+	Content  string        `json:"content"`
+	Decoders []decoderSpec `json:"decoders"`
+}
+
 type modelSpec struct {
 	Type                    string            `json:"type"`
 	UnkToken                *string           `json:"unk_token"`
 	ByteFallback            bool              `json:"byte_fallback"`
 	FuseUnk                 bool              `json:"fuse_unk"`
 	IgnoreMerges            bool              `json:"ignore_merges"`
+	Dropout                 *float64          `json:"dropout"`
 	ContinuingSubwordPrefix *string           `json:"continuing_subword_prefix"`
 	EndOfWordSuffix         *string           `json:"end_of_word_suffix"`
 	Vocab                   map[string]int32  `json:"vocab"`
@@ -121,10 +136,17 @@ func FromBytes(data []byte) (*Tokenizer, error) {
 		return nil, &ErrUnsupported{What: fmt.Sprintf(
 			"model type %q; this package implements BPE only", file.Model.Type)}
 	}
+	if file.Model.Dropout != nil && *file.Model.Dropout != 0 {
+		return nil, &ErrUnsupported{What: fmt.Sprintf(
+			"BPE dropout %v; encoding would not be deterministic", *file.Model.Dropout)}
+	}
 	if err := checkNormalizer(file.Normalizer); err != nil {
 		return nil, err
 	}
 	if err := checkPreTokenizer(file.PreTokenizer); err != nil {
+		return nil, err
+	}
+	if err := checkDecoder(file.Decoder); err != nil {
 		return nil, err
 	}
 	if file.Model.ContinuingSubwordPrefix != nil || file.Model.EndOfWordSuffix != nil {
@@ -136,10 +158,25 @@ func FromBytes(data []byte) (*Tokenizer, error) {
 
 	t := &Tokenizer{
 		vocab:        file.Model.Vocab,
+		byID:         make(map[int32]string, len(file.Model.Vocab)),
 		merges:       make(map[pair]merge, len(file.Model.Merges)),
 		fuseUnk:      file.Model.FuseUnk,
 		ignoreMerges: file.Model.IgnoreMerges,
 		byteFallback: file.Model.ByteFallback,
+	}
+
+	// Ids are checked before anything is read from them. A negative id is a file
+	// Hugging Face refuses, and a shared id would make Decode depend on map
+	// iteration order.
+	for token, id := range t.vocab {
+		if id < 0 {
+			return nil, &ErrUnsupported{What: fmt.Sprintf("vocab id %d for %q", id, token)}
+		}
+		if other, ok := t.byID[id]; ok {
+			return nil, &ErrUnsupported{What: fmt.Sprintf(
+				"vocab id %d is shared by %q and %q", id, other, token)}
+		}
+		t.byID[id] = token
 	}
 
 	if file.Model.UnkToken != nil {
@@ -156,39 +193,26 @@ func FromBytes(data []byte) (*Tokenizer, error) {
 		}
 	}
 
-	maxID := int32(-1)
-	for _, id := range t.vocab {
-		if id > maxID {
-			maxID = id
-		}
-	}
-	for _, a := range file.AddedTokens {
-		if a.ID > maxID {
-			maxID = a.ID
-		}
-	}
-	t.byID = make([]string, maxID+1)
-	for token, id := range t.vocab {
-		if id >= 0 {
-			t.byID[id] = token
-		}
-	}
-
-	// Merges are ranked by position in the file. A merge whose concatenation is
-	// not in the vocab cannot be produced, so it is dropped rather than guessed.
+	// Merges are ranked by position in the file. An entry whose operands or
+	// concatenation is missing from the vocab is a malformed file: Hugging Face
+	// refuses it, and dropping the rule here would silently read a different
+	// tokenizer.
 	for rank, raw := range file.Model.Merges {
 		a, b, err := parseMerge(raw)
 		if err != nil {
 			return nil, fmt.Errorf("tokenizer: merge %d: %w", rank, err)
 		}
 		idA, okA := t.vocab[a]
+		if !okA {
+			return nil, &ErrUnsupported{What: fmt.Sprintf("merge %d: %q is not in the vocab", rank, a)}
+		}
 		idB, okB := t.vocab[b]
-		if !okA || !okB {
-			continue
+		if !okB {
+			return nil, &ErrUnsupported{What: fmt.Sprintf("merge %d: %q is not in the vocab", rank, b)}
 		}
 		merged, ok := t.vocab[a+b]
 		if !ok {
-			continue
+			return nil, &ErrUnsupported{What: fmt.Sprintf("merge %d: %q is not in the vocab", rank, a+b)}
 		}
 		t.merges[pair{idA, idB}] = merge{rank: int32(rank), id: merged}
 	}
@@ -222,38 +246,63 @@ func parseMerge(raw json.RawMessage) (string, string, error) {
 	return a, b, nil
 }
 
+// checkNormalizer requires the pinned normalizer exactly. Anything else is
+// rejected: this package hardcodes the replacement below, so accepting a
+// different normalizer would read the file as if it were the pinned one.
 func checkNormalizer(spec stageSpec) error {
-	if spec.Type == "" {
-		return nil
-	}
 	if spec.Type != "Replace" {
-		return &ErrUnsupported{What: fmt.Sprintf("normalizer type %q", spec.Type)}
+		return &ErrUnsupported{What: fmt.Sprintf("normalizer type %q; want Replace", spec.Type)}
 	}
-	if spec.Pattern.Regex != "" {
-		return &ErrUnsupported{What: "a regex normalizer pattern"}
+	if spec.Pattern.Regex != "" || spec.Pattern.String != " " {
+		return &ErrUnsupported{What: "a normalizer pattern other than the literal \" \""}
 	}
-	if spec.Pattern.String == "" {
-		return &ErrUnsupported{What: "a normalizer with no literal pattern"}
+	if spec.Content != wordBoundary {
+		return &ErrUnsupported{What: fmt.Sprintf("normalizer content %q; want %q", spec.Content, wordBoundary)}
+	}
+	if spec.Invert {
+		return &ErrUnsupported{What: "an inverted normalizer"}
 	}
 	return nil
 }
 
+// checkPreTokenizer requires the pinned Split exactly, for the same reason.
 func checkPreTokenizer(spec stageSpec) error {
-	if spec.Type == "" {
-		return nil
-	}
 	if spec.Type != "Split" {
-		return &ErrUnsupported{What: fmt.Sprintf("pre-tokenizer type %q", spec.Type)}
+		return &ErrUnsupported{What: fmt.Sprintf("pre-tokenizer type %q; want Split", spec.Type)}
 	}
-	if spec.Pattern.Regex != "" {
-		return &ErrUnsupported{What: "a regex pre-tokenizer pattern"}
+	if spec.Pattern.Regex != "" || spec.Pattern.String != " " {
+		return &ErrUnsupported{What: "a pre-tokenizer pattern other than the literal \" \""}
 	}
-	if spec.Pattern.String == "" {
-		return &ErrUnsupported{What: "a pre-tokenizer with no literal pattern"}
-	}
-	if spec.Behavior != "MergedWithPrevious" && spec.Behavior != "Isolated" &&
-		spec.Behavior != "Removed" && spec.Behavior != "Contiguous" {
+	if spec.Behavior != "MergedWithPrevious" {
 		return &ErrUnsupported{What: fmt.Sprintf("pre-tokenizer behavior %q", spec.Behavior)}
+	}
+	if spec.Invert {
+		return &ErrUnsupported{What: "an inverted pre-tokenizer"}
+	}
+	return nil
+}
+
+// checkDecoder requires the pinned decoder exactly. Decode implements that
+// chain, so a file declaring another one is rejected rather than decoded wrong.
+func checkDecoder(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return &ErrUnsupported{What: "a tokenizer with no decoder"}
+	}
+	var spec decoderSpec
+	if err := json.Unmarshal(raw, &spec); err != nil {
+		return fmt.Errorf("tokenizer: parsing the decoder: %w", err)
+	}
+	if spec.Type != "Sequence" || len(spec.Decoders) != 3 {
+		return &ErrUnsupported{What: fmt.Sprintf(
+			"decoder %q with %d stages; want Sequence[Replace, ByteFallback, Fuse]",
+			spec.Type, len(spec.Decoders))}
+	}
+	replace, byteFallback, fuse := spec.Decoders[0], spec.Decoders[1], spec.Decoders[2]
+	if replace.Type != "Replace" || replace.Pattern.String != wordBoundary || replace.Content != " " {
+		return &ErrUnsupported{What: "a decoder whose first stage is not Replace(word-boundary -> space)"}
+	}
+	if byteFallback.Type != "ByteFallback" || fuse.Type != "Fuse" {
+		return &ErrUnsupported{What: "a decoder that is not Sequence[Replace, ByteFallback, Fuse]"}
 	}
 	return nil
 }
@@ -283,25 +332,57 @@ func (t *Tokenizer) Encode(text string) []int {
 
 // Decode turns token ids back into text.
 //
-// It applies the decoder the pinned tokenizer uses: the word-boundary marker
-// becomes a space, and a byte-fallback token becomes its byte. Ids outside the
-// vocabulary are skipped.
+// It applies the pinned decoder: the word-boundary marker becomes a space, and
+// a run of consecutive byte-fallback tokens is decoded the way Hugging Face's
+// ByteFallback does. That last part is not a plain concatenation: if the whole
+// run is valid UTF-8 it becomes that text, and otherwise each byte becomes one
+// replacement character. Ids outside the vocabulary are skipped.
 func (t *Tokenizer) Decode(ids []int) string {
-	var b []byte
-	for _, id := range ids {
-		if id < 0 || id >= len(t.byID) {
-			continue
+	var out strings.Builder
+	var pending []byte
+	flush := func() {
+		if len(pending) == 0 {
+			return
 		}
-		token := t.byID[id]
-		if len(token) == 6 && token[0] == '<' && token[1] == '0' && token[2] == 'x' && token[5] == '>' {
-			if v, err := strconv.ParseUint(token[3:5], 16, 8); err == nil {
-				b = append(b, byte(v))
-				continue
+		if utf8.Valid(pending) {
+			out.Write(pending)
+		} else {
+			for range pending {
+				out.WriteRune(utf8.RuneError)
 			}
 		}
-		b = append(b, strings.ReplaceAll(token, wordBoundary, " ")...)
+		pending = pending[:0]
 	}
-	return string(b)
+	for _, id := range ids {
+		if id < 0 || id > math.MaxInt32 {
+			continue
+		}
+		token, ok := t.byID[int32(id)]
+		if !ok {
+			continue
+		}
+		if value, ok := byteToken(token); ok {
+			pending = append(pending, value)
+			continue
+		}
+		flush()
+		out.WriteString(strings.ReplaceAll(token, wordBoundary, " "))
+	}
+	flush()
+	return out.String()
+}
+
+// byteToken reports whether a vocab token is a byte-fallback token like
+// <0x41>, and its byte. Hugging Face accepts lowercase hex here too.
+func byteToken(token string) (byte, bool) {
+	if len(token) != 6 || token[0] != '<' || token[1] != '0' || token[2] != 'x' || token[5] != '>' {
+		return 0, false
+	}
+	value, err := strconv.ParseUint(token[3:5], 16, 8)
+	if err != nil {
+		return 0, false
+	}
+	return byte(value), true
 }
 
 const wordBoundary = "\u2581"
@@ -326,9 +407,6 @@ func (t *Tokenizer) encodeToIDs(text string) []int32 {
 	}
 	if start < len(text) {
 		out = t.encodePiece(text[start:], out)
-	}
-	if t.fuseUnk && t.hasUnk {
-		out = fuseUnknowns(out, t.unkID)
 	}
 	return out
 }
@@ -385,7 +463,9 @@ func (t *Tokenizer) preTokenize(piece string) []string {
 }
 
 // encodePart turns one pre-token into ids: characters become symbols, unknown
-// characters fall back to their bytes, and the symbols are merged.
+// characters fall back to their bytes, and the symbols are merged. fuse_unk is
+// applied here, to this pre-token's model output only, which is where Hugging
+// Face applies it: added tokens never reach this function and are never fused.
 func (t *Tokenizer) encodePart(part string, out []int32) []int32 {
 	if part == "" {
 		return out
@@ -402,12 +482,10 @@ func (t *Tokenizer) encodePart(part string, out []int32) []int32 {
 		if id, ok := t.vocab[sub]; ok {
 			symbols = append(symbols, id)
 		} else if t.byteFallback {
-			for b := 0; b < size; b++ {
-				if t.byteOK[part[i+b]] {
-					symbols = append(symbols, t.byteID[part[i+b]])
-				} else if t.hasUnk {
-					symbols = append(symbols, t.unkID)
-				}
+			if bytes, ok := t.byteFallbackIDs(sub); ok {
+				symbols = append(symbols, bytes...)
+			} else if t.hasUnk {
+				symbols = append(symbols, t.unkID)
 			}
 		} else if t.hasUnk {
 			symbols = append(symbols, t.unkID)
@@ -417,7 +495,25 @@ func (t *Tokenizer) encodePart(part string, out []int32) []int32 {
 	if len(symbols) == 0 {
 		return out
 	}
-	return append(out, t.merge(symbols)...)
+	symbols = t.merge(symbols)
+	if t.fuseUnk && t.hasUnk {
+		symbols = fuseUnknowns(symbols, t.unkID)
+	}
+	return append(out, symbols...)
+}
+
+// byteFallbackIDs returns the byte-token ids for one character, or false when
+// any of its bytes has no byte token. Hugging Face falls back for the whole
+// character or not at all, so a partial run is never produced.
+func (t *Tokenizer) byteFallbackIDs(char string) ([]int32, bool) {
+	ids := make([]int32, len(char))
+	for i := 0; i < len(char); i++ {
+		if !t.byteOK[char[i]] {
+			return nil, false
+		}
+		ids[i] = t.byteID[char[i]]
+	}
+	return ids, true
 }
 
 // fuseUnknowns collapses a run of unknown tokens into one, which is what the
@@ -454,8 +550,13 @@ func newAddedVocab(tokens []addedToken, vocab map[string]int32) (*addedVocab, er
 		if token.Content == "" {
 			return nil, &ErrUnsupported{What: "an added token with empty content"}
 		}
-		if _, ok := vocab[token.Content]; !ok {
+		id, ok := vocab[token.Content]
+		if !ok {
 			return nil, fmt.Errorf("tokenizer: added token %q is not in the vocab", token.Content)
+		}
+		if id != token.ID {
+			return nil, &ErrUnsupported{What: fmt.Sprintf(
+				"added token %q declares id %d but the vocab has %d", token.Content, token.ID, id)}
 		}
 		if token.Normalized || token.Lstrip || token.Rstrip || token.SingleWord {
 			return nil, &ErrUnsupported{What: fmt.Sprintf(

@@ -47,6 +47,25 @@ rejected: it does not match added tokens inside a rendered prompt, and it took
 Hugging Face's Rust implementation) is exact and fast but needs a 49 MB
 platform-specific static library.
 
+**The tokenizer pipeline is pinned, not general.** The package implements the
+pinned checkpoint's normalizer, pre-tokenizer and decoder and checks the file
+for exactly those, rejecting anything else with `ErrUnsupported`. Hugging Face
+accepts a file with no normalizer, a different `Split` behavior, a `Strip`
+decoder or BPE dropout and reads it with that pipeline; this port refuses
+rather than reading it as if it were the pinned one. The same applies to a
+malformed file Hugging Face also refuses: a negative or duplicate vocab id, an
+added token whose declared id disagrees with the vocab, or a merge whose
+operands or concatenation are missing. `Lookup` also resolves only the revision
+asked for, never another snapshot that happens to be cached.
+
+**`Decode` reproduces the pinned decoder, including its invalid-byte
+handling.** A run of consecutive byte-fallback tokens decodes to the run's text
+when the bytes are valid UTF-8, and otherwise to one replacement character per
+byte. Hugging Face's `ByteFallback` does the same; a plain concatenation of the
+bytes would not, and neither would `from_utf8_lossy`, which consumes maximal
+invalid subsequences. `Encode` never produces such a run for the pinned
+vocabulary, so this only matters for hand-built or model-generated id lists.
+
 **Errors instead of exceptions.** `ReadoutError` and `QuestionError` replace the
 Python exception classes; callers use `errors.As`. `ReadoutHTTPError` keeps its
 `status` and `detail` fields.
@@ -63,12 +82,22 @@ pool.
 Checked on 2026-10-10 against `shisa-ai/shisa-de-2` on the hosted endpoint and
 the Python client at `shisa-de` `0.4.0`:
 
-- **Tokenizer.** 1,051 strings, 48,296 token ids: this package's ids equal
+- **Tokenizer.** 1,056 strings, 48,312 token ids: this package's ids equal
   `transformers`' ids on every one. The corpus covers all 24 added tokens and
-  their prefix pairs, all 256 codes, the rendered scaffold, JSON payloads,
-  Japanese, emoji, combining marks, control characters, 60 KB of real text from
-  both repositories, and 400 random strings. Regenerate with
-  `scripts/gen_tokenizer_parity.py`.
+  their prefix pairs, adjacent explicit `<unk>` tokens (the case that catches
+  `fuse_unk` applied to added tokens), all 256 codes, the rendered scaffold,
+  JSON payloads, Japanese, emoji, combining marks, control characters, 60 KB of
+  real text from both repositories, and 400 random strings. A second fixture
+  replays 80 `tokenizer.decode` outputs, including byte-fallback runs that
+  `Encode` cannot produce. `testdata/tokenizer_parity.meta.json` records the
+  model, the revision, the library versions and the counts, and the test fails
+  if the fixture disagrees with it. Regenerate with
+  `scripts/gen_tokenizer_parity.py`, which pins the revision it passes to
+  `from_pretrained`.
+- **Tokenizer identity.** The test checks the loaded tokenizer's vocab size
+  (262,144) and `<channel|>` id (101) before running the vectors, so a fallback
+  to a different revision fails loudly. Set `SHISA_DE_TOKENIZER_REQUIRE=1` to
+  make a missing tokenizer.json a failure instead of a skip.
 - The rendered DE-2 repeated prompt for the section 2 spam question is
   byte-identical to the Python render and to the page, 238 tokens.
 - All 256 code ids in `data/codebook-de2.json` match
