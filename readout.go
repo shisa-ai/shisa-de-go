@@ -519,9 +519,12 @@ func (r *Readout) slotLocked(code string) (Slot, error) {
 	}
 	ids := tok.Encode(code)
 	if len(ids) != 1 || tok.Decode(ids) != code {
+		// Python's shared slot resolver says "answer letter ... read with letter
+		// slots"; this is the DE-2 rewording of it, because the contract's slots
+		// are codes. The quoting is still Python's `!r`.
 		return Slot{}, &ReadoutError{Message: fmt.Sprintf(
-			"answer code %q is not one token for tokenizer %q; this checkpoint cannot be "+
-				"read with the codebook", code, r.tokenizerSource)}
+			"answer code %s is not one token for tokenizer %s; this checkpoint cannot be "+
+				"read with the codebook", pythonQuote(code), pythonQuote(r.tokenizerSource))}
 	}
 	slot := Slot{Code: code, TokenID: ids[0], Text: code}
 	r.slots[code] = slot
@@ -568,10 +571,12 @@ func (r *Readout) AnswerPrefixID() (int, error) {
 func (r *Readout) answerPrefixIDFor(tok Tokenizer) (int, error) {
 	ids := tok.Encode(AnswerPrefix)
 	if len(ids) != 1 || tok.Decode(ids) != AnswerPrefix {
+		// Python's is the image readout's message and says so; this port has no
+		// image readout, so the sentence stops at the tokenizer.
 		return 0, &ReadoutError{Message: fmt.Sprintf(
-			"the generation-prompt terminator %q is not one token for tokenizer %q, so the "+
+			"the generation-prompt terminator %s is not one token for tokenizer %s, so the "+
 				"answer boundary cannot be confirmed with this tokenizer",
-			AnswerPrefix, r.tokenizerSource)}
+			pythonQuote(AnswerPrefix), pythonQuote(r.tokenizerSource))}
 	}
 	return ids[0], nil
 }
@@ -610,9 +615,10 @@ func (r *Readout) checkCodeBoundaryFor(tok Tokenizer, generation uint64, promptI
 	}
 	if len(promptIDs) == 0 || promptIDs[len(promptIDs)-1] != prefixID {
 		return &ReadoutError{Message: fmt.Sprintf(
-			"the prompt does not end on %q (token %d), so the answer is not at the first "+
-				"generated position. The tokenizer (%q) does not match the served model (%q).",
-			AnswerPrefix, prefixID, r.tokenizerSource, r.model)}
+			"the prompt does not end on %s (token %d), so the answer is not at the first "+
+				"generated position. The tokenizer (%s) does not match the served model (%s).",
+			pythonQuote(AnswerPrefix), prefixID,
+			pythonQuote(r.tokenizerSource), pythonQuote(r.model))}
 	}
 	for _, slot := range slots {
 		if current {
@@ -623,9 +629,10 @@ func (r *Readout) checkCodeBoundaryFor(tok Tokenizer, generation uint64, promptI
 		combined := tok.Encode(AnswerPrefix + slot.Code)
 		if len(combined) != 2 || combined[0] != prefixID || combined[1] != slot.TokenID {
 			return &ReadoutError{Message: fmt.Sprintf(
-				"the answer boundary moves for %q: appended to %q it does not tokenize as "+
-					"token %d. The tokenizer (%q) does not match the served model (%q).",
-				slot.Code, AnswerPrefix, slot.TokenID, r.tokenizerSource, r.model)}
+				"the answer boundary moves for %s: appended to %s it does not tokenize as "+
+					"token %d. The tokenizer (%s) does not match the served model (%s).",
+				pythonQuote(slot.Code), pythonQuote(AnswerPrefix), slot.TokenID,
+				pythonQuote(r.tokenizerSource), pythonQuote(r.model))}
 		}
 		if current {
 			r.boundaryChecked[slot.Code] = slot.TokenID
@@ -642,8 +649,8 @@ func (r *Readout) checkPromptTokens(response completionResponse, expected int) (
 	if reported != 0 && reported != expected {
 		return reported, &ReadoutError{Message: fmt.Sprintf(
 			"the server counted %d prompt tokens where the client tokenized %d: the "+
-				"tokenizer (%q) does not match the served model (%q)",
-			reported, expected, r.tokenizerSource, r.model)}
+				"tokenizer (%s) does not match the served model (%s)",
+			reported, expected, pythonQuote(r.tokenizerSource), pythonQuote(r.model))}
 	}
 	return reported, nil
 }
@@ -794,8 +801,8 @@ func (r *Readout) readCodes(ctx context.Context, prompt renderedPrompt, slots []
 		result.PromptTokens += promptTokens
 		if logprob == nil {
 			return CodeRead{}, &ReadoutError{Message: fmt.Sprintf(
-				"code %q was not returned for its token id and the prompt_logprobs fallback "+
-					"returned nothing for it", slot.Code)}
+				"code %s was not returned for its token id and the prompt_logprobs fallback "+
+					"returned nothing for it", pythonQuote(slot.Code))}
 		}
 		result.Logprobs[slot.Code] = *logprob
 		if rank != nil {
@@ -847,8 +854,8 @@ func (r *Readout) letterLogprob(ctx context.Context, prompt renderedPrompt, slot
 		// so more than one entry is a server this client cannot read that way.
 		// Picking one would score a token nobody asked about.
 		return nil, nil, promptTokens, &ReadoutError{Message: fmt.Sprintf(
-			"the prompt_logprobs fallback for code %q returned %d entries where "+
-				"prompt_logprobs: 0 returns one", slot.Code, len(entries))}
+			"the prompt_logprobs fallback for code %s returned %d entries where "+
+				"prompt_logprobs: 0 returns one", pythonQuote(slot.Code), len(entries))}
 	}
 	for _, entry := range entries {
 		if entry == nil {
@@ -856,8 +863,8 @@ func (r *Readout) letterLogprob(ctx context.Context, prompt renderedPrompt, slot
 			// decoder turns `null` into a nil map entry, and reading through it
 			// would panic in a library that promises errors.
 			return nil, nil, promptTokens, &ReadoutError{Message: fmt.Sprintf(
-				"the prompt_logprobs fallback for code %q returned a null entry at the "+
-					"answer boundary", slot.Code)}
+				"the prompt_logprobs fallback for code %s returned a null entry at the "+
+					"answer boundary", pythonQuote(slot.Code))}
 		}
 		return entry.Logprob, entry.Rank, promptTokens, nil
 	}

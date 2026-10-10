@@ -754,6 +754,14 @@ func TestAPIKeyFromEnv(t *testing.T) {
 	if key := APIKeyFromEnv(); key == nil || *key != "from-the-second" {
 		t.Errorf("a blank first variable did not fall through: %v", key)
 	}
+	// The strip is Python's `str.strip()`, which takes U+001C-U+001F and
+	// `strings.TrimSpace` does not. This value is sent as the bearer token, so a
+	// key the Python client trims and this port sent verbatim would be a
+	// different `Authorization` header.
+	t.Setenv(APIKeyEnvs[0], "\u001cfrom-the-first\u001f")
+	if key := APIKeyFromEnv(); key == nil || *key != "from-the-first" {
+		t.Errorf("a key behind U+001C is %v, want it stripped", key)
+	}
 	// An explicit key beats the environment.
 	readout, _ := newPolicyReadout(t, 2, codeReadBody(map[string]float64{"A": -0.1, "B": -1.0}))
 	explicit := "explicit"

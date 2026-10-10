@@ -677,7 +677,9 @@ func NewDecisionModel(config DecisionModelConfig) (*DecisionModel, error) {
 // APIKeyFromEnv reads the key from the environment, in APIKeyEnvs order.
 func APIKeyFromEnv() *string {
 	for _, name := range APIKeyEnvs {
-		value := strings.TrimSpace(os.Getenv(name))
+		// `TrimPythonSpace`, not `strings.TrimSpace`: Python's `_api_key_from_env`
+		// strips with `str.strip()`, and this value becomes the bearer token.
+		value := TrimPythonSpace(os.Getenv(name))
 		if value != "" {
 			return &value
 		}

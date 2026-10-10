@@ -621,6 +621,21 @@ func TestAskState(t *testing.T) {
 	if !strings.Contains(prompts[len(prompts)-1], "Order 4812") {
 		t.Errorf("the built-in example did not reach the prompt: %v", prompts)
 	}
+	// An explicitly empty `--state` is an empty state, not the built-in example:
+	// that is the distinction `optionalStringValue` exists for, and a
+	// `stateFrom` that "simplified" to `text == ""` would silently lose it.
+	status, _, stderr = invoke(t, "ask", "--model", "shisa-ai/shisa-de-2", "--state", "")
+	if status != 0 {
+		t.Fatalf("an empty state exited %d: %s", status, stderr)
+	}
+	prompts = server.prompts(t)
+	last := prompts[len(prompts)-1]
+	if strings.Contains(last, "Order 4812") {
+		t.Errorf("--state '' fell back to the built-in example:\n%s", last)
+	}
+	if !strings.Contains(last, `"evidence": ""`) {
+		t.Errorf("the empty state did not reach the prompt as an empty string:\n%s", last)
+	}
 }
 
 func (s *cliServer) prompts(t *testing.T) []string {
@@ -953,7 +968,7 @@ func TestReportOrderCoversHealth(t *testing.T) {
 				t.Errorf("%v: the report carries %q, which reportOrder does not print", argv, key)
 			}
 		}
-		if len(argv) == 2 && argv[0] == "--model" && argv[1] == "my-adapter" {
+		if len(argv) == 3 && argv[0] == "--model" && argv[1] == "my-adapter" {
 			if _, ok := report["family_note"]; !ok {
 				t.Errorf("an assumed family reported no family_note: %v", report)
 			}

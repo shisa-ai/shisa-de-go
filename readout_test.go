@@ -1251,3 +1251,46 @@ func TestReadoutRenderIsThePackageRender(t *testing.T) {
 		t.Error("Readout.Render and Render disagree on the same options")
 	}
 }
+
+// TestBoundaryMessagesQuoteLikePython pins the quoting in the messages a failing
+// boundary check produces.
+//
+// These reach `doctor`'s `boundary_check` field in both output forms and
+// `explain`'s stderr, and they are otherwise word-for-word the Python client's,
+// which interpolates them with `!r`. Go's `%q` would be double-quoted, so the
+// two command lines would differ exactly on the run the check exists to
+// produce.
+func TestBoundaryMessagesQuoteLikePython(t *testing.T) {
+	readout := stubReadout(t, `{"choices":[{"text":"A"}]}`)
+	slots := testSlots(t, readout, 2)
+	prefixID, err := readout.AnswerPrefixID()
+	if err != nil {
+		t.Fatalf("AnswerPrefixID: %v", err)
+	}
+
+	// The terminator message: the prompt does not end on the answer prefix.
+	err = readout.CheckCodeBoundary([]int{prefixID + 1}, slots)
+	if err == nil {
+		t.Fatal("a prompt that does not end on the terminator was accepted")
+	}
+	// The whole sentence, because the point is that it is Python's sentence.
+	want := "shisade: the prompt does not end on '<channel|>' (token " +
+		fmt.Sprint(prefixID) + "), so the answer is not at the first generated position. " +
+		"The tokenizer ('de2-test') does not match the served model ('de2-test')."
+	if err.Error() != want {
+		t.Errorf("the terminator message is\n  %s\nwant\n  %s", err, want)
+	}
+
+	// The per-code message: a slot whose token id the tokenizer never produced.
+	foreign := []Slot{{Code: slots[0].Code, TokenID: slots[0].TokenID + 9999}}
+	err = readout.CheckCodeBoundary([]int{prefixID}, foreign)
+	if err == nil {
+		t.Fatal("a slot with a foreign token id was accepted")
+	}
+	want = "shisade: the answer boundary moves for '" + slots[0].Code + "': appended to " +
+		"'<channel|>' it does not tokenize as token " + fmt.Sprint(foreign[0].TokenID) +
+		". The tokenizer ('de2-test') does not match the served model ('de2-test')."
+	if err.Error() != want {
+		t.Errorf("the boundary message is\n  %s\nwant\n  %s", err, want)
+	}
+}

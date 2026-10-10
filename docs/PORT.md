@@ -308,6 +308,34 @@ not significant, so this is documented rather than worked around; making it matc
 would mean `Decision.Values` holding an ordered type instead of `map[string]any`.
 `doctor --json` is the one place the order is restored, because the report's key
 set is fixed and the command line knows it, which makes two reports diffable.
+`Health`'s nested slot summary is the other exception and it is ordered at the
+source: Python writes `{"count": len(slots), **{letter: token_id}}`, so
+`report["slots"]` is a `shisade.Object` (`count`, then the codebook's first two
+codes) rather than a `map[string]any`. A caller who reads that one entry gets an
+`Object` and not a map, and `json.Marshal` on it writes an array of members
+rather than a JSON object; `PythonJSON` and `PythonJSONWith` write it as the
+object Python writes.
+
+**The library's `ResolveCalibration("")` means "auto".** Python's
+`resolve_calibration(None)` means "let the client pick from the served model" and
+`resolve_calibration("")` falls through to `load_calibration_file("")` and
+raises. A Go `string` cannot carry the `None`/`""` distinction, and the zero
+value is the natural spelling of "nothing was passed", so the empty spec and
+`"auto"` are the same here. The command line does not depend on that: it records
+whether `--calibration` was given and refuses an explicit `""` with Python's own
+message, so the two command lines agree.
+
+**The DE-2 readout rewords the messages it shares with DE-1.** The Python
+readout has one slot resolver for both families, so a DE-2 code that is not one
+token is reported as `answer letter 'A' ... read with letter slots`. This port
+says `answer code 'A' ... read with the codebook`, because the DE-2 contract's
+slots are codes. Two other messages have no Python counterpart at all and are
+Go's own: the wrapper around a tokenizer that will not load, and the two checks
+on the `prompt_logprobs` fallback (more than one entry, or a null one) that keep a
+server this client cannot read that way from scoring a token nobody asked about.
+Everything else the readout raises is Python's sentence with Python's `!r`
+quoting, including the boundary check's three messages, which reach `doctor`'s
+`boundary_check` field and `explain`'s stderr.
 
 **`Decision` is a struct, not a dict subclass.** Python's `result["route"]`
 becomes `decision.Values["route"]`, and `result.answers` becomes
