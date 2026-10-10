@@ -1,0 +1,18 @@
+{
+  "topic": "m4-policy-calibration-client",
+  "displayTopic": "m4-policy-calibration-client",
+  "reportRoot": "docs/reviews",
+  "configSources": [
+    "/home/morpheus/.config/jouzu/agent/review-cycles.json"
+  ],
+  "skippedConfigSources": [],
+  "policy": {
+    "maxCycles": 3,
+    "rerunOnSeverityAtLeast": "HIGH",
+    "fixAllNonCounterproductive": true,
+    "alwaysWriteReport": true
+  },
+  "overLimitApproved": false,
+  "planPath": "docs/PORT.md",
+  "updatedAt": "2026-10-10T06:18:03.135Z"
+}
