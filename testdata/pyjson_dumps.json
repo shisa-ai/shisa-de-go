@@ -1,0 +1,1855 @@
+{
+ "python": "3.14.6",
+ "generated": "2026-10-10",
+ "source": "json.dumps(value, indent=..., ensure_ascii=...)",
+ "cases": [
+  {
+   "name": "empty object indent=None ensure_ascii=True",
+   "value": "{}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{}"
+  },
+  {
+   "name": "empty object indent=None ensure_ascii=False",
+   "value": "{}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{}"
+  },
+  {
+   "name": "empty object indent='' ensure_ascii=True",
+   "value": "{}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{}"
+  },
+  {
+   "name": "empty object indent='' ensure_ascii=False",
+   "value": "{}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{}"
+  },
+  {
+   "name": "empty object indent=0 ensure_ascii=True",
+   "value": "{}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{}"
+  },
+  {
+   "name": "empty object indent=0 ensure_ascii=False",
+   "value": "{}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{}"
+  },
+  {
+   "name": "empty object indent=1 ensure_ascii=True",
+   "value": "{}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{}"
+  },
+  {
+   "name": "empty object indent=1 ensure_ascii=False",
+   "value": "{}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{}"
+  },
+  {
+   "name": "empty object indent=2 ensure_ascii=True",
+   "value": "{}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{}"
+  },
+  {
+   "name": "empty object indent=2 ensure_ascii=False",
+   "value": "{}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{}"
+  },
+  {
+   "name": "empty object indent=4 ensure_ascii=True",
+   "value": "{}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{}"
+  },
+  {
+   "name": "empty object indent=4 ensure_ascii=False",
+   "value": "{}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{}"
+  },
+  {
+   "name": "empty array indent=None ensure_ascii=True",
+   "value": "[]",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "[]"
+  },
+  {
+   "name": "empty array indent=None ensure_ascii=False",
+   "value": "[]",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "[]"
+  },
+  {
+   "name": "empty array indent='' ensure_ascii=True",
+   "value": "[]",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "[]"
+  },
+  {
+   "name": "empty array indent='' ensure_ascii=False",
+   "value": "[]",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "[]"
+  },
+  {
+   "name": "empty array indent=0 ensure_ascii=True",
+   "value": "[]",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "[]"
+  },
+  {
+   "name": "empty array indent=0 ensure_ascii=False",
+   "value": "[]",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "[]"
+  },
+  {
+   "name": "empty array indent=1 ensure_ascii=True",
+   "value": "[]",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "[]"
+  },
+  {
+   "name": "empty array indent=1 ensure_ascii=False",
+   "value": "[]",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "[]"
+  },
+  {
+   "name": "empty array indent=2 ensure_ascii=True",
+   "value": "[]",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "[]"
+  },
+  {
+   "name": "empty array indent=2 ensure_ascii=False",
+   "value": "[]",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "[]"
+  },
+  {
+   "name": "empty array indent=4 ensure_ascii=True",
+   "value": "[]",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "[]"
+  },
+  {
+   "name": "empty array indent=4 ensure_ascii=False",
+   "value": "[]",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "[]"
+  },
+  {
+   "name": "empty nested indent=None ensure_ascii=True",
+   "value": "{\"a\": [], \"b\": {}}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"a\": [], \"b\": {}}"
+  },
+  {
+   "name": "empty nested indent=None ensure_ascii=False",
+   "value": "{\"a\": [], \"b\": {}}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"a\": [], \"b\": {}}"
+  },
+  {
+   "name": "empty nested indent='' ensure_ascii=True",
+   "value": "{\"a\": [], \"b\": {}}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"a\": [],\n\"b\": {}\n}"
+  },
+  {
+   "name": "empty nested indent='' ensure_ascii=False",
+   "value": "{\"a\": [], \"b\": {}}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"a\": [],\n\"b\": {}\n}"
+  },
+  {
+   "name": "empty nested indent=0 ensure_ascii=True",
+   "value": "{\"a\": [], \"b\": {}}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"a\": [],\n\"b\": {}\n}"
+  },
+  {
+   "name": "empty nested indent=0 ensure_ascii=False",
+   "value": "{\"a\": [], \"b\": {}}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"a\": [],\n\"b\": {}\n}"
+  },
+  {
+   "name": "empty nested indent=1 ensure_ascii=True",
+   "value": "{\"a\": [], \"b\": {}}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"a\": [],\n \"b\": {}\n}"
+  },
+  {
+   "name": "empty nested indent=1 ensure_ascii=False",
+   "value": "{\"a\": [], \"b\": {}}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"a\": [],\n \"b\": {}\n}"
+  },
+  {
+   "name": "empty nested indent=2 ensure_ascii=True",
+   "value": "{\"a\": [], \"b\": {}}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"a\": [],\n  \"b\": {}\n}"
+  },
+  {
+   "name": "empty nested indent=2 ensure_ascii=False",
+   "value": "{\"a\": [], \"b\": {}}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"a\": [],\n  \"b\": {}\n}"
+  },
+  {
+   "name": "empty nested indent=4 ensure_ascii=True",
+   "value": "{\"a\": [], \"b\": {}}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"a\": [],\n    \"b\": {}\n}"
+  },
+  {
+   "name": "empty nested indent=4 ensure_ascii=False",
+   "value": "{\"a\": [], \"b\": {}}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"a\": [],\n    \"b\": {}\n}"
+  },
+  {
+   "name": "scalars indent=None ensure_ascii=True",
+   "value": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}"
+  },
+  {
+   "name": "scalars indent=None ensure_ascii=False",
+   "value": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}"
+  },
+  {
+   "name": "scalars indent='' ensure_ascii=True",
+   "value": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"t\": true,\n\"f\": false,\n\"n\": null,\n\"i\": 3,\n\"neg\": -7,\n\"zero\": 0\n}"
+  },
+  {
+   "name": "scalars indent='' ensure_ascii=False",
+   "value": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"t\": true,\n\"f\": false,\n\"n\": null,\n\"i\": 3,\n\"neg\": -7,\n\"zero\": 0\n}"
+  },
+  {
+   "name": "scalars indent=0 ensure_ascii=True",
+   "value": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"t\": true,\n\"f\": false,\n\"n\": null,\n\"i\": 3,\n\"neg\": -7,\n\"zero\": 0\n}"
+  },
+  {
+   "name": "scalars indent=0 ensure_ascii=False",
+   "value": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"t\": true,\n\"f\": false,\n\"n\": null,\n\"i\": 3,\n\"neg\": -7,\n\"zero\": 0\n}"
+  },
+  {
+   "name": "scalars indent=1 ensure_ascii=True",
+   "value": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"t\": true,\n \"f\": false,\n \"n\": null,\n \"i\": 3,\n \"neg\": -7,\n \"zero\": 0\n}"
+  },
+  {
+   "name": "scalars indent=1 ensure_ascii=False",
+   "value": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"t\": true,\n \"f\": false,\n \"n\": null,\n \"i\": 3,\n \"neg\": -7,\n \"zero\": 0\n}"
+  },
+  {
+   "name": "scalars indent=2 ensure_ascii=True",
+   "value": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"t\": true,\n  \"f\": false,\n  \"n\": null,\n  \"i\": 3,\n  \"neg\": -7,\n  \"zero\": 0\n}"
+  },
+  {
+   "name": "scalars indent=2 ensure_ascii=False",
+   "value": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"t\": true,\n  \"f\": false,\n  \"n\": null,\n  \"i\": 3,\n  \"neg\": -7,\n  \"zero\": 0\n}"
+  },
+  {
+   "name": "scalars indent=4 ensure_ascii=True",
+   "value": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"t\": true,\n    \"f\": false,\n    \"n\": null,\n    \"i\": 3,\n    \"neg\": -7,\n    \"zero\": 0\n}"
+  },
+  {
+   "name": "scalars indent=4 ensure_ascii=False",
+   "value": "{\"t\": true, \"f\": false, \"n\": null, \"i\": 3, \"neg\": -7, \"zero\": 0}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"t\": true,\n    \"f\": false,\n    \"n\": null,\n    \"i\": 3,\n    \"neg\": -7,\n    \"zero\": 0\n}"
+  },
+  {
+   "name": "floats indent=None ensure_ascii=True",
+   "value": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}"
+  },
+  {
+   "name": "floats indent=None ensure_ascii=False",
+   "value": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}"
+  },
+  {
+   "name": "floats indent='' ensure_ascii=True",
+   "value": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"one\": 1.0,\n\"half\": 0.5,\n\"big\": 1000000000000000.0,\n\"small\": 1e-05,\n\"exp\": 1.5e+300\n}"
+  },
+  {
+   "name": "floats indent='' ensure_ascii=False",
+   "value": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"one\": 1.0,\n\"half\": 0.5,\n\"big\": 1000000000000000.0,\n\"small\": 1e-05,\n\"exp\": 1.5e+300\n}"
+  },
+  {
+   "name": "floats indent=0 ensure_ascii=True",
+   "value": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"one\": 1.0,\n\"half\": 0.5,\n\"big\": 1000000000000000.0,\n\"small\": 1e-05,\n\"exp\": 1.5e+300\n}"
+  },
+  {
+   "name": "floats indent=0 ensure_ascii=False",
+   "value": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"one\": 1.0,\n\"half\": 0.5,\n\"big\": 1000000000000000.0,\n\"small\": 1e-05,\n\"exp\": 1.5e+300\n}"
+  },
+  {
+   "name": "floats indent=1 ensure_ascii=True",
+   "value": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"one\": 1.0,\n \"half\": 0.5,\n \"big\": 1000000000000000.0,\n \"small\": 1e-05,\n \"exp\": 1.5e+300\n}"
+  },
+  {
+   "name": "floats indent=1 ensure_ascii=False",
+   "value": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"one\": 1.0,\n \"half\": 0.5,\n \"big\": 1000000000000000.0,\n \"small\": 1e-05,\n \"exp\": 1.5e+300\n}"
+  },
+  {
+   "name": "floats indent=2 ensure_ascii=True",
+   "value": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"one\": 1.0,\n  \"half\": 0.5,\n  \"big\": 1000000000000000.0,\n  \"small\": 1e-05,\n  \"exp\": 1.5e+300\n}"
+  },
+  {
+   "name": "floats indent=2 ensure_ascii=False",
+   "value": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"one\": 1.0,\n  \"half\": 0.5,\n  \"big\": 1000000000000000.0,\n  \"small\": 1e-05,\n  \"exp\": 1.5e+300\n}"
+  },
+  {
+   "name": "floats indent=4 ensure_ascii=True",
+   "value": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"one\": 1.0,\n    \"half\": 0.5,\n    \"big\": 1000000000000000.0,\n    \"small\": 1e-05,\n    \"exp\": 1.5e+300\n}"
+  },
+  {
+   "name": "floats indent=4 ensure_ascii=False",
+   "value": "{\"one\": 1.0, \"half\": 0.5, \"big\": 1000000000000000.0, \"small\": 1e-05, \"exp\": 1.5e+300}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"one\": 1.0,\n    \"half\": 0.5,\n    \"big\": 1000000000000000.0,\n    \"small\": 1e-05,\n    \"exp\": 1.5e+300\n}"
+  },
+  {
+   "name": "one element indent=None ensure_ascii=True",
+   "value": "[1]",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "[1]"
+  },
+  {
+   "name": "one element indent=None ensure_ascii=False",
+   "value": "[1]",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "[1]"
+  },
+  {
+   "name": "one element indent='' ensure_ascii=True",
+   "value": "[1]",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "[\n1\n]"
+  },
+  {
+   "name": "one element indent='' ensure_ascii=False",
+   "value": "[1]",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "[\n1\n]"
+  },
+  {
+   "name": "one element indent=0 ensure_ascii=True",
+   "value": "[1]",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "[\n1\n]"
+  },
+  {
+   "name": "one element indent=0 ensure_ascii=False",
+   "value": "[1]",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "[\n1\n]"
+  },
+  {
+   "name": "one element indent=1 ensure_ascii=True",
+   "value": "[1]",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "[\n 1\n]"
+  },
+  {
+   "name": "one element indent=1 ensure_ascii=False",
+   "value": "[1]",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "[\n 1\n]"
+  },
+  {
+   "name": "one element indent=2 ensure_ascii=True",
+   "value": "[1]",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "[\n  1\n]"
+  },
+  {
+   "name": "one element indent=2 ensure_ascii=False",
+   "value": "[1]",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "[\n  1\n]"
+  },
+  {
+   "name": "one element indent=4 ensure_ascii=True",
+   "value": "[1]",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "[\n    1\n]"
+  },
+  {
+   "name": "one element indent=4 ensure_ascii=False",
+   "value": "[1]",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "[\n    1\n]"
+  },
+  {
+   "name": "two elements indent=None ensure_ascii=True",
+   "value": "[1, 2]",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "[1, 2]"
+  },
+  {
+   "name": "two elements indent=None ensure_ascii=False",
+   "value": "[1, 2]",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "[1, 2]"
+  },
+  {
+   "name": "two elements indent='' ensure_ascii=True",
+   "value": "[1, 2]",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "[\n1,\n2\n]"
+  },
+  {
+   "name": "two elements indent='' ensure_ascii=False",
+   "value": "[1, 2]",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "[\n1,\n2\n]"
+  },
+  {
+   "name": "two elements indent=0 ensure_ascii=True",
+   "value": "[1, 2]",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "[\n1,\n2\n]"
+  },
+  {
+   "name": "two elements indent=0 ensure_ascii=False",
+   "value": "[1, 2]",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "[\n1,\n2\n]"
+  },
+  {
+   "name": "two elements indent=1 ensure_ascii=True",
+   "value": "[1, 2]",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "[\n 1,\n 2\n]"
+  },
+  {
+   "name": "two elements indent=1 ensure_ascii=False",
+   "value": "[1, 2]",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "[\n 1,\n 2\n]"
+  },
+  {
+   "name": "two elements indent=2 ensure_ascii=True",
+   "value": "[1, 2]",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "[\n  1,\n  2\n]"
+  },
+  {
+   "name": "two elements indent=2 ensure_ascii=False",
+   "value": "[1, 2]",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "[\n  1,\n  2\n]"
+  },
+  {
+   "name": "two elements indent=4 ensure_ascii=True",
+   "value": "[1, 2]",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "[\n    1,\n    2\n]"
+  },
+  {
+   "name": "two elements indent=4 ensure_ascii=False",
+   "value": "[1, 2]",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "[\n    1,\n    2\n]"
+  },
+  {
+   "name": "nested array indent=None ensure_ascii=True",
+   "value": "[1, [2, [3]]]",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "[1, [2, [3]]]"
+  },
+  {
+   "name": "nested array indent=None ensure_ascii=False",
+   "value": "[1, [2, [3]]]",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "[1, [2, [3]]]"
+  },
+  {
+   "name": "nested array indent='' ensure_ascii=True",
+   "value": "[1, [2, [3]]]",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "[\n1,\n[\n2,\n[\n3\n]\n]\n]"
+  },
+  {
+   "name": "nested array indent='' ensure_ascii=False",
+   "value": "[1, [2, [3]]]",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "[\n1,\n[\n2,\n[\n3\n]\n]\n]"
+  },
+  {
+   "name": "nested array indent=0 ensure_ascii=True",
+   "value": "[1, [2, [3]]]",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "[\n1,\n[\n2,\n[\n3\n]\n]\n]"
+  },
+  {
+   "name": "nested array indent=0 ensure_ascii=False",
+   "value": "[1, [2, [3]]]",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "[\n1,\n[\n2,\n[\n3\n]\n]\n]"
+  },
+  {
+   "name": "nested array indent=1 ensure_ascii=True",
+   "value": "[1, [2, [3]]]",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "[\n 1,\n [\n  2,\n  [\n   3\n  ]\n ]\n]"
+  },
+  {
+   "name": "nested array indent=1 ensure_ascii=False",
+   "value": "[1, [2, [3]]]",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "[\n 1,\n [\n  2,\n  [\n   3\n  ]\n ]\n]"
+  },
+  {
+   "name": "nested array indent=2 ensure_ascii=True",
+   "value": "[1, [2, [3]]]",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "[\n  1,\n  [\n    2,\n    [\n      3\n    ]\n  ]\n]"
+  },
+  {
+   "name": "nested array indent=2 ensure_ascii=False",
+   "value": "[1, [2, [3]]]",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "[\n  1,\n  [\n    2,\n    [\n      3\n    ]\n  ]\n]"
+  },
+  {
+   "name": "nested array indent=4 ensure_ascii=True",
+   "value": "[1, [2, [3]]]",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "[\n    1,\n    [\n        2,\n        [\n            3\n        ]\n    ]\n]"
+  },
+  {
+   "name": "nested array indent=4 ensure_ascii=False",
+   "value": "[1, [2, [3]]]",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "[\n    1,\n    [\n        2,\n        [\n            3\n        ]\n    ]\n]"
+  },
+  {
+   "name": "nested object indent=None ensure_ascii=True",
+   "value": "{\"a\": {\"b\": {\"c\": 1}}}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"a\": {\"b\": {\"c\": 1}}}"
+  },
+  {
+   "name": "nested object indent=None ensure_ascii=False",
+   "value": "{\"a\": {\"b\": {\"c\": 1}}}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"a\": {\"b\": {\"c\": 1}}}"
+  },
+  {
+   "name": "nested object indent='' ensure_ascii=True",
+   "value": "{\"a\": {\"b\": {\"c\": 1}}}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"a\": {\n\"b\": {\n\"c\": 1\n}\n}\n}"
+  },
+  {
+   "name": "nested object indent='' ensure_ascii=False",
+   "value": "{\"a\": {\"b\": {\"c\": 1}}}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"a\": {\n\"b\": {\n\"c\": 1\n}\n}\n}"
+  },
+  {
+   "name": "nested object indent=0 ensure_ascii=True",
+   "value": "{\"a\": {\"b\": {\"c\": 1}}}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"a\": {\n\"b\": {\n\"c\": 1\n}\n}\n}"
+  },
+  {
+   "name": "nested object indent=0 ensure_ascii=False",
+   "value": "{\"a\": {\"b\": {\"c\": 1}}}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"a\": {\n\"b\": {\n\"c\": 1\n}\n}\n}"
+  },
+  {
+   "name": "nested object indent=1 ensure_ascii=True",
+   "value": "{\"a\": {\"b\": {\"c\": 1}}}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"a\": {\n  \"b\": {\n   \"c\": 1\n  }\n }\n}"
+  },
+  {
+   "name": "nested object indent=1 ensure_ascii=False",
+   "value": "{\"a\": {\"b\": {\"c\": 1}}}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"a\": {\n  \"b\": {\n   \"c\": 1\n  }\n }\n}"
+  },
+  {
+   "name": "nested object indent=2 ensure_ascii=True",
+   "value": "{\"a\": {\"b\": {\"c\": 1}}}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"a\": {\n    \"b\": {\n      \"c\": 1\n    }\n  }\n}"
+  },
+  {
+   "name": "nested object indent=2 ensure_ascii=False",
+   "value": "{\"a\": {\"b\": {\"c\": 1}}}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"a\": {\n    \"b\": {\n      \"c\": 1\n    }\n  }\n}"
+  },
+  {
+   "name": "nested object indent=4 ensure_ascii=True",
+   "value": "{\"a\": {\"b\": {\"c\": 1}}}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"a\": {\n        \"b\": {\n            \"c\": 1\n        }\n    }\n}"
+  },
+  {
+   "name": "nested object indent=4 ensure_ascii=False",
+   "value": "{\"a\": {\"b\": {\"c\": 1}}}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"a\": {\n        \"b\": {\n            \"c\": 1\n        }\n    }\n}"
+  },
+  {
+   "name": "object of arrays indent=None ensure_ascii=True",
+   "value": "{\"a\": [1, 2], \"b\": [[3]]}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"a\": [1, 2], \"b\": [[3]]}"
+  },
+  {
+   "name": "object of arrays indent=None ensure_ascii=False",
+   "value": "{\"a\": [1, 2], \"b\": [[3]]}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"a\": [1, 2], \"b\": [[3]]}"
+  },
+  {
+   "name": "object of arrays indent='' ensure_ascii=True",
+   "value": "{\"a\": [1, 2], \"b\": [[3]]}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"a\": [\n1,\n2\n],\n\"b\": [\n[\n3\n]\n]\n}"
+  },
+  {
+   "name": "object of arrays indent='' ensure_ascii=False",
+   "value": "{\"a\": [1, 2], \"b\": [[3]]}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"a\": [\n1,\n2\n],\n\"b\": [\n[\n3\n]\n]\n}"
+  },
+  {
+   "name": "object of arrays indent=0 ensure_ascii=True",
+   "value": "{\"a\": [1, 2], \"b\": [[3]]}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"a\": [\n1,\n2\n],\n\"b\": [\n[\n3\n]\n]\n}"
+  },
+  {
+   "name": "object of arrays indent=0 ensure_ascii=False",
+   "value": "{\"a\": [1, 2], \"b\": [[3]]}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"a\": [\n1,\n2\n],\n\"b\": [\n[\n3\n]\n]\n}"
+  },
+  {
+   "name": "object of arrays indent=1 ensure_ascii=True",
+   "value": "{\"a\": [1, 2], \"b\": [[3]]}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"a\": [\n  1,\n  2\n ],\n \"b\": [\n  [\n   3\n  ]\n ]\n}"
+  },
+  {
+   "name": "object of arrays indent=1 ensure_ascii=False",
+   "value": "{\"a\": [1, 2], \"b\": [[3]]}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"a\": [\n  1,\n  2\n ],\n \"b\": [\n  [\n   3\n  ]\n ]\n}"
+  },
+  {
+   "name": "object of arrays indent=2 ensure_ascii=True",
+   "value": "{\"a\": [1, 2], \"b\": [[3]]}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"a\": [\n    1,\n    2\n  ],\n  \"b\": [\n    [\n      3\n    ]\n  ]\n}"
+  },
+  {
+   "name": "object of arrays indent=2 ensure_ascii=False",
+   "value": "{\"a\": [1, 2], \"b\": [[3]]}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"a\": [\n    1,\n    2\n  ],\n  \"b\": [\n    [\n      3\n    ]\n  ]\n}"
+  },
+  {
+   "name": "object of arrays indent=4 ensure_ascii=True",
+   "value": "{\"a\": [1, 2], \"b\": [[3]]}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"a\": [\n        1,\n        2\n    ],\n    \"b\": [\n        [\n            3\n        ]\n    ]\n}"
+  },
+  {
+   "name": "object of arrays indent=4 ensure_ascii=False",
+   "value": "{\"a\": [1, 2], \"b\": [[3]]}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"a\": [\n        1,\n        2\n    ],\n    \"b\": [\n        [\n            3\n        ]\n    ]\n}"
+  },
+  {
+   "name": "escapes indent=None ensure_ascii=True",
+   "value": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}"
+  },
+  {
+   "name": "escapes indent=None ensure_ascii=False",
+   "value": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}"
+  },
+  {
+   "name": "escapes indent='' ensure_ascii=True",
+   "value": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"\n}"
+  },
+  {
+   "name": "escapes indent='' ensure_ascii=False",
+   "value": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"\n}"
+  },
+  {
+   "name": "escapes indent=0 ensure_ascii=True",
+   "value": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"\n}"
+  },
+  {
+   "name": "escapes indent=0 ensure_ascii=False",
+   "value": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"\n}"
+  },
+  {
+   "name": "escapes indent=1 ensure_ascii=True",
+   "value": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"\n}"
+  },
+  {
+   "name": "escapes indent=1 ensure_ascii=False",
+   "value": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"\n}"
+  },
+  {
+   "name": "escapes indent=2 ensure_ascii=True",
+   "value": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"\n}"
+  },
+  {
+   "name": "escapes indent=2 ensure_ascii=False",
+   "value": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"\n}"
+  },
+  {
+   "name": "escapes indent=4 ensure_ascii=True",
+   "value": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"\n}"
+  },
+  {
+   "name": "escapes indent=4 ensure_ascii=False",
+   "value": "{\"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"s\": \"quote \\\" backslash \\\\ newline \\n tab \\t return \\r\"\n}"
+  },
+  {
+   "name": "controls indent=None ensure_ascii=True",
+   "value": "{\"s\": \"\\u0000\\u0001\\u001f\"}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"s\": \"\\u0000\\u0001\\u001f\"}"
+  },
+  {
+   "name": "controls indent=None ensure_ascii=False",
+   "value": "{\"s\": \"\\u0000\\u0001\\u001f\"}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"s\": \"\\u0000\\u0001\\u001f\"}"
+  },
+  {
+   "name": "controls indent='' ensure_ascii=True",
+   "value": "{\"s\": \"\\u0000\\u0001\\u001f\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"\\u0000\\u0001\\u001f\"\n}"
+  },
+  {
+   "name": "controls indent='' ensure_ascii=False",
+   "value": "{\"s\": \"\\u0000\\u0001\\u001f\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"\\u0000\\u0001\\u001f\"\n}"
+  },
+  {
+   "name": "controls indent=0 ensure_ascii=True",
+   "value": "{\"s\": \"\\u0000\\u0001\\u001f\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"\\u0000\\u0001\\u001f\"\n}"
+  },
+  {
+   "name": "controls indent=0 ensure_ascii=False",
+   "value": "{\"s\": \"\\u0000\\u0001\\u001f\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"\\u0000\\u0001\\u001f\"\n}"
+  },
+  {
+   "name": "controls indent=1 ensure_ascii=True",
+   "value": "{\"s\": \"\\u0000\\u0001\\u001f\"}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"s\": \"\\u0000\\u0001\\u001f\"\n}"
+  },
+  {
+   "name": "controls indent=1 ensure_ascii=False",
+   "value": "{\"s\": \"\\u0000\\u0001\\u001f\"}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"s\": \"\\u0000\\u0001\\u001f\"\n}"
+  },
+  {
+   "name": "controls indent=2 ensure_ascii=True",
+   "value": "{\"s\": \"\\u0000\\u0001\\u001f\"}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"s\": \"\\u0000\\u0001\\u001f\"\n}"
+  },
+  {
+   "name": "controls indent=2 ensure_ascii=False",
+   "value": "{\"s\": \"\\u0000\\u0001\\u001f\"}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"s\": \"\\u0000\\u0001\\u001f\"\n}"
+  },
+  {
+   "name": "controls indent=4 ensure_ascii=True",
+   "value": "{\"s\": \"\\u0000\\u0001\\u001f\"}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"s\": \"\\u0000\\u0001\\u001f\"\n}"
+  },
+  {
+   "name": "controls indent=4 ensure_ascii=False",
+   "value": "{\"s\": \"\\u0000\\u0001\\u001f\"}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"s\": \"\\u0000\\u0001\\u001f\"\n}"
+  },
+  {
+   "name": "del and c1 indent=None ensure_ascii=True",
+   "value": "{\"s\": \"\"}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"s\": \"\\u007f\\u0080\\u009f\"}"
+  },
+  {
+   "name": "del and c1 indent=None ensure_ascii=False",
+   "value": "{\"s\": \"\"}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"s\": \"\"}"
+  },
+  {
+   "name": "del and c1 indent='' ensure_ascii=True",
+   "value": "{\"s\": \"\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"\\u007f\\u0080\\u009f\"\n}"
+  },
+  {
+   "name": "del and c1 indent='' ensure_ascii=False",
+   "value": "{\"s\": \"\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"\"\n}"
+  },
+  {
+   "name": "del and c1 indent=0 ensure_ascii=True",
+   "value": "{\"s\": \"\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"\\u007f\\u0080\\u009f\"\n}"
+  },
+  {
+   "name": "del and c1 indent=0 ensure_ascii=False",
+   "value": "{\"s\": \"\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"\"\n}"
+  },
+  {
+   "name": "del and c1 indent=1 ensure_ascii=True",
+   "value": "{\"s\": \"\"}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"s\": \"\\u007f\\u0080\\u009f\"\n}"
+  },
+  {
+   "name": "del and c1 indent=1 ensure_ascii=False",
+   "value": "{\"s\": \"\"}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"s\": \"\"\n}"
+  },
+  {
+   "name": "del and c1 indent=2 ensure_ascii=True",
+   "value": "{\"s\": \"\"}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"s\": \"\\u007f\\u0080\\u009f\"\n}"
+  },
+  {
+   "name": "del and c1 indent=2 ensure_ascii=False",
+   "value": "{\"s\": \"\"}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"s\": \"\"\n}"
+  },
+  {
+   "name": "del and c1 indent=4 ensure_ascii=True",
+   "value": "{\"s\": \"\"}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"s\": \"\\u007f\\u0080\\u009f\"\n}"
+  },
+  {
+   "name": "del and c1 indent=4 ensure_ascii=False",
+   "value": "{\"s\": \"\"}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"s\": \"\"\n}"
+  },
+  {
+   "name": "latin indent=None ensure_ascii=True",
+   "value": "{\"s\": \"café\"}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"s\": \"caf\\u00e9\"}"
+  },
+  {
+   "name": "latin indent=None ensure_ascii=False",
+   "value": "{\"s\": \"café\"}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"s\": \"café\"}"
+  },
+  {
+   "name": "latin indent='' ensure_ascii=True",
+   "value": "{\"s\": \"café\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"caf\\u00e9\"\n}"
+  },
+  {
+   "name": "latin indent='' ensure_ascii=False",
+   "value": "{\"s\": \"café\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"café\"\n}"
+  },
+  {
+   "name": "latin indent=0 ensure_ascii=True",
+   "value": "{\"s\": \"café\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"caf\\u00e9\"\n}"
+  },
+  {
+   "name": "latin indent=0 ensure_ascii=False",
+   "value": "{\"s\": \"café\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"café\"\n}"
+  },
+  {
+   "name": "latin indent=1 ensure_ascii=True",
+   "value": "{\"s\": \"café\"}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"s\": \"caf\\u00e9\"\n}"
+  },
+  {
+   "name": "latin indent=1 ensure_ascii=False",
+   "value": "{\"s\": \"café\"}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"s\": \"café\"\n}"
+  },
+  {
+   "name": "latin indent=2 ensure_ascii=True",
+   "value": "{\"s\": \"café\"}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"s\": \"caf\\u00e9\"\n}"
+  },
+  {
+   "name": "latin indent=2 ensure_ascii=False",
+   "value": "{\"s\": \"café\"}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"s\": \"café\"\n}"
+  },
+  {
+   "name": "latin indent=4 ensure_ascii=True",
+   "value": "{\"s\": \"café\"}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"s\": \"caf\\u00e9\"\n}"
+  },
+  {
+   "name": "latin indent=4 ensure_ascii=False",
+   "value": "{\"s\": \"café\"}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"s\": \"café\"\n}"
+  },
+  {
+   "name": "bmp indent=None ensure_ascii=True",
+   "value": "{\"s\": \"中文\"}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"s\": \"\\u4e2d\\u6587\"}"
+  },
+  {
+   "name": "bmp indent=None ensure_ascii=False",
+   "value": "{\"s\": \"中文\"}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"s\": \"中文\"}"
+  },
+  {
+   "name": "bmp indent='' ensure_ascii=True",
+   "value": "{\"s\": \"中文\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"\\u4e2d\\u6587\"\n}"
+  },
+  {
+   "name": "bmp indent='' ensure_ascii=False",
+   "value": "{\"s\": \"中文\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"中文\"\n}"
+  },
+  {
+   "name": "bmp indent=0 ensure_ascii=True",
+   "value": "{\"s\": \"中文\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"\\u4e2d\\u6587\"\n}"
+  },
+  {
+   "name": "bmp indent=0 ensure_ascii=False",
+   "value": "{\"s\": \"中文\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"中文\"\n}"
+  },
+  {
+   "name": "bmp indent=1 ensure_ascii=True",
+   "value": "{\"s\": \"中文\"}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"s\": \"\\u4e2d\\u6587\"\n}"
+  },
+  {
+   "name": "bmp indent=1 ensure_ascii=False",
+   "value": "{\"s\": \"中文\"}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"s\": \"中文\"\n}"
+  },
+  {
+   "name": "bmp indent=2 ensure_ascii=True",
+   "value": "{\"s\": \"中文\"}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"s\": \"\\u4e2d\\u6587\"\n}"
+  },
+  {
+   "name": "bmp indent=2 ensure_ascii=False",
+   "value": "{\"s\": \"中文\"}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"s\": \"中文\"\n}"
+  },
+  {
+   "name": "bmp indent=4 ensure_ascii=True",
+   "value": "{\"s\": \"中文\"}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"s\": \"\\u4e2d\\u6587\"\n}"
+  },
+  {
+   "name": "bmp indent=4 ensure_ascii=False",
+   "value": "{\"s\": \"中文\"}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"s\": \"中文\"\n}"
+  },
+  {
+   "name": "astral indent=None ensure_ascii=True",
+   "value": "{\"s\": \"😀\"}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"s\": \"\\ud83d\\ude00\"}"
+  },
+  {
+   "name": "astral indent=None ensure_ascii=False",
+   "value": "{\"s\": \"😀\"}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"s\": \"😀\"}"
+  },
+  {
+   "name": "astral indent='' ensure_ascii=True",
+   "value": "{\"s\": \"😀\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"\\ud83d\\ude00\"\n}"
+  },
+  {
+   "name": "astral indent='' ensure_ascii=False",
+   "value": "{\"s\": \"😀\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"😀\"\n}"
+  },
+  {
+   "name": "astral indent=0 ensure_ascii=True",
+   "value": "{\"s\": \"😀\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"\\ud83d\\ude00\"\n}"
+  },
+  {
+   "name": "astral indent=0 ensure_ascii=False",
+   "value": "{\"s\": \"😀\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"😀\"\n}"
+  },
+  {
+   "name": "astral indent=1 ensure_ascii=True",
+   "value": "{\"s\": \"😀\"}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"s\": \"\\ud83d\\ude00\"\n}"
+  },
+  {
+   "name": "astral indent=1 ensure_ascii=False",
+   "value": "{\"s\": \"😀\"}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"s\": \"😀\"\n}"
+  },
+  {
+   "name": "astral indent=2 ensure_ascii=True",
+   "value": "{\"s\": \"😀\"}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"s\": \"\\ud83d\\ude00\"\n}"
+  },
+  {
+   "name": "astral indent=2 ensure_ascii=False",
+   "value": "{\"s\": \"😀\"}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"s\": \"😀\"\n}"
+  },
+  {
+   "name": "astral indent=4 ensure_ascii=True",
+   "value": "{\"s\": \"😀\"}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"s\": \"\\ud83d\\ude00\"\n}"
+  },
+  {
+   "name": "astral indent=4 ensure_ascii=False",
+   "value": "{\"s\": \"😀\"}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"s\": \"😀\"\n}"
+  },
+  {
+   "name": "astral pair indent=None ensure_ascii=True",
+   "value": "{\"s\": \"😀😁\"}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"s\": \"\\ud83d\\ude00\\ud83d\\ude01\"}"
+  },
+  {
+   "name": "astral pair indent=None ensure_ascii=False",
+   "value": "{\"s\": \"😀😁\"}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"s\": \"😀😁\"}"
+  },
+  {
+   "name": "astral pair indent='' ensure_ascii=True",
+   "value": "{\"s\": \"😀😁\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"\\ud83d\\ude00\\ud83d\\ude01\"\n}"
+  },
+  {
+   "name": "astral pair indent='' ensure_ascii=False",
+   "value": "{\"s\": \"😀😁\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"😀😁\"\n}"
+  },
+  {
+   "name": "astral pair indent=0 ensure_ascii=True",
+   "value": "{\"s\": \"😀😁\"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"\\ud83d\\ude00\\ud83d\\ude01\"\n}"
+  },
+  {
+   "name": "astral pair indent=0 ensure_ascii=False",
+   "value": "{\"s\": \"😀😁\"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"😀😁\"\n}"
+  },
+  {
+   "name": "astral pair indent=1 ensure_ascii=True",
+   "value": "{\"s\": \"😀😁\"}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"s\": \"\\ud83d\\ude00\\ud83d\\ude01\"\n}"
+  },
+  {
+   "name": "astral pair indent=1 ensure_ascii=False",
+   "value": "{\"s\": \"😀😁\"}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"s\": \"😀😁\"\n}"
+  },
+  {
+   "name": "astral pair indent=2 ensure_ascii=True",
+   "value": "{\"s\": \"😀😁\"}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"s\": \"\\ud83d\\ude00\\ud83d\\ude01\"\n}"
+  },
+  {
+   "name": "astral pair indent=2 ensure_ascii=False",
+   "value": "{\"s\": \"😀😁\"}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"s\": \"😀😁\"\n}"
+  },
+  {
+   "name": "astral pair indent=4 ensure_ascii=True",
+   "value": "{\"s\": \"😀😁\"}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"s\": \"\\ud83d\\ude00\\ud83d\\ude01\"\n}"
+  },
+  {
+   "name": "astral pair indent=4 ensure_ascii=False",
+   "value": "{\"s\": \"😀😁\"}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"s\": \"😀😁\"\n}"
+  },
+  {
+   "name": "mixed text indent=None ensure_ascii=True",
+   "value": "{\"s\": \"café 中文 😀 \"}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"s\": \"caf\\u00e9 \\u4e2d\\u6587 \\ud83d\\ude00 \\u007f\"}"
+  },
+  {
+   "name": "mixed text indent=None ensure_ascii=False",
+   "value": "{\"s\": \"café 中文 😀 \"}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"s\": \"café 中文 😀 \"}"
+  },
+  {
+   "name": "mixed text indent='' ensure_ascii=True",
+   "value": "{\"s\": \"café 中文 😀 \"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"caf\\u00e9 \\u4e2d\\u6587 \\ud83d\\ude00 \\u007f\"\n}"
+  },
+  {
+   "name": "mixed text indent='' ensure_ascii=False",
+   "value": "{\"s\": \"café 中文 😀 \"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"café 中文 😀 \"\n}"
+  },
+  {
+   "name": "mixed text indent=0 ensure_ascii=True",
+   "value": "{\"s\": \"café 中文 😀 \"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"caf\\u00e9 \\u4e2d\\u6587 \\ud83d\\ude00 \\u007f\"\n}"
+  },
+  {
+   "name": "mixed text indent=0 ensure_ascii=False",
+   "value": "{\"s\": \"café 中文 😀 \"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"café 中文 😀 \"\n}"
+  },
+  {
+   "name": "mixed text indent=1 ensure_ascii=True",
+   "value": "{\"s\": \"café 中文 😀 \"}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"s\": \"caf\\u00e9 \\u4e2d\\u6587 \\ud83d\\ude00 \\u007f\"\n}"
+  },
+  {
+   "name": "mixed text indent=1 ensure_ascii=False",
+   "value": "{\"s\": \"café 中文 😀 \"}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"s\": \"café 中文 😀 \"\n}"
+  },
+  {
+   "name": "mixed text indent=2 ensure_ascii=True",
+   "value": "{\"s\": \"café 中文 😀 \"}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"s\": \"caf\\u00e9 \\u4e2d\\u6587 \\ud83d\\ude00 \\u007f\"\n}"
+  },
+  {
+   "name": "mixed text indent=2 ensure_ascii=False",
+   "value": "{\"s\": \"café 中文 😀 \"}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"s\": \"café 中文 😀 \"\n}"
+  },
+  {
+   "name": "mixed text indent=4 ensure_ascii=True",
+   "value": "{\"s\": \"café 中文 😀 \"}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"s\": \"caf\\u00e9 \\u4e2d\\u6587 \\ud83d\\ude00 \\u007f\"\n}"
+  },
+  {
+   "name": "mixed text indent=4 ensure_ascii=False",
+   "value": "{\"s\": \"café 中文 😀 \"}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"s\": \"café 中文 😀 \"\n}"
+  },
+  {
+   "name": "line separator indent=None ensure_ascii=True",
+   "value": "{\"s\": \"  \"}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"s\": \"\\u2028\\u2029\"}"
+  },
+  {
+   "name": "line separator indent=None ensure_ascii=False",
+   "value": "{\"s\": \"  \"}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"s\": \"  \"}"
+  },
+  {
+   "name": "line separator indent='' ensure_ascii=True",
+   "value": "{\"s\": \"  \"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"\\u2028\\u2029\"\n}"
+  },
+  {
+   "name": "line separator indent='' ensure_ascii=False",
+   "value": "{\"s\": \"  \"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"  \"\n}"
+  },
+  {
+   "name": "line separator indent=0 ensure_ascii=True",
+   "value": "{\"s\": \"  \"}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"s\": \"\\u2028\\u2029\"\n}"
+  },
+  {
+   "name": "line separator indent=0 ensure_ascii=False",
+   "value": "{\"s\": \"  \"}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"s\": \"  \"\n}"
+  },
+  {
+   "name": "line separator indent=1 ensure_ascii=True",
+   "value": "{\"s\": \"  \"}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"s\": \"\\u2028\\u2029\"\n}"
+  },
+  {
+   "name": "line separator indent=1 ensure_ascii=False",
+   "value": "{\"s\": \"  \"}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"s\": \"  \"\n}"
+  },
+  {
+   "name": "line separator indent=2 ensure_ascii=True",
+   "value": "{\"s\": \"  \"}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"s\": \"\\u2028\\u2029\"\n}"
+  },
+  {
+   "name": "line separator indent=2 ensure_ascii=False",
+   "value": "{\"s\": \"  \"}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"s\": \"  \"\n}"
+  },
+  {
+   "name": "line separator indent=4 ensure_ascii=True",
+   "value": "{\"s\": \"  \"}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"s\": \"\\u2028\\u2029\"\n}"
+  },
+  {
+   "name": "line separator indent=4 ensure_ascii=False",
+   "value": "{\"s\": \"  \"}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"s\": \"  \"\n}"
+  },
+  {
+   "name": "key escapes indent=None ensure_ascii=True",
+   "value": "{\"a\\nb\": 1, \"c\\\"d\": 2}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"a\\nb\": 1, \"c\\\"d\": 2}"
+  },
+  {
+   "name": "key escapes indent=None ensure_ascii=False",
+   "value": "{\"a\\nb\": 1, \"c\\\"d\": 2}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"a\\nb\": 1, \"c\\\"d\": 2}"
+  },
+  {
+   "name": "key escapes indent='' ensure_ascii=True",
+   "value": "{\"a\\nb\": 1, \"c\\\"d\": 2}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"a\\nb\": 1,\n\"c\\\"d\": 2\n}"
+  },
+  {
+   "name": "key escapes indent='' ensure_ascii=False",
+   "value": "{\"a\\nb\": 1, \"c\\\"d\": 2}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"a\\nb\": 1,\n\"c\\\"d\": 2\n}"
+  },
+  {
+   "name": "key escapes indent=0 ensure_ascii=True",
+   "value": "{\"a\\nb\": 1, \"c\\\"d\": 2}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"a\\nb\": 1,\n\"c\\\"d\": 2\n}"
+  },
+  {
+   "name": "key escapes indent=0 ensure_ascii=False",
+   "value": "{\"a\\nb\": 1, \"c\\\"d\": 2}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"a\\nb\": 1,\n\"c\\\"d\": 2\n}"
+  },
+  {
+   "name": "key escapes indent=1 ensure_ascii=True",
+   "value": "{\"a\\nb\": 1, \"c\\\"d\": 2}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"a\\nb\": 1,\n \"c\\\"d\": 2\n}"
+  },
+  {
+   "name": "key escapes indent=1 ensure_ascii=False",
+   "value": "{\"a\\nb\": 1, \"c\\\"d\": 2}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"a\\nb\": 1,\n \"c\\\"d\": 2\n}"
+  },
+  {
+   "name": "key escapes indent=2 ensure_ascii=True",
+   "value": "{\"a\\nb\": 1, \"c\\\"d\": 2}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"a\\nb\": 1,\n  \"c\\\"d\": 2\n}"
+  },
+  {
+   "name": "key escapes indent=2 ensure_ascii=False",
+   "value": "{\"a\\nb\": 1, \"c\\\"d\": 2}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"a\\nb\": 1,\n  \"c\\\"d\": 2\n}"
+  },
+  {
+   "name": "key escapes indent=4 ensure_ascii=True",
+   "value": "{\"a\\nb\": 1, \"c\\\"d\": 2}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"a\\nb\": 1,\n    \"c\\\"d\": 2\n}"
+  },
+  {
+   "name": "key escapes indent=4 ensure_ascii=False",
+   "value": "{\"a\\nb\": 1, \"c\\\"d\": 2}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"a\\nb\": 1,\n    \"c\\\"d\": 2\n}"
+  },
+  {
+   "name": "non-ascii key indent=None ensure_ascii=True",
+   "value": "{\"中\": 1}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"\\u4e2d\": 1}"
+  },
+  {
+   "name": "non-ascii key indent=None ensure_ascii=False",
+   "value": "{\"中\": 1}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"中\": 1}"
+  },
+  {
+   "name": "non-ascii key indent='' ensure_ascii=True",
+   "value": "{\"中\": 1}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"\\u4e2d\": 1\n}"
+  },
+  {
+   "name": "non-ascii key indent='' ensure_ascii=False",
+   "value": "{\"中\": 1}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"中\": 1\n}"
+  },
+  {
+   "name": "non-ascii key indent=0 ensure_ascii=True",
+   "value": "{\"中\": 1}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"\\u4e2d\": 1\n}"
+  },
+  {
+   "name": "non-ascii key indent=0 ensure_ascii=False",
+   "value": "{\"中\": 1}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"中\": 1\n}"
+  },
+  {
+   "name": "non-ascii key indent=1 ensure_ascii=True",
+   "value": "{\"中\": 1}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"\\u4e2d\": 1\n}"
+  },
+  {
+   "name": "non-ascii key indent=1 ensure_ascii=False",
+   "value": "{\"中\": 1}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"中\": 1\n}"
+  },
+  {
+   "name": "non-ascii key indent=2 ensure_ascii=True",
+   "value": "{\"中\": 1}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"\\u4e2d\": 1\n}"
+  },
+  {
+   "name": "non-ascii key indent=2 ensure_ascii=False",
+   "value": "{\"中\": 1}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"中\": 1\n}"
+  },
+  {
+   "name": "non-ascii key indent=4 ensure_ascii=True",
+   "value": "{\"中\": 1}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"\\u4e2d\": 1\n}"
+  },
+  {
+   "name": "non-ascii key indent=4 ensure_ascii=False",
+   "value": "{\"中\": 1}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"中\": 1\n}"
+  },
+  {
+   "name": "deep indent=None ensure_ascii=True",
+   "value": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}",
+   "indent": null,
+   "ensure_ascii": true,
+   "output": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}"
+  },
+  {
+   "name": "deep indent=None ensure_ascii=False",
+   "value": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}",
+   "indent": null,
+   "ensure_ascii": false,
+   "output": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}"
+  },
+  {
+   "name": "deep indent='' ensure_ascii=True",
+   "value": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"a\": {\n\"b\": [\n{\n\"c\": [\n1,\n{\n\"d\": 2\n}\n]\n}\n]\n}\n}"
+  },
+  {
+   "name": "deep indent='' ensure_ascii=False",
+   "value": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"a\": {\n\"b\": [\n{\n\"c\": [\n1,\n{\n\"d\": 2\n}\n]\n}\n]\n}\n}"
+  },
+  {
+   "name": "deep indent=0 ensure_ascii=True",
+   "value": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}",
+   "indent": "",
+   "ensure_ascii": true,
+   "output": "{\n\"a\": {\n\"b\": [\n{\n\"c\": [\n1,\n{\n\"d\": 2\n}\n]\n}\n]\n}\n}"
+  },
+  {
+   "name": "deep indent=0 ensure_ascii=False",
+   "value": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}",
+   "indent": "",
+   "ensure_ascii": false,
+   "output": "{\n\"a\": {\n\"b\": [\n{\n\"c\": [\n1,\n{\n\"d\": 2\n}\n]\n}\n]\n}\n}"
+  },
+  {
+   "name": "deep indent=1 ensure_ascii=True",
+   "value": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}",
+   "indent": " ",
+   "ensure_ascii": true,
+   "output": "{\n \"a\": {\n  \"b\": [\n   {\n    \"c\": [\n     1,\n     {\n      \"d\": 2\n     }\n    ]\n   }\n  ]\n }\n}"
+  },
+  {
+   "name": "deep indent=1 ensure_ascii=False",
+   "value": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}",
+   "indent": " ",
+   "ensure_ascii": false,
+   "output": "{\n \"a\": {\n  \"b\": [\n   {\n    \"c\": [\n     1,\n     {\n      \"d\": 2\n     }\n    ]\n   }\n  ]\n }\n}"
+  },
+  {
+   "name": "deep indent=2 ensure_ascii=True",
+   "value": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}",
+   "indent": "  ",
+   "ensure_ascii": true,
+   "output": "{\n  \"a\": {\n    \"b\": [\n      {\n        \"c\": [\n          1,\n          {\n            \"d\": 2\n          }\n        ]\n      }\n    ]\n  }\n}"
+  },
+  {
+   "name": "deep indent=2 ensure_ascii=False",
+   "value": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}",
+   "indent": "  ",
+   "ensure_ascii": false,
+   "output": "{\n  \"a\": {\n    \"b\": [\n      {\n        \"c\": [\n          1,\n          {\n            \"d\": 2\n          }\n        ]\n      }\n    ]\n  }\n}"
+  },
+  {
+   "name": "deep indent=4 ensure_ascii=True",
+   "value": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}",
+   "indent": "    ",
+   "ensure_ascii": true,
+   "output": "{\n    \"a\": {\n        \"b\": [\n            {\n                \"c\": [\n                    1,\n                    {\n                        \"d\": 2\n                    }\n                ]\n            }\n        ]\n    }\n}"
+  },
+  {
+   "name": "deep indent=4 ensure_ascii=False",
+   "value": "{\"a\": {\"b\": [{\"c\": [1, {\"d\": 2}]}]}}",
+   "indent": "    ",
+   "ensure_ascii": false,
+   "output": "{\n    \"a\": {\n        \"b\": [\n            {\n                \"c\": [\n                    1,\n                    {\n                        \"d\": 2\n                    }\n                ]\n            }\n        ]\n    }\n}"
+  }
+ ]
+}

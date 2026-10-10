@@ -11,9 +11,9 @@ tokenizer; model weights stay on the server.
 tokenizer, the DE-2 prompt renderer, the question types, family resolution, the
 Python-compatible JSON writer and reader, the DE-2 readout itself -- the code
 read, the fallback for a server without `logprob_token_ids`, the bounded thought
-and the read after it -- and the layers above it: the DE-2 policy, the
-calibration records, and `DecisionModel` with `Classify` and `Decide`. The
-command line is still to come.
+and the read after it -- the layers above it: the DE-2 policy, the calibration
+records, and `DecisionModel` with `Classify` and `Decide`; and the command line,
+`shisa-de doctor`, `ask` and `explain`. Live tests are still to come.
 
 The contract this port implements is
 [`docs/READOUT-DE2.md`](docs/READOUT-DE2.md), copied verbatim from the Python
@@ -54,6 +54,29 @@ Every answer records the read that produced it (`Strategy`, `Calibrated`,
 `Temperature`, `Requests`), and every decision carries a provenance block, so a
 caller can tell a calibrated answer from a raw one and a direct read from one
 that followed a thought.
+
+## Command line
+
+```bash
+go install ./cmd/shisa-de
+export SHISA_DE_API_KEY=...
+
+shisa-de doctor   --model shisa-ai/shisa-de-2                 # is this endpoint usable?
+shisa-de ask      --model shisa-ai/shisa-de-2 --labels billing,shipping
+shisa-de explain  --model shisa-ai/shisa-de-2 --labels billing,shipping
+```
+
+`doctor` checks the endpoint, the served model id, the answer boundary and the
+calibration record, and exits non-zero when the report is not ok. `ask` is the
+one-line classification. `explain` prints every step of one question: the prompt
+the model receives, the answer slots, the top-k the codes were read from, the
+distribution, and a `curl` line that reproduces the request without Python.
+
+The command line reads the endpoint from `SHISA_DE_ENDPOINT` and the key from
+`SHISA_DE_API_KEY`, then `SHISA_API_KEY`. Its `--model` defaults to
+`shisa-ai/shisa-de-2` rather than the library's DE-1 default, because this port
+has no DE-1 read and a command whose zero-config form can only fail is not a
+command. `PORT.md` records what else differs from the Python command line.
 
 ## Development
 

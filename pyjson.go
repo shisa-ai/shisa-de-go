@@ -59,8 +59,30 @@ type Object []Member
 // a func, a map with non-string keys). Python's `str` is always valid, so the
 // first has no Python bytes to match.
 func PythonJSON(value any) (string, error) {
+	return PythonJSONWith(value, PythonJSONOptions{})
+}
+
+// PythonJSONOptions are the `json.dumps` keyword arguments that change the
+// bytes, for the callers that are not writing a prompt.
+//
+// The zero value is `json.dumps(value, ensure_ascii=False)`, which is what
+// `PythonJSON` is and what the prompt needs. `indent` is a pointer because
+// Python's own default is `None`: `indent=""` is the indented form with no
+// indentation at all, which is a different output from the compact one.
+type PythonJSONOptions struct {
+	// Indent is `indent`. Nil is the compact form; a string is the indented
+	// form, one level deeper per nesting level.
+	Indent *string
+	// EnsureASCII is `ensure_ascii`, which `json.dumps` defaults to true and
+	// which escapes every code point outside `0x20..0x7e`. The prompt wants the
+	// model to see the text, so this is false there.
+	EnsureASCII bool
+}
+
+// PythonJSONWith is `json.dumps` with the options a caller asks for.
+func PythonJSONWith(value any, options PythonJSONOptions) (string, error) {
 	var buffer bytes.Buffer
-	if err := appendPythonJSON(&buffer, value, 0); err != nil {
+	if err := appendPythonJSON(&buffer, value, 0, options); err != nil {
 		return "", err
 	}
 	return buffer.String(), nil
@@ -183,7 +205,7 @@ func decodeValue(decoder *json.Decoder) (any, error) {
 // hanging.
 const maxJSONDepth = 200
 
-func appendPythonJSON(buffer *bytes.Buffer, value any, depth int) error {
+func appendPythonJSON(buffer *bytes.Buffer, value any, depth int, options PythonJSONOptions) error {
 	if depth > maxJSONDepth {
 		return fmt.Errorf("shisade: the value nests deeper than %d levels", maxJSONDepth)
 	}
@@ -196,9 +218,9 @@ func appendPythonJSON(buffer *bytes.Buffer, value any, depth int) error {
 		buffer.WriteString(strconv.FormatBool(typed))
 		return nil
 	case string:
-		return appendPythonString(buffer, typed)
+		return appendPythonString(buffer, typed, options.EnsureASCII)
 	case Object:
-		return appendPythonObject(buffer, typed, depth)
+		return appendPythonObject(buffer, typed, depth, options)
 	case json.Number:
 		return appendJSONNumber(buffer, string(typed))
 	case json.RawMessage:
@@ -220,7 +242,7 @@ func appendPythonJSON(buffer *bytes.Buffer, value any, depth int) error {
 	reflected := reflect.ValueOf(value)
 	switch reflected.Kind() {
 	case reflect.String:
-		return appendPythonString(buffer, reflected.String())
+		return appendPythonString(buffer, reflected.String(), options.EnsureASCII)
 	case reflect.Bool:
 		buffer.WriteString(strconv.FormatBool(reflected.Bool()))
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -238,11 +260,15 @@ func appendPythonJSON(buffer *bytes.Buffer, value any, depth int) error {
 		buffer.WriteByte('[')
 		for i := 0; i < reflected.Len(); i++ {
 			if i > 0 {
-				buffer.WriteString(", ")
+				appendPythonItemSeparator(buffer, options)
 			}
-			if err := appendPythonJSON(buffer, reflected.Index(i).Interface(), depth+1); err != nil {
+			appendPythonIndent(buffer, depth+1, options.Indent)
+			if err := appendPythonJSON(buffer, reflected.Index(i).Interface(), depth+1, options); err != nil {
 				return err
 			}
+		}
+		if reflected.Len() > 0 {
+			appendPythonIndent(buffer, depth, options.Indent)
 		}
 		buffer.WriteByte(']')
 	case reflect.Map:
@@ -255,13 +281,13 @@ func appendPythonJSON(buffer *bytes.Buffer, value any, depth int) error {
 		for _, key := range keys {
 			members = append(members, Member{Key: key.String(), Value: reflected.MapIndex(key).Interface()})
 		}
-		return appendPythonObject(buffer, members, depth)
+		return appendPythonObject(buffer, members, depth, options)
 	case reflect.Pointer, reflect.Interface:
 		if reflected.IsNil() {
 			buffer.WriteString("null")
 			return nil
 		}
-		return appendPythonJSON(buffer, reflected.Elem().Interface(), depth+1)
+		return appendPythonJSON(buffer, reflected.Elem().Interface(), depth+1, options)
 	default:
 		return fmt.Errorf("shisade: %s has no JSON form here; use shisade.Object, a map with string keys, or a JSON type",
 			reflected.Type())
@@ -269,7 +295,13 @@ func appendPythonJSON(buffer *bytes.Buffer, value any, depth int) error {
 	return nil
 }
 
-func appendPythonObject(buffer *bytes.Buffer, object Object, depth int) error {
+func appendPythonObject(buffer *bytes.Buffer, object Object, depth int, options PythonJSONOptions) error {
+	// A dict with no members is written inline: `json.dumps` only breaks a line
+	// when there is something to put on it.
+	if len(object) == 0 {
+		buffer.WriteString("{}")
+		return nil
+	}
 	buffer.WriteByte('{')
 	seen := make(map[string]struct{}, len(object))
 	for i, member := range object {
@@ -279,18 +311,44 @@ func appendPythonObject(buffer *bytes.Buffer, object Object, depth int) error {
 		}
 		seen[member.Key] = struct{}{}
 		if i > 0 {
-			buffer.WriteString(", ")
+			appendPythonItemSeparator(buffer, options)
 		}
-		if err := appendPythonString(buffer, member.Key); err != nil {
+		appendPythonIndent(buffer, depth+1, options.Indent)
+		if err := appendPythonString(buffer, member.Key, options.EnsureASCII); err != nil {
 			return err
 		}
 		buffer.WriteString(": ")
-		if err := appendPythonJSON(buffer, member.Value, depth+1); err != nil {
+		if err := appendPythonJSON(buffer, member.Value, depth+1, options); err != nil {
 			return err
 		}
 	}
+	appendPythonIndent(buffer, depth, options.Indent)
 	buffer.WriteByte('}')
 	return nil
+}
+
+// appendPythonItemSeparator writes what sits between two members of a container.
+//
+// `json.dumps` uses `", "` when it is not indenting and `","` followed by a
+// newline when it is, because the newline is the indent's own.
+func appendPythonItemSeparator(buffer *bytes.Buffer, options PythonJSONOptions) {
+	if options.Indent == nil {
+		buffer.WriteString(", ")
+		return
+	}
+	buffer.WriteByte(',')
+}
+
+// appendPythonIndent starts the line a member sits on. It writes nothing when
+// the output is compact.
+func appendPythonIndent(buffer *bytes.Buffer, depth int, indent *string) {
+	if indent == nil {
+		return
+	}
+	buffer.WriteByte('\n')
+	for i := 0; i < depth; i++ {
+		buffer.WriteString(*indent)
+	}
 }
 
 // appendJSONNumber renders a number the way Python's parser and dumper would:
@@ -378,7 +436,7 @@ func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 // A string that is not valid UTF-8 is an error. Python's str is always valid,
 // so there is no Python output to match; substituting U+FFFD would put bytes in
 // the prompt that neither the caller nor Python produced.
-func appendPythonString(buffer *bytes.Buffer, text string) error {
+func appendPythonString(buffer *bytes.Buffer, text string, ensureASCII bool) error {
 	if !utf8.ValidString(text) {
 		return fmt.Errorf("shisade: a string is not valid UTF-8, and Python cannot hold one")
 	}
@@ -401,10 +459,21 @@ func appendPythonString(buffer *bytes.Buffer, text string) error {
 		case '\t':
 			buffer.WriteString(`\t`)
 		default:
-			if r < 0x20 {
+			switch {
+			case r < 0x20:
 				fmt.Fprintf(buffer, `\u%04x`, r)
-			} else {
+			case !ensureASCII || r <= 0x7e:
+				// `ensure_ascii=False` writes the text as UTF-8. With it true,
+				// `0x7f` and everything above is escaped, which is what the
+				// ASCII encoder's `[^\x20-\x7e]` matches.
 				buffer.WriteRune(r)
+			case r <= 0xffff:
+				fmt.Fprintf(buffer, `\u%04x`, r)
+			default:
+				// An astral code point is written as the surrogate pair UTF-16
+				// would, because Python's ASCII encoder is a UTF-16 one.
+				offset := r - 0x10000
+				fmt.Fprintf(buffer, `\u%04x\u%04x`, 0xd800+(offset>>10), 0xdc00+(offset&0x3ff))
 			}
 		}
 		i += size

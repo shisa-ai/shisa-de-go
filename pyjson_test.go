@@ -1,9 +1,13 @@
 package shisade
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -436,5 +440,104 @@ func TestTruncate(t *testing.T) {
 	}
 	if got := truncate(strings.Repeat("x", 400)); !strings.HasSuffix(got, "...") || len(got) != 303 {
 		t.Errorf("truncate of a long string is %d bytes", len(got))
+	}
+}
+
+// TestPythonJSONDumpsOptions replays `json.dumps` for the `indent` and
+// `ensure_ascii` combinations the command line uses.
+//
+// `PythonJSON` is the compact, `ensure_ascii=False` form the prompt needs. The
+// command line prints reports, and `json.dumps(report, indent=2)` is not Go's
+// `json.MarshalIndent`: the item separator is a bare comma followed by the
+// indent's own newline, an empty container stays on one line, a float keeps
+// Python's repr, and `ensure_ascii=True` escapes DEL and the C1 block and writes
+// an astral code point as the surrogate pair UTF-16 would.
+func TestPythonJSONDumpsOptions(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "pyjson_dumps.json"))
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	var fixture struct {
+		Python    string `json:"python"`
+		Generated string `json:"generated"`
+		Cases     []struct {
+			Name        string  `json:"name"`
+			Value       string  `json:"value"`
+			Indent      *string `json:"indent"`
+			EnsureASCII bool    `json:"ensure_ascii"`
+			Output      string  `json:"output"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("the fixture is not JSON: %v", err)
+	}
+	metaRaw, err := os.ReadFile(filepath.Join("testdata", "pyjson_dumps.meta.json"))
+	if err != nil {
+		t.Fatalf("reading the provenance: %v", err)
+	}
+	var meta struct {
+		Python    string `json:"python"`
+		Generated string `json:"generated"`
+		Cases     int    `json:"cases"`
+		SHA256    string `json:"sha256"`
+	}
+	if err := json.Unmarshal(metaRaw, &meta); err != nil {
+		t.Fatalf("the provenance is not JSON: %v", err)
+	}
+	sum := sha256.Sum256(raw)
+	if got := hex.EncodeToString(sum[:]); got != meta.SHA256 {
+		t.Errorf("the fixture is %s, the provenance records %s", got, meta.SHA256)
+	}
+	if len(fixture.Cases) != meta.Cases {
+		t.Errorf("the fixture holds %d cases, the provenance records %d",
+			len(fixture.Cases), meta.Cases)
+	}
+	if fixture.Python == "" || meta.Python == "" || fixture.Generated == "" {
+		t.Error("the fixture does not say which interpreter produced it")
+	}
+
+	for _, tc := range fixture.Cases {
+		value, err := DecodeJSON([]byte(tc.Value))
+		if err != nil {
+			t.Errorf("%s: DecodeJSON: %v", tc.Name, err)
+			continue
+		}
+		got, err := PythonJSONWith(value, PythonJSONOptions{
+			Indent: tc.Indent, EnsureASCII: tc.EnsureASCII,
+		})
+		if err != nil {
+			t.Errorf("%s: PythonJSONWith: %v", tc.Name, err)
+			continue
+		}
+		if got != tc.Output {
+			t.Errorf("%s:\n got %q\nwant %q", tc.Name, got, tc.Output)
+		}
+	}
+}
+
+// TestPythonJSONIndentIsNotGoIndent pins the two shapes `json.MarshalIndent`
+// would get wrong, so the test above cannot pass by accident on a fixture that
+// happens to agree with Go.
+func TestPythonJSONIndentIsNotGoIndent(t *testing.T) {
+	indent := "  "
+	value := map[string]any{"a": []any{}, "b": []any{1.0, 2.0}}
+	got, err := PythonJSONWith(value, PythonJSONOptions{Indent: &indent})
+	if err != nil {
+		t.Fatalf("PythonJSONWith: %v", err)
+	}
+	want := "{\n  \"a\": [],\n  \"b\": [\n    1.0,\n    2.0\n  ]\n}"
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	// Go's encoder would write the empty list as `[]` too, but it writes 1.0 as
+	// 1 and an empty object's members differently; this is the check that the
+	// fixture is comparing Python against Python.
+	goShape, err := json.MarshalIndent(value, "", indent)
+	if err != nil {
+		t.Fatalf("MarshalIndent: %v", err)
+	}
+	if string(goShape) == want {
+		t.Error("Go's own indented encoder produces the same bytes, so the fixture " +
+			"would not catch a swap")
 	}
 }

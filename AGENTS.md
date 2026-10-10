@@ -43,7 +43,7 @@ through the other family's contract.
 Three layers, one contract. This is the target layout: M1 and M2 landed the
 codebook, the tokenizer, the renderer, family resolution, the question types and
 the Python-JSON writer; M3 landed the DE-2 readout itself; M4 landed the policy,
-the calibration records and the friendly layer. The command line is M5 and the
+the calibration records and the friendly layer; M5 landed the command line. The
 live suite is M6. The Key Files table below says what is in the tree.
 
 - `readout.go` — the raw reads: render the repeated prompt, request every
@@ -56,6 +56,10 @@ live suite is M6. The Key Files table below says what is in the tree.
   selection, and `Calibration.Applicability`.
 - `client.go` — the friendly layer. `Classify` for label sets, `Decide` for
   typed questions.
+- `cmd/shisa-de/` — the command line, and the only place that prints. It is a
+  second consumer of the library's Python-compatibility surface
+  (`PythonJSONWith`, `PythonStr`, `PythonRepr`, `MaxLogprobs`), so a change to
+  one of those has to keep both clients' output identical.
 
 What must not change casually:
 
@@ -98,8 +102,9 @@ What must not change casually:
 | `client.go` | `DecisionModel.Classify`, `DecisionModel.Decide`, `SystemOne`, `Health`, `Decision`, `Answer`, `HeadSpec` |
 | `scripts/gen_client_parity.py` | Records live Python `DecisionModel` exchanges against the hosted endpoint and writes the fixture the parity test replays |
 | `scripts/gen_python_printable.py` | Generates `data/python-printable.json` and `testdata/python_repr.json` from the running interpreter |
+| `scripts/gen_pyjson_dumps.py` | Generates `testdata/pyjson_dumps.json`: `json.dumps` over `indent` and `ensure_ascii`, which is what the command line prints |
 | `questions_test.go` | The validation rules Python cannot reach: a repeated option key, and a repeated label in a multi-label head |
-| `cmd/shisa-de/` | Planned (M5): `shisa-de doctor`, `ask`, `explain` |
+| `cmd/shisa-de/` | `shisa-de doctor`, `ask`, `explain`. `main.go` is the parser and the shared flags, `flags.go` the option shapes `flag` lacks, `state.go` the state and label helpers, and one file per command |
 
 ## Workflow Expectations
 
@@ -156,11 +161,16 @@ What must not change casually:
 | Client replay | `go test . -run TestClientParity` (replays recorded live Python `DecisionModel` exchanges through an `httptest` stub; offline) |
 | Race detector | `go test -race ./...` (the concurrency claim for `Readout` rests on this) |
 | Live suite, hosted DE-2 | Planned (M6): `SHISA_DE_LIVE=1 go test ./... -run Live`. No test in the tree matches that name yet, so the command passes without running anything |
-| Endpoint check | Planned: `shisa-de doctor`, and `shisa-de doctor --probe` to spend two requests on the reads |
-| Readout walkthrough | Planned: `shisa-de explain --labels spam,ham` |
+| Endpoint check | `go run ./cmd/shisa-de doctor --model shisa-ai/shisa-de-2`, and `--probe` to spend one question on the read |
+| Readout walkthrough | `go run ./cmd/shisa-de explain --model shisa-ai/shisa-de-2 --labels billing,shipping` |
 
 The live suite spends real requests and needs `SHISA_API_KEY`. It is skipped
 unless `SHISA_DE_LIVE=1`.
+
+`doctor` and `explain` also spend real requests. They read the endpoint from
+`SHISA_DE_ENDPOINT` and the key from `SHISA_DE_API_KEY`, then `SHISA_API_KEY`.
+The command line's `--model` defaults to `shisa-ai/shisa-de-2`, not the
+library's DE-1 `DefaultModel`, because this port has no DE-1 read.
 
 The tokenizer parity suite compares this package's ids against
 `transformers`-derived golden vectors checked into `testdata/`, and its decode

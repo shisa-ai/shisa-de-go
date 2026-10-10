@@ -1307,6 +1307,21 @@ func stringOrNil(value *string) any {
 	return *value
 }
 
+// PythonRepr is Python's `repr()`.
+//
+// It is exported for the command line, which prints the same `sampled` text and
+// the same repeated-turn separator the Python command line prints, both with
+// `!r`. The container forms sort a Go map's keys, which is the one place this
+// spelling is not Python's, and `str()` of a container is `repr` of its members
+// in both languages.
+func PythonRepr(value any) string { return pythonRepr(value, true) }
+
+// PythonStr is Python's `str()`.
+//
+// It is exported for the command line, which prints a question's option
+// descriptions with `str` where it prints the sampled text with `repr`.
+func PythonStr(value any) string { return pythonRepr(value, false) }
+
 // pythonStr is Python's `str()`.
 //
 // A score's level and its legend are rendered with it, and both are part of what

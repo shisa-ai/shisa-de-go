@@ -1,6 +1,8 @@
 # Built binaries
 /bin/
-shisa-de
+# The built binary at the repository root. Unanchored, this also matched the
+# source directory cmd/shisa-de and silently untracked the whole command line.
+/shisa-de
 *.exe
 *.test
 *.out

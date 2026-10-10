@@ -484,6 +484,10 @@ func (r *Readout) Close() {
 // boundary before spending a request.
 func (r *Readout) EnsureTokenizer() (Tokenizer, error) { return r.ensureTokenizer() }
 
+// MaxLogprobs is the `logprobs` value a code read sends, resolved from the
+// config. The command line prints it and puts it in the request body it shows.
+func (r *Readout) MaxLogprobs() int { return r.maxLogprobs }
+
 func (r *Readout) tokenizerSnapshot() (Tokenizer, uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
