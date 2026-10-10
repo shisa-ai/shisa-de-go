@@ -1,0 +1,17 @@
+{
+  "topic": "m3-de2-readout",
+  "displayTopic": "m3-de2-readout",
+  "reportRoot": "docs/reviews",
+  "configSources": [
+    "/home/morpheus/.config/jouzu/agent/review-cycles.json"
+  ],
+  "skippedConfigSources": [],
+  "policy": {
+    "maxCycles": 3,
+    "rerunOnSeverityAtLeast": "HIGH",
+    "fixAllNonCounterproductive": true,
+    "alwaysWriteReport": true
+  },
+  "overLimitApproved": false,
+  "updatedAt": "2026-10-10T03:17:34.709Z"
+}
