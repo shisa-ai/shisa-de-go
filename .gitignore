@@ -1,0 +1,10 @@
+# Built binaries
+/bin/
+shisa-de
+*.exe
+*.test
+*.out
+
+# Local tokenizer downloads and scratch output
+/tmp/
+/tokenizer.json
