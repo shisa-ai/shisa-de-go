@@ -1,8 +1,10 @@
 package tokenizer
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,19 +13,11 @@ import (
 
 // The pinned tokenizer is the one the parity vectors were generated from:
 // scripts/gen_tokenizer_parity.py, model shisa-ai/shisa-de-2, revision
-// 8f21734b27b3462471c4662d5638e52195b005a3. The codebook's token_ids were
-// audited on google/gemma-4-26B-A4B-it@4d7ae4984b7db7de8f8457170b3f1a419ee76d52
+// 8f21734b27b3462471c4662d5638e52195b005a3 (PinnedRepo/PinnedSnapshot in
+// hub.go). The codebook's token_ids were audited on
+// google/gemma-4-26B-A4B-it@4d7ae4984b7db7de8f8457170b3f1a419ee76d52
 // (data/codebook-de2.json); TestParityCoversEveryCodebookCode checks that the
 // two agree.
-const (
-	pinnedRepo     = "shisa-ai/shisa-de-2"
-	pinnedSnapshot = "8f21734b27b3462471c4662d5638e52195b005a3"
-
-	// A cheap fingerprint of the pinned tokenizer, so a fallback to a different
-	// revision fails loudly instead of producing confusing id mismatches.
-	pinnedVocabSize = 262144
-	pinnedCloseID   = 101
-)
 
 // loadPinned loads the tokenizer the parity vectors were produced with and
 // checks that it is the pinned one.
@@ -33,14 +27,14 @@ const (
 // is set, which turns the skip into a failure so CI can require the run.
 func loadPinned(t *testing.T) *Tokenizer {
 	t.Helper()
-	tokenizer, path, err := LoadPinned(pinnedRepo, pinnedSnapshot)
+	tokenizer, path, err := LoadPinned(PinnedRepo, PinnedSnapshot)
 	if errors.Is(err, ErrNoPinnedTokenizer) {
 		if os.Getenv(DownloadEnv) == "1" {
-			tokenizer, err = Load(pinnedRepo + "@" + pinnedSnapshot)
+			tokenizer, err = Load(PinnedRepo + "@" + PinnedSnapshot)
 			if err != nil {
 				t.Fatalf("downloading the pinned tokenizer: %v", err)
 			}
-			return checkPinned(t, tokenizer, pinnedRepo+"@"+pinnedSnapshot)
+			return checkPinned(t, tokenizer, PinnedRepo+"@"+PinnedSnapshot)
 		}
 		if os.Getenv(RequireEnv) == "1" {
 			t.Fatalf("no tokenizer.json found and %s=1; set %s or %s=1",
@@ -57,12 +51,8 @@ func loadPinned(t *testing.T) *Tokenizer {
 // checkPinned fails when the loaded tokenizer is not the pinned one.
 func checkPinned(t *testing.T, tokenizer *Tokenizer, path string) *Tokenizer {
 	t.Helper()
-	if tokenizer.Len() != pinnedVocabSize {
-		t.Fatalf("%s has %d vocab entries, want %d: not the pinned tokenizer",
-			path, tokenizer.Len(), pinnedVocabSize)
-	}
-	if id, ok := tokenizer.TokenID("<channel|>"); !ok || id != pinnedCloseID {
-		t.Fatalf("%s has <channel|> at id %d (present=%v), want %d", path, id, ok, pinnedCloseID)
+	if err := VerifyPinned(tokenizer); err != nil {
+		t.Fatalf("%s: %v", path, err)
 	}
 	return tokenizer
 }
@@ -73,11 +63,32 @@ type parityVector struct {
 }
 
 type parityMeta struct {
-	Model       string `json:"model"`
-	Revision    string `json:"revision"`
-	Strings     int    `json:"strings"`
-	IDs         int    `json:"ids"`
-	DecodeCases int    `json:"decode_cases"`
+	Model        string `json:"model"`
+	Revision     string `json:"revision"`
+	Strings      int    `json:"strings"`
+	IDs          int    `json:"ids"`
+	DecodeCases  int    `json:"decode_cases"`
+	Sha256       string `json:"sha256"`
+	DecodeSha256 string `json:"decode_sha256"`
+}
+
+// loadParityMeta reads the generator's provenance file and checks that it names
+// the pinned model and revision.
+func loadParityMeta(t *testing.T) parityMeta {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "testdata", "tokenizer_parity.meta.json"))
+	if err != nil {
+		t.Fatalf("reading the parity provenance: %v", err)
+	}
+	var meta parityMeta
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatalf("parsing the parity provenance: %v", err)
+	}
+	if meta.Revision != PinnedSnapshot || meta.Model != PinnedRepo {
+		t.Fatalf("the vectors were generated from %s@%s, want %s@%s",
+			meta.Model, meta.Revision, PinnedRepo, PinnedSnapshot)
+	}
+	return meta
 }
 
 // TestParityVectors is the test the whole tokenizer rests on: every id this
@@ -92,19 +103,11 @@ func TestParityVectors(t *testing.T) {
 	if err := json.Unmarshal(raw, &vectors); err != nil {
 		t.Fatalf("parsing the parity vectors: %v", err)
 	}
-	// The counts come from the generator's provenance file, so a corpus that
-	// silently shrank is a failure rather than a smaller green run.
-	metaRaw, err := os.ReadFile(filepath.Join("..", "testdata", "tokenizer_parity.meta.json"))
-	if err != nil {
-		t.Fatalf("reading the parity provenance: %v", err)
-	}
-	var meta parityMeta
-	if err := json.Unmarshal(metaRaw, &meta); err != nil {
-		t.Fatalf("parsing the parity provenance: %v", err)
-	}
-	if meta.Revision != pinnedSnapshot || meta.Model != pinnedRepo {
-		t.Fatalf("the vectors were generated from %s@%s, want %s@%s",
-			meta.Model, meta.Revision, pinnedRepo, pinnedSnapshot)
+	// The counts and digest come from the generator's provenance file, so a
+	// corpus that silently shrank is a failure rather than a smaller green run.
+	meta := loadParityMeta(t)
+	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != meta.Sha256 {
+		t.Fatalf("the parity fixture hashes to %s, the provenance records %s", got, meta.Sha256)
 	}
 	if len(vectors) != meta.Strings {
 		t.Fatalf("the fixture has %d vectors, the provenance records %d", len(vectors), meta.Strings)
@@ -192,8 +195,14 @@ func TestDecode(t *testing.T) {
 	if err := json.Unmarshal(raw, &cases); err != nil {
 		t.Fatalf("parsing the decode vectors: %v", err)
 	}
-	if len(cases) == 0 {
-		t.Fatal("the decode vectors are empty")
+	// The digest and the case count come from the generator's provenance file,
+	// so the decode corpus cannot shrink silently either.
+	meta := loadParityMeta(t)
+	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != meta.DecodeSha256 {
+		t.Fatalf("the decode fixture hashes to %s, the provenance records %s", got, meta.DecodeSha256)
+	}
+	if len(cases) != meta.DecodeCases {
+		t.Fatalf("the decode fixture has %d cases, the provenance records %d", len(cases), meta.DecodeCases)
 	}
 	for _, vector := range cases {
 		if got := tokenizer.Decode(vector.IDs); got != vector.Text {
@@ -261,25 +270,27 @@ func TestFromBytesRejectsWhatItCannotRead(t *testing.T) {
 	}
 
 	cases := map[string]string{
-		"model type":              `{"model": {"type": "WordPiece", "vocab": {"a": 0}}}`,
-		"empty vocab":             `{"model": {"type": "BPE", "vocab": {}}}`,
-		"no normalizer":           `{` + okPreTokenizer + `,` + okDecoder + `,` + okModel + `}`,
-		"regex normalizer":        `{"normalizer": {"type": "Replace", "pattern": {"Regex": "\\s+"}}, "model": {"type": "BPE", "vocab": {"a": 0}}}`,
-		"unknown normalizer":      `{"normalizer": {"type": "NFKC"}, "model": {"type": "BPE", "vocab": {"a": 0}}}`,
-		"normalizer pattern":      `{"normalizer":{"type":"Replace","pattern":{"String":"\t"},"content":""},` + okPreTokenizer + `,` + okDecoder + `,` + okModel + `}`,
-		"normalizer content":      `{"normalizer":{"type":"Replace","pattern":{"String":" "},"content":""},` + okPreTokenizer + `,` + okDecoder + `,` + okModel + `}`,
-		"normalizer inverted":     `{"normalizer":{"type":"Replace","pattern":{"String":" "},"content":"\u2581","invert":true},` + okPreTokenizer + `,` + okDecoder + `,` + okModel + `}`,
-		"pre-tokenizer behavior":  `{` + okNormalizer + `,"pre_tokenizer":{"type":"Split","pattern":{"String":" "},"behavior":"Isolated","invert":false},` + okDecoder + `,` + okModel + `}`,
-		"pre-tokenizer inverted":  `{` + okNormalizer + `,"pre_tokenizer":{"type":"Split","pattern":{"String":" "},"behavior":"MergedWithPrevious","invert":true},` + okDecoder + `,` + okModel + `}`,
-		"no decoder":              `{` + okNormalizer + `,` + okPreTokenizer + `,` + okModel + `}`,
-		"decoder strip":           `{` + okNormalizer + `,` + okPreTokenizer + `,"decoder":{"type":"Strip","content":" ","start":1,"stop":0},` + okModel + `}`,
-		"decoder reordered":       `{` + okNormalizer + `,` + okPreTokenizer + `,"decoder":{"type":"Sequence","decoders":[{"type":"ByteFallback"},{"type":"Fuse"}]},` + okModel + `}`,
-		"dropout":                 `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","dropout":0.1,"vocab":{"a":0}}}`,
-		"negative id":             `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","vocab":{"a":-1}}}`,
-		"duplicate id":            `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","vocab":{"a":1,"b":1}}}`,
-		"merge missing concat":    `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","vocab":{"a":0,"b":1},"merges":[["a","b"]]}}`,
-		"merge missing left":      `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","vocab":{"b":1,"ab":2},"merges":[["a","b"]]}}`,
-		"added token id mismatch": `{"added_tokens":[{"id":9,"content":"<unk>"}],` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,` + okModel + `}`,
+		"model type":                       `{"model": {"type": "WordPiece", "vocab": {"a": 0}}}`,
+		"empty vocab":                      `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","vocab":{}}}`,
+		"no unk and no byte fallback":      `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","vocab":{"a":0}}}`,
+		"byte fallback incomplete, no unk": `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","byte_fallback":true,"vocab":{"a":0,"<0x41>":1}}}`,
+		"no normalizer":                    `{` + okPreTokenizer + `,` + okDecoder + `,` + okModel + `}`,
+		"regex normalizer":                 `{"normalizer": {"type": "Replace", "pattern": {"Regex": "\\s+"}}, "model": {"type": "BPE", "vocab": {"a": 0}}}`,
+		"unknown normalizer":               `{"normalizer": {"type": "NFKC"}, "model": {"type": "BPE", "vocab": {"a": 0}}}`,
+		"normalizer pattern":               `{"normalizer":{"type":"Replace","pattern":{"String":"\t"},"content":""},` + okPreTokenizer + `,` + okDecoder + `,` + okModel + `}`,
+		"normalizer content":               `{"normalizer":{"type":"Replace","pattern":{"String":" "},"content":""},` + okPreTokenizer + `,` + okDecoder + `,` + okModel + `}`,
+		"normalizer inverted":              `{"normalizer":{"type":"Replace","pattern":{"String":" "},"content":"\u2581","invert":true},` + okPreTokenizer + `,` + okDecoder + `,` + okModel + `}`,
+		"pre-tokenizer behavior":           `{` + okNormalizer + `,"pre_tokenizer":{"type":"Split","pattern":{"String":" "},"behavior":"Isolated","invert":false},` + okDecoder + `,` + okModel + `}`,
+		"pre-tokenizer inverted":           `{` + okNormalizer + `,"pre_tokenizer":{"type":"Split","pattern":{"String":" "},"behavior":"MergedWithPrevious","invert":true},` + okDecoder + `,` + okModel + `}`,
+		"no decoder":                       `{` + okNormalizer + `,` + okPreTokenizer + `,` + okModel + `}`,
+		"decoder strip":                    `{` + okNormalizer + `,` + okPreTokenizer + `,"decoder":{"type":"Strip","content":" ","start":1,"stop":0},` + okModel + `}`,
+		"decoder reordered":                `{` + okNormalizer + `,` + okPreTokenizer + `,"decoder":{"type":"Sequence","decoders":[{"type":"ByteFallback"},{"type":"Fuse"}]},` + okModel + `}`,
+		"dropout":                          `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","dropout":0.1,"vocab":{"a":0}}}`,
+		"negative id":                      `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","vocab":{"a":-1}}}`,
+		"duplicate id":                     `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","vocab":{"a":1,"b":1}}}`,
+		"merge missing concat":             `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","vocab":{"a":0,"b":1},"merges":[["a","b"]]}}`,
+		"merge missing left":               `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","vocab":{"b":1,"ab":2},"merges":[["a","b"]]}}`,
+		"added token id mismatch":          `{"added_tokens":[{"id":9,"content":"<unk>"}],` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,` + okModel + `}`,
 	}
 	for name, body := range cases {
 		_, err := FromBytes([]byte(body))
@@ -297,7 +308,7 @@ func TestFromBytesRejectsWhatItCannotRead(t *testing.T) {
 // TestFromBytesAcceptsALargeVocabID guards the reverse-vocabulary lookup: a
 // sparse id used to size a slice from the largest id in the file.
 func TestFromBytesAcceptsALargeVocabID(t *testing.T) {
-	body := `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","vocab":{"a":0,"z":2000000000}}}`
+	body := `{` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,"model":{"type":"BPE","unk_token":"<unk>","vocab":{"<unk>":0,"a":1,"z":2000000000}}}`
 	tokenizer, err := FromBytes([]byte(body))
 	if err != nil {
 		t.Fatalf("a sparse id should load: %v", err)
@@ -307,17 +318,31 @@ func TestFromBytesAcceptsALargeVocabID(t *testing.T) {
 	}
 }
 
-// TestFuseUnkDoesNotTouchAddedTokens is the regression for the fuse_unk bug:
-// fusing over the assembled output collapsed adjacent explicit <unk> tokens.
+// TestFuseUnkDoesNotTouchAddedTokens is the regression for the round-1 fuse_unk
+// bug: fusing over the assembled output collapsed adjacent explicit <unk>
+// tokens. The model here has fuse_unk on and no byte fallback, so unk is both
+// producible by the model and present as an added token.
 func TestFuseUnkDoesNotTouchAddedTokens(t *testing.T) {
-	body := `{"added_tokens":[{"id":0,"content":"<unk>"}],` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder + `,` + okModel + `}`
+	body := `{"added_tokens":[{"id":0,"content":"<unk>"}],` + okNormalizer + `,` + okPreTokenizer + `,` + okDecoder +
+		`,"model":{"type":"BPE","unk_token":"<unk>","fuse_unk":true,"vocab":{"<unk>":0,"a":1},"merges":[]}}`
 	tokenizer, err := FromBytes([]byte(body))
 	if err != nil {
 		t.Fatalf("loading: %v", err)
 	}
-	got := tokenizer.Encode("<unk><unk>")
-	if !equalInts(got, []int{0, 0}) {
-		t.Errorf("Encode(\"<unk><unk>\") = %v, want [0 0]", got)
+	cases := []struct {
+		text string
+		want []int
+	}{
+		{"aa", []int{1, 1}},         // known characters are untouched
+		{"xy", []int{0}},            // two unknown characters fuse to one unk
+		{"<unk><unk>", []int{0, 0}}, // added tokens are never fused
+		{"x<unk>", []int{0, 0}},     // a fused model unk stays separate from an added one
+		{"xy<unk>xy", []int{0, 0, 0}},
+	}
+	for _, tc := range cases {
+		if got := tokenizer.Encode(tc.text); !equalInts(got, tc.want) {
+			t.Errorf("Encode(%q) = %v, want %v", tc.text, got, tc.want)
+		}
 	}
 }
 
@@ -402,12 +427,18 @@ func BenchmarkEncodeWidePrompt(b *testing.B) {
 
 func loadPinnedBench(b *testing.B) *Tokenizer {
 	b.Helper()
-	tokenizer, _, err := LoadPinned(pinnedRepo, pinnedSnapshot)
+	tokenizer, path, err := LoadPinned(PinnedRepo, PinnedSnapshot)
 	if errors.Is(err, ErrNoPinnedTokenizer) {
+		if os.Getenv(RequireEnv) == "1" {
+			b.Fatalf("no tokenizer.json found and %s=1", RequireEnv)
+		}
 		b.Skip("no tokenizer.json found")
 	}
 	if err != nil {
 		b.Fatalf("loading the pinned tokenizer: %v", err)
+	}
+	if err := VerifyPinned(tokenizer); err != nil {
+		b.Fatalf("%s: %v", path, err)
 	}
 	return tokenizer
 }

@@ -40,6 +40,31 @@ const (
 // skip on it.
 var ErrNoPinnedTokenizer = errors.New("tokenizer: no pinned tokenizer.json found")
 
+// The identity of the checkpoint this port targets. VerifyPinned checks a
+// loaded tokenizer against these, so a fallback to a different revision of the
+// same model fails loudly instead of producing confusing id mismatches.
+const (
+	PinnedRepo      = "shisa-ai/shisa-de-2"
+	PinnedSnapshot  = "8f21734b27b3462471c4662d5638e52195b005a3"
+	PinnedVocabSize = 262144
+	PinnedCloseID   = 101
+)
+
+// VerifyPinned reports whether a loaded tokenizer is the pinned one. It is a
+// cheap identity check, not a full comparison: the vocab size and the id of the
+// closing channel token are enough to catch a different revision.
+func VerifyPinned(t *Tokenizer) error {
+	if t.Len() != PinnedVocabSize {
+		return fmt.Errorf("tokenizer: %d vocab entries, want %d: not the pinned tokenizer",
+			t.Len(), PinnedVocabSize)
+	}
+	if id, ok := t.TokenID("<channel|>"); !ok || id != PinnedCloseID {
+		return fmt.Errorf("tokenizer: <channel|> at id %d (present=%v), want %d: not the pinned tokenizer",
+			id, ok, PinnedCloseID)
+	}
+	return nil
+}
+
 // LoadPinned finds a pinned tokenizer.json without fetching it and reports
 // which path it used, so a caller can check its identity.
 //
@@ -286,7 +311,13 @@ func Lookup(repo, revision string) (string, bool) {
 			continue
 		}
 		if target, err := os.ReadFile(filepath.Join(base, "refs", filepath.FromSlash(revision))); err == nil {
-			path := filepath.Join(base, "snapshots", strings.TrimSpace(string(target)), "tokenizer.json")
+			// The ref's content is another path component. Validate it the same
+			// way as a caller-supplied revision rather than joining it blindly.
+			resolved := strings.TrimSpace(string(target))
+			if !isSnapshot(resolved) {
+				continue
+			}
+			path := filepath.Join(base, "snapshots", resolved, "tokenizer.json")
 			if exists(path) {
 				return path, true
 			}

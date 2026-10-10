@@ -70,15 +70,17 @@ What must not change casually:
 | `docs/PORT.md` | How the Go port maps onto the Python reference, and where it deliberately differs |
 | `README.md` | The API surface users see first |
 | `readout.go` | Rendering, code resolution, boundary checks, requests, thought generation, softmax, readout versions |
-| `policy.go` | The DE-2 policy: repeated read, gate, thought, read after it; `ReadOptions` and the per-model and per-call settings that select a read |
-| `client.go` | `DecisionModel.Classify`, `DecisionModel.Decide`, `Health`, `Decision`, `Answer` |
+| `render.go` | The pinned Gemma chat-template renderer for the two DE-2 message shapes |
+| `pyjson.go` | `json.dumps(value, ensure_ascii=False)` and `json.loads` equivalents, because the user turn is serialized into the prompt |
 | `questions.go` | `Noul`, `Choice`, `Score` and their wire shapes |
-| `calibration.go` | Temperature scaling, the confidence statistic, record selection, and `Calibration.Applicability` |
 | `family.go` | Resolves DE-1/DE-2 from a declaration, the model id or the tokenizer, and says which |
 | `tokenizer/` | The pure-Go Hugging Face BPE tokenizer. No cgo |
 | `data/codebook-de2.json` | The 256 DE-2 answer codes, in order, with the audit they came from |
 | `data/calibration-de2.json` | The DE-2 record: temperatures per read with the fit's provenance, and one withheld earlier fit |
-| `cmd/shisa-de/` | `shisa-de doctor`, `ask`, `explain` |
+| `policy.go` | Planned (M3): the DE-2 policy: repeated read, gate, thought, read after it |
+| `calibration.go` | Planned (M4): temperature scaling, the confidence statistic, record selection, and `Calibration.Applicability` |
+| `client.go` | Planned (M5): `DecisionModel.Classify`, `DecisionModel.Decide`, `Health`, `Decision`, `Answer` |
+| `cmd/shisa-de/` | Planned (M6): `shisa-de doctor`, `ask`, `explain` |
 
 ## Workflow Expectations
 

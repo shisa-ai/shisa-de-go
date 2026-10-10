@@ -211,9 +211,17 @@ def decode_cases() -> list[list[int]]:
         bytes_ids([0xED, 0xA0, 0x80]),           # an encoded surrogate
     ])
 
-    # A byte run broken by an ordinary token.
+    # A byte run broken by an ordinary token, and by an id outside the
+    # vocabulary. Hugging Face skips an unknown id without ending the run, so
+    # [<0xC2>, unknown, <0xA9>] decodes as one valid character.
     a = 236776
-    cases.extend([[a] + bytes_ids([0xE6, 0x97]), bytes_ids([0xE6, 0x97]) + [a]])
+    cases.extend([
+        [a] + bytes_ids([0xE6, 0x97]),
+        bytes_ids([0xE6, 0x97]) + [a],
+        [0xE6 + 238, 999_999_999, 0x97 + 238],
+        [0xC2 + 238, 999_999_999, 0xA9 + 238],
+        [a, 999_999_999, a],
+    ])
     return cases
 
 
@@ -227,7 +235,8 @@ def main() -> int:
     TESTDATA.mkdir(parents=True, exist_ok=True)
     body = json.dumps(vectors, ensure_ascii=False) + "\n"
     OUT.write_text(body, encoding="utf-8")
-    DECODE_OUT.write_text(json.dumps(decodes, ensure_ascii=False) + "\n", encoding="utf-8")
+    decode_body = json.dumps(decodes, ensure_ascii=False) + "\n"
+    DECODE_OUT.write_text(decode_body, encoding="utf-8")
 
     total_ids = sum(len(vector["ids"]) for vector in vectors)
     meta = {
@@ -239,6 +248,7 @@ def main() -> int:
         "ids": total_ids,
         "decode_cases": len(decodes),
         "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+        "decode_sha256": hashlib.sha256(decode_body.encode("utf-8")).hexdigest(),
     }
     META_OUT.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     print(f"{OUT}: {len(vectors)} strings, {total_ids} ids; "

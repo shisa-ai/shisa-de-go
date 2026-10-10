@@ -10,22 +10,26 @@ client deliberately behaves differently.
 | Python | Go |
 | --- | --- |
 | `shisa_de/readout.py` | `readout.go`, `render.go` |
-| `shisa_de/policy.py` | `policy.go` |
-| `shisa_de/calibration.py` | `calibration.go` |
+| `shisa_de/policy.py` | `policy.go` (planned) |
+| `shisa_de/calibration.py` | `calibration.go` (planned) |
 | `shisa_de/family.py` | `family.go` |
 | `shisa_de/questions.py` | `questions.go` |
-| `shisa_de/client.py` | `client.go` |
+| `shisa_de/client.py` | `client.go` (planned) |
 | `json.dumps` / `json.loads` | `pyjson.go` |
 | `shisa_de/overflow.py` | not ported; DE-1 only |
 | `shisa_de/images.py` | not ported yet |
 | `shisa_de/data/*.json` | `data/*.json`, embedded with `go:embed` |
-| `shisa_de/cli.py` | `cmd/shisa-de/` |
+| `shisa_de/cli.py` | `cmd/shisa-de/` (planned) |
 | `tests/test_offline.py` | `*_test.go` with a stub tokenizer and `httptest` |
 | `tests/test_live.py` | live tests behind `SHISA_DE_LIVE=1` |
 
 The tokenizer has no Python counterpart as a module: the Python client calls
 `transformers.AutoTokenizer`. This port implements the tokenizer in
 `tokenizer/` so the library needs neither cgo nor a Python runtime.
+
+The file mapping is the target layout, not a description of the tree: M1 has
+landed the codebook, the tokenizer, the renderer, family resolution, the
+question types and the Python-JSON writer. Rows marked planned are M2 or later.
 
 ## Deliberate differences
 
@@ -52,11 +56,15 @@ pinned checkpoint's normalizer, pre-tokenizer and decoder and checks the file
 for exactly those, rejecting anything else with `ErrUnsupported`. Hugging Face
 accepts a file with no normalizer, a different `Split` behavior, a `Strip`
 decoder or BPE dropout and reads it with that pipeline; this port refuses
-rather than reading it as if it were the pinned one. The same applies to a
-malformed file Hugging Face also refuses: a negative or duplicate vocab id, an
-added token whose declared id disagrees with the vocab, or a merge whose
-operands or concatenation are missing. `Lookup` also resolves only the revision
-asked for, never another snapshot that happens to be cached.
+rather than reading it as if it were the pinned one. It also refuses some files
+Hugging Face reads for reasons of its own: a duplicate vocab id (Go's reverse
+lookup would otherwise depend on map iteration order) and an added token whose
+declared id disagrees with the vocab. Finally, it refuses what Hugging Face
+refuses too: a negative vocab id, a merge whose operands or concatenation are
+missing, and a file with neither a resolvable `unk_token` nor a complete byte
+vocabulary, where an unknown character would silently produce no token.
+`Lookup` also resolves only the revision asked for, never another snapshot that
+happens to be cached.
 
 **`Decode` reproduces the pinned decoder, including its invalid-byte
 handling.** A run of consecutive byte-fallback tokens decodes to the run's text
@@ -82,16 +90,17 @@ pool.
 Checked on 2026-10-10 against `shisa-ai/shisa-de-2` on the hosted endpoint and
 the Python client at `shisa-de` `0.4.0`:
 
-- **Tokenizer.** 1,056 strings, 48,312 token ids: this package's ids equal
+- **Tokenizer.** 1,056 strings, 48,392 token ids: this package's ids equal
   `transformers`' ids on every one. The corpus covers all 24 added tokens and
   their prefix pairs, adjacent explicit `<unk>` tokens (the case that catches
   `fuse_unk` applied to added tokens), all 256 codes, the rendered scaffold,
   JSON payloads, Japanese, emoji, combining marks, control characters, 60 KB of
   real text from both repositories, and 400 random strings. A second fixture
-  replays 80 `tokenizer.decode` outputs, including byte-fallback runs that
-  `Encode` cannot produce. `testdata/tokenizer_parity.meta.json` records the
-  model, the revision, the library versions and the counts, and the test fails
-  if the fixture disagrees with it. Regenerate with
+  replays 83 `tokenizer.decode` outputs, including byte-fallback runs that
+  `Encode` cannot produce and a run split by an id outside the vocabulary.
+  `testdata/tokenizer_parity.meta.json` records the model, the revision, the
+  library versions, the counts and a sha256 of each fixture; the test fails if
+  either fixture disagrees with it. Regenerate with
   `scripts/gen_tokenizer_parity.py`, which pins the revision it passes to
   `from_pretrained`.
 - **Tokenizer identity.** The test checks the loaded tokenizer's vocab size

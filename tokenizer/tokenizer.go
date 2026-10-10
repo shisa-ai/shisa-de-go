@@ -192,6 +192,21 @@ func FromBytes(data []byte) (*Tokenizer, error) {
 			}
 		}
 	}
+	// A character that is neither in the vocab nor fully byte-coverable has to
+	// become something. Without a resolved unk token it would be dropped, and
+	// Encode would silently return fewer ids than the text implies.
+	if !t.hasUnk {
+		if !t.byteFallback {
+			return nil, &ErrUnsupported{What: "neither a resolvable unk_token nor byte fallback; " +
+				"an unknown character would produce no token"}
+		}
+		for b := 0; b < 256; b++ {
+			if !t.byteOK[b] {
+				return nil, &ErrUnsupported{What: "byte fallback with an incomplete byte " +
+					"vocabulary and no resolvable unk_token"}
+			}
+		}
+	}
 
 	// Merges are ranked by position in the file. An entry whose operands or
 	// concatenation is missing from the vocab is a malformed file: Hugging Face
@@ -298,7 +313,8 @@ func checkDecoder(raw json.RawMessage) error {
 			spec.Type, len(spec.Decoders))}
 	}
 	replace, byteFallback, fuse := spec.Decoders[0], spec.Decoders[1], spec.Decoders[2]
-	if replace.Type != "Replace" || replace.Pattern.String != wordBoundary || replace.Content != " " {
+	if replace.Type != "Replace" || replace.Pattern.Regex != "" ||
+		replace.Pattern.String != wordBoundary || replace.Content != " " {
 		return &ErrUnsupported{What: "a decoder whose first stage is not Replace(word-boundary -> space)"}
 	}
 	if byteFallback.Type != "ByteFallback" || fuse.Type != "Fuse" {
