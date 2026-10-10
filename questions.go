@@ -2,6 +2,7 @@ package shisade
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"unicode"
 )
@@ -51,6 +52,21 @@ func trimPythonSpace(text string) string {
 	return strings.TrimFunc(text, isPythonSpace)
 }
 
+// isNilDescription reports whether a description is absent.
+//
+// Python has one None; Go has a typed nil as well. A caller who passes a nil
+// pointer means the same thing as None, and it must not reach the prompt as
+// "null", which leaves the model a description it cannot use. A nil map or
+// slice is not absent: Python's {} and [] are real descriptions, and PythonJSON
+// writes them.
+func isNilDescription(description any) bool {
+	if description == nil {
+		return true
+	}
+	reflected := reflect.ValueOf(description)
+	return reflected.Kind() == reflect.Pointer && reflected.IsNil()
+}
+
 // RenderOption is what the model is shown for one option.
 //
 // Some label sets carry the label in the key and no description. Showing an
@@ -58,7 +74,7 @@ func trimPythonSpace(text string) string {
 // is shown instead. This follows the renderer fix recorded in the research
 // notes, where discarding keys cost 0.129 to 0.948 accuracy on `dbpedia14`.
 func RenderOption(key string, description any) any {
-	if description == nil {
+	if isNilDescription(description) {
 		return key
 	}
 	if text, ok := description.(string); ok && trimPythonSpace(text) == "" {

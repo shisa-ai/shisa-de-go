@@ -30,9 +30,15 @@ type RenderOptions struct {
 // checkpoint with the same template and a different one would differ in the
 // prompt's first token; the M3 read resolves it from the tokenizer and checks it
 // against this literal. A checkpoint with a different template needs this
-// function changed, and the guard is indirect: every read checks that the prompt
-// ends on AnswerPrefix, and the first read checks the server's prompt-token
-// count against this client's.
+// function changed.
+//
+// What guards the pin: TestRenderParity, which compares 33 rendered prompts
+// byte for byte against the Python client, is the guard for the render itself.
+// The runtime checks catch something else -- a client/server tokenizer
+// mismatch. Every read checks that the prompt ends on AnswerPrefix, and the
+// first read checks the server's prompt-token count against this client's; both
+// compare two tokenizations of the same bytes the client sent, so neither can
+// see a render that disagrees with the checkpoint's Jinja template.
 const (
 	templateBOS       = "<bos>"
 	templateTurnOpen  = "<|turn>"

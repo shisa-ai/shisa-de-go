@@ -26,6 +26,11 @@ type Member struct {
 // tokens the model sees, and therefore the answer. Use an Object when the order
 // matters; a map is accepted too and has its keys sorted, which is at least
 // stable.
+//
+// A key may appear only once. Python's json.dumps writes a dict, which cannot
+// hold a repeated key, so an Object with one has no Python bytes to match and is
+// an error rather than a guess. DecodeJSON already reduces a repeated key in a
+// document to its last value at the first occurrence's position.
 type Object []Member
 
 // PythonJSON renders a value the way Python's
@@ -70,13 +75,29 @@ func PythonJSON(value any) (string, error) {
 // map[string]any.
 //
 // A repeated object key keeps the last value at the first occurrence's position,
-// which is what json.loads and a Python dict do.
+// which is what json.loads and a Python dict do. Writing such an Object back is
+// an error rather than a guess: json.dumps iterates a dict and can never emit a
+// repeated key, so there is no Python output to match.
 //
-// It is stricter than json.loads in one place: the bare literals NaN, Infinity
-// and -Infinity are rejected, where Python accepts them by default. PythonJSON
-// still writes them for a NaN or infinite float, so a round trip through this
-// pair is asymmetric for those three values.
+// It is stricter than json.loads in three places. The bare literals NaN,
+// Infinity and -Infinity are rejected, where Python accepts them by default, and
+// PythonJSON still writes them for a NaN or infinite float, so a round trip
+// through this pair is asymmetric for those three values. Input that is not
+// valid UTF-8 is rejected, where CPython's json.loads on bytes raises
+// UnicodeDecodeError. And a number literal with more digits than CPython's
+// int-string limit (4,300 by default since 3.11) is accepted here, where
+// json.loads raises ValueError.
+//
+// It is looser in one place: a `\u` escape for a lone surrogate is coerced to
+// U+FFFD, which is what encoding/json does, where json.loads keeps the
+// surrogate in the str and the Python client fails later when it encodes the
+// prompt. A literal U+FFFD in the input is indistinguishable from the coerced
+// one, so this is documented rather than detected.
 func DecodeJSON(data []byte) (any, error) {
+	if !utf8.Valid(data) {
+		return nil, fmt.Errorf("shisade: decoding JSON: the input is not valid UTF-8, " +
+			"which Python's json.loads cannot decode either")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
 	value, err := decodeValue(decoder)
@@ -111,6 +132,9 @@ func decodeValue(decoder *json.Decoder) (any, error) {
 	switch delim {
 	case '{':
 		object := Object{}
+		// Positions by key, so a repeated key updates in place in constant time
+		// instead of rescanning the members decoded so far.
+		positions := make(map[string]int)
 		for decoder.More() {
 			keyToken, err := decoder.Token()
 			if err != nil {
@@ -126,15 +150,10 @@ func decodeValue(decoder *json.Decoder) (any, error) {
 			}
 			// A repeated key keeps the last value, at the first occurrence's
 			// position: that is what json.loads and a Python dict do.
-			replaced := false
-			for i := range object {
-				if object[i].Key == key {
-					object[i].Value = value
-					replaced = true
-					break
-				}
-			}
-			if !replaced {
+			if at, seen := positions[key]; seen {
+				object[at].Value = value
+			} else {
+				positions[key] = len(object)
 				object = append(object, Member{Key: key, Value: value})
 			}
 		}
@@ -186,6 +205,12 @@ func appendPythonJSON(buffer *bytes.Buffer, value any, depth int) error {
 		if !json.Valid(typed) {
 			return fmt.Errorf("shisade: a json.RawMessage is not valid JSON")
 		}
+		// json.Valid checks syntax only: it accepts bytes above 0x80 inside a
+		// string without checking that they are UTF-8, and writing those
+		// verbatim would put bytes in the prompt that Python cannot hold.
+		if !utf8.Valid(typed) {
+			return fmt.Errorf("shisade: a json.RawMessage is not valid UTF-8, and Python cannot hold one")
+		}
 		buffer.Write(typed)
 		return nil
 	case []byte:
@@ -205,7 +230,9 @@ func appendPythonJSON(buffer *bytes.Buffer, value any, depth int) error {
 	case reflect.Float32, reflect.Float64:
 		appendPythonFloat(buffer, reflected.Float())
 	case reflect.Slice, reflect.Array:
-		if reflected.Kind() == reflect.Slice && reflected.Type().Elem().Kind() == reflect.Uint8 {
+		// Python's json.dumps raises TypeError for bytes, and a byte array
+		// ([32]byte from a hash, [16]byte from a UUID) is the same thing.
+		if reflected.Type().Elem().Kind() == reflect.Uint8 {
 			return fmt.Errorf("shisade: %s has no JSON form here; pass a string", reflected.Type())
 		}
 		buffer.WriteByte('[')
@@ -244,7 +271,13 @@ func appendPythonJSON(buffer *bytes.Buffer, value any, depth int) error {
 
 func appendPythonObject(buffer *bytes.Buffer, object Object, depth int) error {
 	buffer.WriteByte('{')
+	seen := make(map[string]struct{}, len(object))
 	for i, member := range object {
+		if _, repeated := seen[member.Key]; repeated {
+			return fmt.Errorf("shisade: the object has the key %q twice, and Python's json.dumps "+
+				"writes a dict, which cannot", member.Key)
+		}
+		seen[member.Key] = struct{}{}
 		if i > 0 {
 			buffer.WriteString(", ")
 		}

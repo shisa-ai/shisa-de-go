@@ -42,8 +42,15 @@ DE-2 reads.
 `tokenizer.apply_chat_template(...)`, which runs the checkpoint's own Jinja
 template. This port renders the two message shapes the readout uses with a
 pinned function. It is byte-identical for those shapes and for no others, which
-is the whole of what the readout needs. The `usage.prompt_tokens` check and the
-code-boundary check are what catch a divergence.
+is the whole of what the readout needs.
+
+What guards the pin: `TestRenderParity` compares 33 rendered prompts byte for
+byte against the Python client, and that is the check on the render itself. The
+runtime checks catch a different failure -- a client/server tokenizer mismatch.
+Every read checks that the prompt ends on `AnswerPrefix`, and the first read
+checks the server's `usage.prompt_tokens` against this client's; both compare
+two tokenizations of the same bytes the client sent, so neither can see a render
+that disagrees with the checkpoint's Jinja template.
 
 **Python's JSON, not Go's.** The user turn is
 `json.dumps(payload, ensure_ascii=False)`, and its bytes are the prompt, so
@@ -102,8 +109,14 @@ pool.
 
 ## Verified parity
 
-Checked on 2026-10-10 against `shisa-ai/shisa-de-2` on the hosted endpoint and
-the Python client at `shisa-de` `0.4.0`:
+Every check recorded here is offline: it was produced on 2026-10-10 by running
+the Python client and `transformers` over the pinned snapshot
+(`shisa-ai/shisa-de-2@8f21734b27b3462471c4662d5638e52195b005a3`) and checking the
+results in as fixtures. No requests were made to a served model, so nothing below
+carries a serving fingerprint and nothing below is a measurement of a served
+checkpoint. The Python client is `shisa-de` `0.4.0`.
+
+This port has produced no measurements of its own against a served model.
 
 - **Tokenizer.** 1,056 strings, 48,392 token ids: this package's ids equal
   `transformers`' ids on every one. The corpus covers all 24 added tokens and
@@ -135,23 +148,24 @@ the Python client at `shisa-de` `0.4.0`:
   33 payloads above replayed through `DecodeJSON` then `PythonJSON`, plus
   scalar, float, string and nested values. The fixtures constrain the encoder
   rather than being shaped by it. Duplicate object keys, `-0`, out-of-range
-  exponents and Python's `str.strip()` whitespace set have their own unit tests;
-  each was checked against CPython's `json` module directly.
+  exponents, invalid UTF-8 and Python's `str.strip()` whitespace set have their
+  own unit tests; each was checked against CPython's `json` module directly.
 - **Tokenizer identity.** The test checks the loaded tokenizer's vocab size
   (262,144) and `<channel|>` id (101) before running the vectors, so a fallback
   to a different revision fails loudly. Set `SHISA_DE_TOKENIZER_REQUIRE=1` to
   make a missing tokenizer.json a failure instead of a skip.
-- All 256 code ids in `data/codebook-de2.json` match
-  `AutoTokenizer.from_pretrained("shisa-ai/shisa-de-2")`, and `<channel|>` is
-  token 101.
-- `shisa-ai/shisa-de-1` and `shisa-ai/shisa-de-2` share that tokenizer
-  (vocab 262144), so code ids are not family-specific.
+- **Codebook.** The 256 codes and their order are the research repository's
+  single-token answer-boundary audit
+  (`evals/reports/de2-token-code-audit.json`), whose `token_ids` were resolved on
+  `google/gemma-4-26B-A4B-it@4d7ae4984b7db7de8f8457170b3f1a419ee76d52`.
+  `data/codebook-de2.json` records that provenance. The code is the contract and
+  the ids are not read at runtime; the client resolves each code's id from the
+  served tokenizer. What ties the two together is the tokenizer identity check
+  above: `shisa-ai/shisa-de-1` and `shisa-ai/shisa-de-2` share the Gemma
+  tokenizer (vocab 262,144), so a code's id is not family-specific.
 - **Speed.** The 256-option repeated prompt (27,810 bytes, 8,580 ids) encodes
   in 18 ms on an Intel Xeon E5-2690 v4, against 13 ms for `daulet/tokenizers`
   (Hugging Face's Rust implementation through cgo) on the same machine. The
   tokenizer normalizes a whole prompt into a single pre-token, so the merge
   runs over tens of thousands of symbols in one call; that is why the merge is
   heap-based rather than a repeated scan.
-
-Numbers measured with the Python client are the Python client's. This port has
-produced no measurements of its own against a served model.

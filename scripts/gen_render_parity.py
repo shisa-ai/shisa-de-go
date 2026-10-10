@@ -41,6 +41,12 @@ PY_REPO = pathlib.Path.home() / "data" / "dev" / "shisa" / "shisa-de"
 MODEL = "shisa-ai/shisa-de-2"
 REVISION = "8f21734b27b3462471c4662d5638e52195b005a3"
 
+# tokenizer.PinnedVocabSize and tokenizer.PinnedCloseID. Checked below and
+# recorded in the meta, so a generation against a different model fails here
+# rather than producing a fixture whose provenance looks right.
+VOCAB_SIZE = 262144
+CLOSE_ID = 101
+
 sys.path.insert(0, str(PY_REPO))
 
 from shisa_de import Choice, Noul, Readout, Score  # noqa: E402
@@ -155,6 +161,11 @@ def main() -> int:
     readout = Readout(base_url="http://unused.invalid", model=MODEL,
                       tokenizer_revision=REVISION)
     tokenizer = readout.ensure_tokenizer()
+    vocab_size = len(tokenizer)
+    close_id = tokenizer.convert_tokens_to_ids("<channel|>")
+    if vocab_size != VOCAB_SIZE or close_id != CLOSE_ID:
+        raise SystemExit(f"{MODEL}@{REVISION} is not the pinned tokenizer: "
+                         f"vocab {vocab_size}, <channel|> {close_id}")
 
     vectors = []
     for case in cases():
@@ -185,19 +196,23 @@ def main() -> int:
     OUT.parent.mkdir(parents=True, exist_ok=True)
     body = json.dumps({"renders": vectors, "serialization": serialization},
                       ensure_ascii=False) + "\n"
-    OUT.write_text(body, encoding="utf-8")
+    # newline="" so the bytes are the same on every platform: the default
+    # translates \n to os.linesep, which would break the recorded digest.
+    OUT.write_text(body, encoding="utf-8", newline="")
     total_tokens = sum(len(case["tokens"]) for case in vectors)
     meta = {
         "model": MODEL,
         "revision": REVISION,
         "transformers": transformers.__version__,
         "tokenizers": tokenizers.__version__,
+        "vocab_size": vocab_size,
+        "close_id": close_id,
         "renders": len(vectors),
         "serialization": len(serialization),
         "tokens": total_tokens,
         "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
     }
-    META_OUT.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    META_OUT.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="")
     print(f"{OUT}: {len(vectors)} renders, {len(serialization)} serialization cases; "
           f"{META_OUT}: {meta['sha256'][:12]}", file=sys.stderr)
     for case in vectors:

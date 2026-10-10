@@ -138,9 +138,9 @@ What must not change casually:
 | Build and vet | `go build ./...` and `go vet ./...` |
 | Offline suite | `go test ./...` |
 | Tokenizer parity | `go test ./tokenizer/` (reads the pinned tokenizer from the hub cache or `SHISA_DE_TOKENIZER_JSON`; `SHISA_DE_TOKENIZER_REQUIRE=1` fails instead of skipping) |
-| Live suite, hosted DE-2 | `SHISA_DE_LIVE=1 go test ./... -run Live` |
-| Endpoint check | `shisa-de doctor`, and `shisa-de doctor --probe` to spend two requests on the reads |
-| Readout walkthrough | `shisa-de explain --labels spam,ham` |
+| Live suite, hosted DE-2 | Planned with the readout (M3): `SHISA_DE_LIVE=1 go test ./... -run Live`. No test in the tree matches that name yet, so the command passes without running anything |
+| Endpoint check | Planned: `shisa-de doctor`, and `shisa-de doctor --probe` to spend two requests on the reads |
+| Readout walkthrough | Planned: `shisa-de explain --labels spam,ham` |
 
 The live suite spends real requests and needs `SHISA_API_KEY`. It is skipped
 unless `SHISA_DE_LIVE=1`.

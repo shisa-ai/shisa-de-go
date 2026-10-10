@@ -96,12 +96,21 @@ func TestPythonJSONRejectsWhatItCannotRender(t *testing.T) {
 		{"struct", struct{ A int }{A: 1}},
 		{"nested too deep", deep},
 		{"invalid raw message", json.RawMessage(`{`)},
+		// json.Valid checks syntax only and accepts bytes above 0x80 inside a
+		// string without checking that they are UTF-8.
+		{"raw message with invalid utf-8", json.RawMessage("{\"t\":\"a\xffb\"}")},
 		// Python's str is always valid UTF-8, so there is no Python output to
 		// match; substituting U+FFFD would invent bytes.
 		{"invalid utf-8", "a\xffb"},
 		{"lone surrogate in cesu-8", "\xed\xa0\x80"},
 		{"invalid utf-8 in an object key", Object{{"\xff", 1}}},
 		{"invalid utf-8 in a json number", json.Number("1\xff")},
+		// json.dumps writes a dict, which cannot hold a repeated key.
+		{"repeated object key", Object{{"a", 1}, {"a", 2}}},
+		{"repeated object key with the same value", Object{{"a", 1}, {"b", 2}, {"a", 1}}},
+		// Python's json.dumps raises TypeError for bytes, array or slice.
+		{"byte array", [4]byte{1, 2, 3, 4}},
+		{"named byte array", [32]byte{}},
 	}
 	for _, tc := range cases {
 		if _, err := PythonJSON(tc.value); err == nil {
@@ -136,9 +145,10 @@ func TestDecodeJSONKeepsTheLastOfARepeatedKey(t *testing.T) {
 	}
 }
 
-// TestDecodeJSONStaysStricterThanPythonOnBareNonFiniteLiterals documents the one
-// asymmetry: json.loads accepts NaN, Infinity and -Infinity by default, and this
-// parser rejects them. PythonJSON still writes them for a NaN or infinite float.
+// TestDecodeJSONStaysStricterThanPythonOnBareNonFiniteLiterals documents the
+// asymmetries: json.loads accepts NaN, Infinity and -Infinity by default, and
+// this parser rejects them. PythonJSON still writes NaN and the infinities for a
+// non-finite float, so that round trip is asymmetric.
 func TestDecodeJSONStaysStricterThanPythonOnBareNonFiniteLiterals(t *testing.T) {
 	for _, text := range []string{"NaN", "Infinity", "-Infinity"} {
 		if _, err := DecodeJSON([]byte(text)); err == nil {
@@ -149,6 +159,44 @@ func TestDecodeJSONStaysStricterThanPythonOnBareNonFiniteLiterals(t *testing.T) 
 		if _, err := PythonJSON(value); err != nil {
 			t.Errorf("PythonJSON(%v) = %v, and Python writes these", value, err)
 		}
+	}
+}
+
+// TestDecodeJSONRejectsInvalidUTF8 pins the other asymmetry: the Go decoder
+// would substitute U+FFFD for an invalid byte inside a string, and CPython's
+// json.loads on those bytes raises UnicodeDecodeError instead. Laundering the
+// value into a valid Go string would put bytes in the prompt that Python never
+// produced, which the output-side check could no longer see.
+func TestDecodeJSONRejectsInvalidUTF8(t *testing.T) {
+	for _, text := range []string{
+		"\"a\xffb\"",
+		`{"t":"a\xffb"}`,
+		`["ok","\xff"]`,
+		"{\xff}",
+	} {
+		if _, err := DecodeJSON([]byte(text)); err == nil {
+			t.Errorf("DecodeJSON(%q) should reject the invalid UTF-8", text)
+		}
+	}
+}
+
+// TestDecodeJSONCoercesALoneSurrogate pins the one place DecodeJSON is looser
+// than json.loads. encoding/json turns a \u escape for a lone surrogate into
+// U+FFFD, where Python keeps the surrogate and the client fails later when it
+// encodes the prompt. A literal U+FFFD in the input looks the same after
+// decoding, so this is documented rather than detected; the test exists so the
+// behavior cannot change silently.
+func TestDecodeJSONCoercesALoneSurrogate(t *testing.T) {
+	value, err := DecodeJSON([]byte(`{"t":"\ud800"}`))
+	if err != nil {
+		t.Fatalf("DecodeJSON: %v", err)
+	}
+	got, err := PythonJSON(value)
+	if err != nil {
+		t.Fatalf("PythonJSON: %v", err)
+	}
+	if want := "{\"t\": \"\ufffd\"}"; got != want {
+		t.Errorf("DecodeJSON then PythonJSON = %q, want %q (the documented coercion)", got, want)
 	}
 }
 
@@ -266,6 +314,43 @@ func TestPythonSpaceIsPythonsStrip(t *testing.T) {
 	}
 	if err := choice.Validate(MaxOptions); err != nil {
 		t.Errorf("a U+001C-wrapped question is not blank to Python: %v", err)
+	}
+}
+
+// TestRenderOptionTreatsATypedNilAsNone pins the Go-only case: a nil pointer in
+// an `any` is not `== nil`, and without this it would reach the prompt as
+// "null", a description the model cannot use. A nil map or slice is not absent:
+// Python's {} and [] are real descriptions.
+func TestRenderOptionTreatsATypedNilAsNone(t *testing.T) {
+	var pointer *string
+	if got := RenderOption("alpha", pointer); got != "alpha" {
+		t.Errorf("a typed nil pointer rendered as %v, want the key", got)
+	}
+	var nothing any
+	if got := RenderOption("alpha", nothing); got != "alpha" {
+		t.Errorf("a nil interface rendered as %v, want the key", got)
+	}
+	if got := RenderOption("alpha", map[string]any(nil)); got == "alpha" {
+		t.Error("a nil map is Python's {}, a real description, and must not fall back to the key")
+	}
+	if got := RenderOption("alpha", []any(nil)); got == "alpha" {
+		t.Error("a nil slice is Python's [], a real description, and must not fall back to the key")
+	}
+	// The choice renders it the same way, and that is what reaches the prompt.
+	choice := NewChoice("Which?", []Option{{Key: "alpha", Description: pointer}, {Key: "beta", Description: "B"}})
+	if got := choice.Options()[0].Description; got != "alpha" {
+		t.Errorf("a typed nil description reached Options as %v, want the key", got)
+	}
+	payload, _, err := Payload(map[string]any{"t": "x"}, choice, 0)
+	if err != nil {
+		t.Fatalf("Payload: %v", err)
+	}
+	serialized, err := PythonJSON(payload)
+	if err != nil {
+		t.Fatalf("PythonJSON: %v", err)
+	}
+	if strings.Contains(serialized, "null") {
+		t.Errorf("the typed nil reached the user turn as null: %s", truncate(serialized))
 	}
 }
 

@@ -88,9 +88,13 @@ func CalibrationCompatibleWith(fitted, current string) bool {
 // The sum runs in a fixed order -- shortest key first, then lexicographic,
 // which is the codebook's own order -- so the result is reproducible. A Go map
 // iterates in a randomized order, and summing floats in a different order
-// changes the last bits; the Python client sums in codebook order, so this
-// order also matches its arithmetic for code keys. The returned map carries no
-// order, so a caller that needs the option order keeps its own list of codes.
+// changes the last bits. The order is also the one the Python client sums in
+// (it rebuilds `logprobs` in option order before normalizing), so this is as
+// close to its arithmetic as a plain left-to-right sum gets; it is not
+// bit-identical on CPython 3.12+, where `sum()` is Neumaier-compensated. The
+// difference is a relative 1e-16 or so and cannot move an argmax or the gate.
+// The returned map carries no order, so a caller that needs the option order
+// keeps its own list of codes.
 func Softmax(logprobs map[string]float64) (map[string]float64, error) {
 	if len(logprobs) == 0 {
 		return nil, &ReadoutError{Message: "no code logprobs to normalize"}

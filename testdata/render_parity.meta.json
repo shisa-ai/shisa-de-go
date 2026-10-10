@@ -3,6 +3,8 @@
   "revision": "8f21734b27b3462471c4662d5638e52195b005a3",
   "transformers": "5.19.0",
   "tokenizers": "0.23.3",
+  "vocab_size": 262144,
+  "close_id": 101,
   "renders": 33,
   "serialization": 37,
   "tokens": 22948,

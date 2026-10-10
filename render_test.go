@@ -58,6 +58,8 @@ type renderMeta struct {
 	Revision      string `json:"revision"`
 	Transformers  string `json:"transformers"`
 	Tokenizers    string `json:"tokenizers"`
+	VocabSize     int    `json:"vocab_size"`
+	CloseID       int    `json:"close_id"`
 	Renders       int    `json:"renders"`
 	Serialization int    `json:"serialization"`
 	Tokens        int    `json:"tokens"`
@@ -84,6 +86,14 @@ func TestRenderFixtureProvenance(t *testing.T) {
 	if meta.Model != tokenizer.PinnedRepo || meta.Revision != tokenizer.PinnedSnapshot {
 		t.Fatalf("the fixture was generated from %s@%s, want %s@%s",
 			meta.Model, meta.Revision, tokenizer.PinnedRepo, tokenizer.PinnedSnapshot)
+	}
+	// The model id and revision are the generator's own constants, so they cannot
+	// catch a mis-pin at generation time on their own. The identity it recorded
+	// from the tokenizer it actually loaded can, and it is the same identity
+	// VerifyPinned enforces on the tokenizer this package loads.
+	if meta.VocabSize != tokenizer.PinnedVocabSize || meta.CloseID != tokenizer.PinnedCloseID {
+		t.Fatalf("the fixture's tokenizer has vocab %d and <channel|> %d, want %d and %d",
+			meta.VocabSize, meta.CloseID, tokenizer.PinnedVocabSize, tokenizer.PinnedCloseID)
 	}
 	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != meta.Sha256 {
 		t.Fatalf("the render fixture hashes to %s, the provenance records %s", got, meta.Sha256)
