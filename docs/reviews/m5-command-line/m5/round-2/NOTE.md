@@ -49,6 +49,12 @@ spellings (Python's `json.dumps` separators, or `encoding/json`'s) would each
 surprise a caller in a different way; the milestone is the command line, and
 `PythonJSON` already writes the object Python writes.
 
+## Correction (found in round 3)
+
+The paragraph below claims `PORT.md` now records the usage, `--help` and error
+text. It did not: the edit that was meant to add it did not match the file and
+silently did nothing. Round 3 caught it and the sentence is in `PORT.md` now.
+
 ## Round 3
 
 Two of the three requested reviewers executed and reported no HIGH or CRITICAL

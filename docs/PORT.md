@@ -288,7 +288,19 @@ default" rather than being passed through, because that is what a zero
 than the default value, `--family` accepts exactly `de1` and `de2`, and a
 leftover positional argument is refused. `-h`, `--help` and `<command> --help`
 print the usage and exit 0; every other bad invocation exits 2 with the usage on
-stderr.
+stderr. What is not `argparse`'s is the text itself: the usage block and
+`--help` output are this port's own layout rather than `argparse`'s
+`usage: ... [-h]` line with metavars and a positional section, and a failure
+prints one `shisa-de <command>: <message>` line followed by that usage where
+`argparse` prints the usage followed by `shisa-de <command>: error: <message>`.
+The flag set, the exit statuses and which stream each goes to are what match.
+
+Two of the values the parser accepts can only fail here. `--family de1` and
+`--calibration de1` are legal spellings, because `argparse`'s `choices` has
+both families, but this port ships no DE-1 read and no DE-1 record, so the
+first reaches `NewDecisionModel`'s DE-2-only refusal and the second
+`CalibrationFor(FamilyDE1)`, and both exit 2 with the usage. The Python command
+line reads DE-1 for the same invocations.
 
 **`explain` prints `None` for a null logprob.** The Python walkthrough sorts
 `read.top_logprobs` by `-kv[1]`, which raises `TypeError` on a null a server can
@@ -333,9 +345,19 @@ slots are codes. Two other messages have no Python counterpart at all and are
 Go's own: the wrapper around a tokenizer that will not load, and the two checks
 on the `prompt_logprobs` fallback (more than one entry, or a null one) that keep a
 server this client cannot read that way from scoring a token nobody asked about.
-Everything else the readout raises is Python's sentence with Python's `!r`
+Two more are Python's sentence with one clause reworded. The terminator message
+drops "the image readout cannot confirm" and says the answer boundary cannot be
+confirmed, because this port has no image readout; it is reachable through
+`doctor`'s `boundary_check` in both output forms and `explain`'s stderr, so a
+tokenizer under which `<channel|>` is not one token is the one failing run where
+the two command lines' text differs. And `Softmax` says `no code logprobs to
+normalize` where the shared Python helper says `no letter logprobs`, the same
+DE-2 rewording as the slot message.
+
+The rest of what the readout raises is Python's sentence with Python's `!r`
 quoting, including the boundary check's three messages, which reach `doctor`'s
-`boundary_check` field and `explain`'s stderr.
+`boundary_check` field and `explain`'s stderr. A run that fails the boundary
+check is not part of the parity diff, which passed it.
 
 **`Decision` is a struct, not a dict subclass.** Python's `result["route"]`
 becomes `decision.Values["route"]`, and `result.answers` becomes
@@ -351,7 +373,11 @@ is what the Python client returns and what JSON already erases.
 **Warnings are recorded, not raised.** The Python client calls `warnings.warn`
 for an assumed family and for a calibration record that is held but not applied.
 Go has no warning channel, so `DecisionModel.Warnings` collects them as strings.
-Nothing is printed.
+Nothing is printed. The ids inside them are Python's `!r`, but their advice is
+not identical: where Python writes `pass family='de1' or family='de2'` and `pass
+calibration= to apply a record you vouch for`, this port names the Go fields,
+`pass Family to say which contract it was trained for` and `pass Calibration to
+apply a record you vouch for`, because Go has no keyword arguments.
 
 **A repeated option key is refused.** Python's choice criteria are a dict, so a
 repeated key cannot reach a read. This port takes a slice, because a Go map has

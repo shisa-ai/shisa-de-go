@@ -1268,7 +1268,11 @@ func TestBoundaryMessagesQuoteLikePython(t *testing.T) {
 		t.Fatalf("AnswerPrefixID: %v", err)
 	}
 
-	// The terminator message: the prompt does not end on the answer prefix.
+	// The does-not-end message: the prompt's last token is not the answer
+	// prefix. (The terminator message proper — "the generation-prompt terminator
+	// ... is not one token" — is reached through `AnswerPrefixID` and is the one
+	// sentence of the boundary pair this port deliberately rewords, because
+	// Python's says "the image readout".)
 	err = readout.CheckCodeBoundary([]int{prefixID + 1}, slots)
 	if err == nil {
 		t.Fatal("a prompt that does not end on the terminator was accepted")
@@ -1292,5 +1296,81 @@ func TestBoundaryMessagesQuoteLikePython(t *testing.T) {
 		". The tokenizer ('de2-test') does not match the served model ('de2-test')."
 	if err.Error() != want {
 		t.Errorf("the boundary message is\n  %s\nwant\n  %s", err, want)
+	}
+}
+
+// TestReadoutMessagesQuoteLikePython pins the quoting in the three readout
+// messages that reach the command line only through a failing read, and are
+// otherwise word-for-word the Python client's.
+//
+// `TestBoundaryMessagesQuoteLikePython` covers the two boundary sentences. The
+// code-slot sentence and the prompt-token sentence are here, and the
+// fallback-nothing sentence below them, because each one's quoted id would print
+// double-quoted under Go's `%q` where Python writes `!r`.
+func TestReadoutMessagesQuoteLikePython(t *testing.T) {
+	readout := stubReadout(t, `{"choices":[{"text":"A"}]}`)
+
+	// The code-slot message: a code the tokenizer does not hold as one token.
+	_, err := readout.Slot("not-a-code")
+	if err == nil {
+		t.Fatal("a multi-token code was accepted")
+	}
+	want := "shisade: answer code 'not-a-code' is not one token for tokenizer " +
+		"'de2-test'; this checkpoint cannot be read with the codebook"
+	if err.Error() != want {
+		t.Errorf("the slot message is\n  %s\nwant\n  %s", err, want)
+	}
+
+	// The prompt-token message: the server counted a different prompt.
+	_, err = readout.checkPromptTokens(completionResponse{
+		Usage: completionUsage{PromptTokens: 99}}, 42)
+	if err == nil {
+		t.Fatal("a mismatched prompt-token count was accepted")
+	}
+	want = "shisade: the server counted 99 prompt tokens where the client tokenized 42: " +
+		"the tokenizer ('de2-test') does not match the served model ('de2-test')"
+	if err.Error() != want {
+		t.Errorf("the prompt-token message is\n  %s\nwant\n  %s", err, want)
+	}
+}
+
+// TestFallbackMessageQuotesLikePython is the fallback-nothing sentence: the
+// code is missing from the top-k and the `prompt_logprobs` fallback returns
+// nothing for it.
+func TestFallbackMessageQuotesLikePython(t *testing.T) {
+	// The read's first request answers with the first code only, so the second
+	// is missing from the top-k; the fallback request then answers with an empty
+	// `prompt_logprobs`, which is what the sentence is about.
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			fmt.Fprintf(w, `{"choices":[{"text":"A","logprobs":{"top_logprobs":[{"token_id:1000":-0.1}]}}],`+
+				`"usage":{"prompt_tokens":1}}`)
+			return
+		}
+		fmt.Fprint(w, `{"choices":[{"text":"","prompt_logprobs":[null]}],"usage":{"prompt_tokens":1}}`)
+	}))
+	t.Cleanup(server.Close)
+	readout, err := NewReadout(ReadoutConfig{BaseURL: server.URL, Model: "de2-test",
+		HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("NewReadout: %v", err)
+	}
+	readout.SetTokenizer(newFixtureTokenizer(map[string]int{
+		AnswerPrefix: 101, "AA": 1114113, "AB": 1114114, "A": 1000, "B": 1001}))
+	slots := testSlots(t, readout, 2)
+
+	// The prompt has to end on the answer terminator for the boundary check to
+	// pass, so the read gets there rather than failing on the prompt.
+	_, err = readout.ReadCodes(context.Background(), AnswerPrefix, slots, false)
+	if err == nil {
+		t.Fatal("a code with no logprob and no fallback was read anyway")
+	}
+	want := "shisade: code '" + slots[1].Code + "' was not returned for its token id and the " +
+		"prompt_logprobs fallback returned nothing for it"
+	if err.Error() != want {
+		t.Errorf("the fallback message is\n  %s\nwant\n  %s", err, want)
 	}
 }
