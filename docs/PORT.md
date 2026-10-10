@@ -275,6 +275,30 @@ command whose zero-config form can only fail is not a command, so
 `--help`. The two command lines therefore query different checkpoints when
 `--model` is omitted; `doctor` prints which one it read.
 
+**The command line's flag layer is Go's `flag`, not `argparse`.** Values are
+checked after parsing rather than by `choices`, so the grammar differs in three
+ways. A flag is written out in full: `--fam` is a unique prefix `argparse`
+accepts and this one does not. A boolean flag takes no argument, as
+`BooleanOptionalAction` does, but Go's `flag` also accepts `--reasoning=true`
+and `--no-reasoning=false`, which `argparse` refuses because its action has
+`nargs=0`. And a zero or negative `--timeout` is read as "use the library's
+default" rather than being passed through, because that is what a zero
+`time.Duration` means to `NewReadout`. What does match: an explicitly empty
+`--family`, `--policy`, `--reads` or `--calibration` is a bad invocation rather
+than the default value, `--family` accepts exactly `de1` and `de2`, and a
+leftover positional argument is refused. `-h`, `--help` and `<command> --help`
+print the usage and exit 0; every other bad invocation exits 2 with the usage on
+stderr.
+
+**`explain` prints `None` for a null logprob.** The Python walkthrough sorts
+`read.top_logprobs` by `-kv[1]`, which raises `TypeError` on a null a server can
+send, so the reference crashes there. This port sorts a null last and prints
+`None` for it rather than the `0.0000` a collapsed zero would show, because the
+walkthrough is read next to the server's own response. Equal logprobs are the
+other case Python orders and Go cannot: `sorted` is stable over the dict's
+insertion order, which is the server's response order, and a Go map has none, so
+a tie sorts by token instead.
+
 **A caller-visible map prints its keys sorted.** The Python client's `dict` is
 ordered and `json.dumps` writes it in insertion order. A Go map has none, so
 `PythonJSON` sorts the keys, and that reaches `Decision.Values` -- `ask
@@ -564,14 +588,17 @@ This port has produced no measurements of its own against a served model.
   --json` were each compared line for line against the Python command line
   against the hosted endpoint, and are identical apart from the numbers a fresh
   request changes and the one `chat system` line above. Those comparisons are
-  not fixtures and are not re-run at test time; they are what the three
-  differences recorded above are measured against. The offline test drives
-  `run` end to end over a stub endpoint and a stub tokenizer, which is what makes
-  `explain` testable at all: the real tokenizer is a download. It covers the
-  flag-to-config mapping for every flag including the `--no-` forms, the exit
-  statuses for a bad command and a bad flag, the three ways `--state` is read,
-  the walkthrough's five sections and its `curl` line, the `--json` shape, and
-  the one failure the walkthrough has to report before it prints anything.
+  not fixtures and are not re-run at test time, so they pin the run that was
+  measured and not every reachable line; the offline test closes the gap where it
+  can. It drives `run` end to end over a stub endpoint and a stub tokenizer, which
+  is what makes `explain` testable at all: the real tokenizer is a download. It
+  covers the flag-to-config mapping for every flag including the `--no-` forms,
+  the exit statuses for a bad command, a bad flag and a report that is not ok,
+  an explicitly empty choice flag, the three ways `--state` is read and its
+  Python whitespace, the walkthrough's five sections and its `curl` line, the
+  boundary failure that precedes every print, the read failure that follows the
+  first two sections, the `--json` shape and its key set, and the exact `!r`
+  quoting of `doctor`'s note and calibration-reason lines.
 - **Tokenizer identity.** The test checks the loaded tokenizer's vocab size
   (262,144) and `<channel|>` id (101) before running the vectors, so a fallback
   to a different revision fails loudly. Set `SHISA_DE_TOKENIZER_REQUIRE=1` to

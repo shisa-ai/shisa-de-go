@@ -58,8 +58,11 @@ live suite is M6. The Key Files table below says what is in the tree.
   typed questions.
 - `cmd/shisa-de/` — the command line, and the only place that prints. It is a
   second consumer of the library's Python-compatibility surface
-  (`PythonJSONWith`, `PythonStr`, `PythonRepr`, `MaxLogprobs`), so a change to
-  one of those has to keep both clients' output identical.
+  (`PythonJSONWith`, `PythonStr`, `PythonRepr`, `TrimPythonSpace`,
+  `MaxLogprobs`), so a change to one of those has to keep both clients' output
+  identical. Where it can, it uses the library's Python spelling rather than
+  Go's: `PythonStr` for a float in a message, `TrimPythonSpace` for a strip,
+  `pythonQuote` for a `!r`.
 
 What must not change casually:
 

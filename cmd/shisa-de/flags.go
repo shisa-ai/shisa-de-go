@@ -150,7 +150,7 @@ func sortStrings(values []string) { sort.Strings(values) }
 
 // commonFlags is the option list `commandUsage` prints. It is written from the
 // same strings the flags are registered with, so the help cannot describe a
-// flag that is not there.
+// flag that is not there, and every flag that is there is described.
 func commonFlags(command string) string {
 	lines := []string{
 		"  --base-url URL          endpoint (default: $SHISA_DE_ENDPOINT, then the hosted endpoint)",
@@ -161,7 +161,9 @@ func commonFlags(command string) string {
 		"  --policy NAME           " + strings.Join(shisade.Policies, " | "),
 		"  --reads NAME            " + strings.Join(shisade.ReadCounts, " | "),
 		"  --reasoning / --no-reasoning",
-		fmt.Sprintf("  --reasoning-prob P      the think gate (default: %v)", shisade.ThinkGate),
+		"  --reasoning-prob P      the think gate (default: " + shisade.PythonStr(shisade.ThinkGate) + ")",
+		"  --compound / --no-compound",
+		"                          a DE-1 read this port does not have; accepted and refused",
 		fmt.Sprintf("  --reasoning-len N       the thought budget (default: %d)", shisade.ThinkBudget),
 		"  --timeout SECONDS       one request's budget (default: 120)",
 	}

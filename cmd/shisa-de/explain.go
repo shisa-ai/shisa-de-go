@@ -26,11 +26,7 @@ func runExplain(ctx context.Context, args *args, model *shisade.DecisionModel,
 		fmt.Fprintf(stderr, "shisa-de explain: %v\n", err)
 		return 1
 	}
-	state, err := stateFrom(args.state, args.stateSet)
-	if err != nil {
-		fmt.Fprintf(stderr, "shisa-de explain: %v\n", err)
-		return 2
-	}
+	state := stateFrom(args.state, args.stateSet)
 	readout := model.Readout
 	if readout == nil {
 		fmt.Fprintln(stderr, "shisa-de explain: the model has no readout")
@@ -71,14 +67,27 @@ func runExplain(ctx context.Context, args *args, model *shisade.DecisionModel,
 		return fail(err)
 	}
 
-	// The read is taken before anything is printed, so a question the readout
-	// cannot read reports an error rather than half a walkthrough.
+	fmt.Fprintln(stdout, "1. The prompt the model receives")
+	fmt.Fprintln(stdout, rule)
+	fmt.Fprintln(stdout, prompt)
+	fmt.Fprintln(stdout)
+	fmt.Fprintln(stdout, "2. The answer slots")
+	fmt.Fprintln(stdout, rule)
+	for _, slot := range slots {
+		fmt.Fprintf(stdout, "   %s  token %6d\n", slot.Code, slot.TokenID)
+	}
+	fmt.Fprintln(stdout)
+
+	// The read comes after the first two sections, which is the Python command
+	// line's order: a read that fails leaves the prompt and the slots on stdout,
+	// and half a walkthrough is what the reader wants from a failure here.
 	read, err := readout.ReadCodes(ctx, prompt, slots, true)
 	if err != nil {
 		return fail(err)
 	}
 	// The body the read sent, in the order `json.dumps` would write it, which is
-	// the order the curl line shows.
+	// the order the curl line shows. Python builds the first five keys before
+	// the read and adds the last two after; the order is the same either way.
 	body := shisade.Object{
 		{Key: "model", Value: model.Model},
 		{Key: "prompt", Value: prompt},
@@ -94,16 +103,6 @@ func runExplain(ctx context.Context, args *args, model *shisade.DecisionModel,
 		shisade.Member{Key: "return_tokens_as_token_ids", Value: true},
 		shisade.Member{Key: "logprob_token_ids", Value: ids})
 
-	fmt.Fprintln(stdout, "1. The prompt the model receives")
-	fmt.Fprintln(stdout, rule)
-	fmt.Fprintln(stdout, prompt)
-	fmt.Fprintln(stdout)
-	fmt.Fprintln(stdout, "2. The answer slots")
-	fmt.Fprintln(stdout, rule)
-	for _, slot := range slots {
-		fmt.Fprintf(stdout, "   %s  token %6d\n", slot.Code, slot.TokenID)
-	}
-	fmt.Fprintln(stdout)
 	fmt.Fprintf(stdout, "3. One request: max_tokens 1, temperature 0, the %d answer codes by token id\n",
 		len(slots))
 	fmt.Fprintln(stdout, rule)
@@ -120,8 +119,15 @@ func runExplain(ctx context.Context, args *args, model *shisade.DecisionModel,
 		if code, ok := marks[entry.token]; ok {
 			marker = "  <- answer slot " + code
 		}
-		fmt.Fprintf(stdout, "   %18s  %9.4f%s\n",
-			shisade.PythonRepr(entry.token), entry.logprob, marker)
+		// A null logprob prints as `None`, not as the 0.0000 a zero would show:
+		// the server sent no number, and the walkthrough is read next to the
+		// server's own response.
+		shown := "     None"
+		if !entry.null {
+			shown = fmt.Sprintf("%9.4f", entry.logprob)
+		}
+		fmt.Fprintf(stdout, "   %18s  %s%s\n",
+			shisade.PythonRepr(entry.token), shown, marker)
 	}
 	if len(read.MissingFromTop) != 0 {
 		fmt.Fprintf(stdout, "   fallback requests for codes not returned: %s\n",
@@ -170,8 +176,8 @@ func runExplain(ctx context.Context, args *args, model *shisade.DecisionModel,
 		if wouldThink {
 			verdict = "a thought would follow this read"
 		}
-		fmt.Fprintf(stdout, "top probability %.4f against the gate %v: %s\n",
-			top, model.ThinkGate(), verdict)
+		fmt.Fprintf(stdout, "top probability %.4f against the gate %s: %s\n",
+			top, shisade.PythonStr(model.ThinkGate()), verdict)
 	}
 	return 0
 }
@@ -189,6 +195,9 @@ func reprOptionalString(value *string) string {
 type topLogprob struct {
 	token   string
 	logprob float64
+	// null records a logprob the server sent as null, which is not the same
+	// value as 0 and must not print as one.
+	null bool
 }
 
 // sortedTopLogprobs orders the debug top-k by descending logprob.
@@ -200,7 +209,7 @@ type topLogprob struct {
 func sortedTopLogprobs(values map[string]*float64) []topLogprob {
 	entries := make([]topLogprob, 0, len(values))
 	for token, logprob := range values {
-		entry := topLogprob{token: token, logprob: 0}
+		entry := topLogprob{token: token, null: logprob == nil}
 		if logprob != nil {
 			entry.logprob = *logprob
 		}
@@ -254,7 +263,7 @@ func bestCode(read shisade.CodeRead, slots []shisade.Slot) (string, float64, err
 // client's variables that holds something but whitespace.
 func apiKeyFromEnv() string {
 	for _, name := range shisade.APIKeyEnvs {
-		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+		if value := shisade.TrimPythonSpace(os.Getenv(name)); value != "" {
 			return value
 		}
 	}

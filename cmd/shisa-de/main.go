@@ -47,7 +47,7 @@ func run(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stderr, topUsage())
 		return 2
 	}
-	if argv[0] == "-h" || argv[0] == "--help" || argv[0] == "help" {
+	if argv[0] == "-h" || argv[0] == "--help" {
 		fmt.Fprint(stdout, topUsage())
 		return 0
 	}
@@ -100,11 +100,20 @@ type args struct {
 	family      string
 	policy      string
 	reads       string
-	reasoning   optionalBool
-	reasoningP  optionalFloat
-	reasoningN  optionalInt
-	compound    optionalBool
-	timeout     float64
+
+	// The four choice flags above are read through their `set` flag as well as
+	// their value, because `argparse` validates `choices` at parse time and
+	// rejects an explicitly empty one. Without these, `--policy "$POLICY"` with
+	// `POLICY` unset would quietly read the default policy.
+	calibrationSet bool
+	familySet      bool
+	policySet      bool
+	readsSet       bool
+	reasoning      optionalBool
+	reasoningP     optionalFloat
+	reasoningN     optionalInt
+	compound       optionalBool
+	timeout        float64
 
 	json          bool
 	probe         bool
@@ -138,28 +147,41 @@ func (a *args) modelConfig() (shisade.DecisionModelConfig, error) {
 		Tokenizer: a.tokenizer,
 		Timeout:   time.Duration(a.timeout * float64(time.Second)),
 	}
-	if a.family != "" {
-		family, err := shisade.NormalizeFamily(a.family)
-		if err != nil {
-			return shisade.DecisionModelConfig{}, err
+	// The family is an exact choice, which is what `argparse`'s `choices` is:
+	// `--family DE-2` is a bad invocation, not a spelling to normalize.
+	if a.familySet {
+		if !contains(shisade.Families, a.family) {
+			return shisade.DecisionModelConfig{}, &usageError{fmt.Sprintf(
+				"unknown family %q; expected one of %s",
+				a.family, familyNames())}
 		}
-		config.Family = family
+		config.Family = shisade.Family(a.family)
 	}
-	if a.calibration != "" {
-		record, set, err := shisade.ResolveCalibration(a.calibration)
+	if a.calibrationSet && a.calibration != "auto" {
+		if a.calibration == "" {
+			return shisade.DecisionModelConfig{}, &usageError{fmt.Sprintf(
+				"--calibration '' is neither a family (%s) nor a record file", familyNames())}
+		}
+		record, _, err := shisade.ResolveCalibration(a.calibration)
 		if err != nil {
 			return shisade.DecisionModelConfig{}, err
 		}
-		if set {
-			config.Calibration = &record
-		}
+		config.Calibration = &record
 	}
 	config.Overrides = shisade.OptionOverrides{
-		Reads:     optionalString(a.reads),
 		Reasoning: a.reasoning.pointer(),
 		Compound:  a.compound.pointer(),
 	}
-	if a.policy != "" {
+	if a.readsSet {
+		if !contains(shisade.ReadCounts, a.reads) {
+			return shisade.DecisionModelConfig{}, &usageError{fmt.Sprintf(
+				"unknown reads %q; expected one of %s",
+				a.reads, strings.Join(shisade.ReadCounts, ", "))}
+		}
+		reads := a.reads
+		config.Overrides.Reads = &reads
+	}
+	if a.policySet {
 		if !contains(shisade.Policies, a.policy) {
 			return shisade.DecisionModelConfig{}, &usageError{fmt.Sprintf(
 				"unknown policy %q; expected one of %s",
@@ -167,11 +189,6 @@ func (a *args) modelConfig() (shisade.DecisionModelConfig, error) {
 		}
 		policy := a.policy
 		config.Overrides.Policy = &policy
-	}
-	if a.reads != "" && !contains(shisade.ReadCounts, a.reads) {
-		return shisade.DecisionModelConfig{}, &usageError{fmt.Sprintf(
-			"unknown reads %q; expected one of %s",
-			a.reads, strings.Join(shisade.ReadCounts, ", "))}
 	}
 	if gate := a.reasoningP.pointer(); gate != nil {
 		config.Overrides.ReasoningProb = gate
@@ -196,6 +213,10 @@ func parse(command string, argv []string) (*args, error) {
 	// apart, so the flag is recorded through a `flag.Value`.
 	state := optionalStringValue{}
 	labels := optionalStringValue{}
+	calibration := optionalStringValue{}
+	family := optionalStringValue{}
+	policy := optionalStringValue{}
+	reads := optionalStringValue{}
 
 	flags := flag.NewFlagSet("shisa-de "+command, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -205,17 +226,18 @@ func parse(command string, argv []string) (*args, error) {
 		"endpoint (default: $SHISA_DE_ENDPOINT, then the hosted endpoint)")
 	flags.StringVar(&parsed.modelID, "model", defaultModel, "served model id")
 	flags.StringVar(&parsed.tokenizer, "tokenizer", "", "tokenizer source (defaults to --model)")
-	flags.StringVar(&parsed.calibration, "calibration", "",
+	flags.Var(&calibration, "calibration",
 		"calibration record: a family ("+calibrationFamilies()+") or a path to a record. "+
 			"Default: chosen from the served model id")
-	flags.StringVar(&parsed.family, "family", "", "the contract the served model is read through. "+
+	flags.Var(&family, "family", "the contract the served model is read through. "+
 		"Default: taken from the model id, then the tokenizer, otherwise assumed to be de2")
-	flags.StringVar(&parsed.policy, "policy", "", "the DE-2 read. Default: repeat-think")
-	flags.StringVar(&parsed.reads, "reads", "", "how often the question is written. Default: double")
+	flags.Var(&policy, "policy", "the DE-2 read. Default: repeat-think")
+	flags.Var(&reads, "reads", "how often the question is written. Default: double")
 	registerOptionalBool(flags, "reasoning", &parsed.reasoning,
 		"think when the read is unsure, then read again. Default: on")
 	registerOptionalFloat(flags, "reasoning-prob", &parsed.reasoningP,
-		fmt.Sprintf("think when the top probability is below P (default: %v)", shisade.ThinkGate))
+		fmt.Sprintf("think when the top probability is below P (default: %s)",
+			shisade.PythonStr(shisade.ThinkGate)))
 	registerOptionalInt(flags, "reasoning-len", &parsed.reasoningN,
 		fmt.Sprintf("the most tokens a thought may run to (default: %d)", shisade.ThinkBudget))
 	registerOptionalBool(flags, "compound", &parsed.compound,
@@ -248,12 +270,18 @@ func parse(command string, argv []string) (*args, error) {
 	}
 	parsed.state, parsed.stateSet = state.value, state.set
 	parsed.labels = labels.value
+	parsed.calibration, parsed.calibrationSet = calibration.value, calibration.set
+	parsed.family, parsed.familySet = family.value, family.set
+	parsed.policy, parsed.policySet = policy.value, policy.set
+	parsed.reads, parsed.readsSet = reads.value, reads.set
 	return parsed, nil
 }
 
-func contains(values []string, wanted string) bool {
+// contains is the membership test `argparse`'s `choices` is. It is generic
+// because the family list is `[]shisade.Family` and the others are `[]string`.
+func contains[T ~string](values []T, wanted string) bool {
 	for _, value := range values {
-		if value == wanted {
+		if string(value) == wanted {
 			return true
 		}
 	}
@@ -269,11 +297,13 @@ func calibrationFamilies() string {
 	return strings.Join(names, ", ")
 }
 
-func optionalString(value string) *string {
-	if value == "" {
-		return nil
+// familyNames is `FAMILIES` as the reference command line writes it.
+func familyNames() string {
+	names := make([]string, 0, len(shisade.Families))
+	for _, family := range shisade.Families {
+		names = append(names, string(family))
 	}
-	return &value
+	return strings.Join(names, ", ")
 }
 
 // topUsage and commandUsage are written by hand rather than by `flag`, because

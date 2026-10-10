@@ -806,9 +806,15 @@ func TestHealthOffline(t *testing.T) {
 	if _, ok := report["chat_system_render"]; ok {
 		t.Error("the report carries the image path's chat render probe")
 	}
-	slots, ok := report["slots"].(map[string]any)
-	if !ok || slots["count"] != MaxCodes {
-		t.Errorf("the slot report is %v", report["slots"])
+	// The slot summary is an `Object`, so its key order survives into
+	// `doctor --json`: Python's report has the count first and the codes in
+	// codebook order.
+	slots, ok := report["slots"].(Object)
+	if !ok || len(slots) != 3 || slots[0].Key != "count" || slots[0].Value != MaxCodes {
+		t.Fatalf("the slot report is %v", report["slots"])
+	}
+	if slots[1].Key != "A" || slots[2].Key != "B" {
+		t.Errorf("the slot report names %v and %v, want A then B", slots[1].Key, slots[2].Key)
 	}
 
 	// A model the endpoint does not list fails the report.

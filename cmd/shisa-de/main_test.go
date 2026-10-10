@@ -106,6 +106,9 @@ type cliServer struct {
 	requests []map[string]any
 	// models is the id list `/v1/models` returns.
 	models []string
+	// completionStatus, when non-zero, is the status every completion answers
+	// with, so a test can watch what a failed read does.
+	completionStatus int
 }
 
 func newCLIServer(t *testing.T, models ...string) *cliServer {
@@ -122,6 +125,11 @@ func newCLIServer(t *testing.T, models ...string) *cliServer {
 		stub.requests = append(stub.requests, body)
 		stub.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
+		if !strings.HasSuffix(r.URL.Path, "/models") && stub.completionStatus != 0 {
+			w.WriteHeader(stub.completionStatus)
+			fmt.Fprint(w, `{"error":{"message":"the read is not available"}}`)
+			return
+		}
 		if strings.HasSuffix(r.URL.Path, "/models") {
 			entries := make([]string, 0, len(stub.models))
 			for _, id := range stub.models {
@@ -179,19 +187,25 @@ func installCLIModel(t *testing.T, server *cliServer) {
 	previous := newModel
 	t.Cleanup(func() { newModel = previous })
 	newModel = func(config shisade.DecisionModelConfig) (*shisade.DecisionModel, error) {
-		config.BaseURL = server.server.URL
-		config.HTTPClient = server.server.Client()
-		readout, err := shisade.NewReadout(shisade.ReadoutConfig{
-			BaseURL: server.server.URL, Model: config.Model,
-			Family: string(config.Family), HTTPClient: server.server.Client(),
-		})
-		if err != nil {
-			return nil, err
-		}
-		readout.SetTokenizer(server.tokenizer)
-		config.Readout = readout
-		return shisade.NewDecisionModel(config)
+		return stubModel(server, config)
 	}
+}
+
+// stubModel is the client `installCLIModel` builds: the real constructor with a
+// readout over the stub tokenizer and the stub transport.
+func stubModel(server *cliServer, config shisade.DecisionModelConfig) (*shisade.DecisionModel, error) {
+	config.BaseURL = server.server.URL
+	config.HTTPClient = server.server.Client()
+	readout, err := shisade.NewReadout(shisade.ReadoutConfig{
+		BaseURL: server.server.URL, Model: config.Model,
+		Family: string(config.Family), HTTPClient: server.server.Client(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	readout.SetTokenizer(server.tokenizer)
+	config.Readout = readout
+	return shisade.NewDecisionModel(config)
 }
 
 // invoke runs the command line and returns the exit status and both streams.
@@ -376,11 +390,18 @@ func TestRunDispatch(t *testing.T) {
 		}
 	}
 
-	for _, argv := range [][]string{{"help"}, {"--help"}, {"doctor", "--help"}} {
+	for _, argv := range [][]string{{"--help"}, {"-h"}, {"doctor", "--help"}} {
 		status, stdout, _ := invoke(t, argv...)
 		if status != 0 || !strings.Contains(stdout, "usage: shisa-de") {
 			t.Errorf("%v: status %d, stdout %q", argv, status, stdout)
 		}
+	}
+
+	// `help` is not one of `argparse`'s subcommands, so it is an unknown word
+	// and exits 2 like any other; only `-h`/`--help` print the usage.
+	if status, stdout, stderr := invoke(t, "help"); status != 2 || stdout != "" ||
+		!strings.Contains(stderr, "unknown command") {
+		t.Errorf("the bare word help gave %d, stdout %q, stderr %q", status, stdout, stderr)
 	}
 
 	if status, _, stderr := invoke(t, "nonsense"); status != 2 ||
@@ -450,8 +471,30 @@ func TestDoctorText(t *testing.T) {
 			t.Errorf("the uncovered report has no %q line:\n%s", line, stdout)
 		}
 	}
-	if !strings.Contains(stdout, "same family, another checkpoint") {
-		t.Errorf("the report does not explain the mismatch:\n%s", stdout)
+	// The whole line, quoted the way Python's `!r` quotes it: single quotes, not
+	// Go's %q double quotes. This is the line the parity diff against the Python
+	// command line has to agree on byte for byte.
+	if !strings.Contains(stdout,
+		"                fitted on 'shisa-ai/shisa-de-2', not on "+
+			"'shisa-ai/shisa-de-2-preview': same family, another checkpoint") {
+		t.Errorf("the uncovered report does not explain the mismatch the way Python does:\n%s", stdout)
+	}
+}
+
+// TestDoctorQuotesLikePython pins `doctor`'s note line, which is `!r` in the
+// Python command line and would be Go's %q without `pythonQuote`.
+func TestDoctorQuotesLikePython(t *testing.T) {
+	// An id that names neither family: the client assumes DE-2 and says so.
+	server := newCLIServer(t, "my-adapter")
+	installCLIModel(t, server)
+
+	status, stdout, stderr := invoke(t, "doctor", "--model", "my-adapter")
+	if status != 0 {
+		t.Fatalf("doctor exited %d: %s\n%s", status, stderr, stdout)
+	}
+	if !strings.Contains(stdout,
+		"note            'my-adapter' carries no DE-1 or DE-2 slug; 'de2' was assumed, not detected") {
+		t.Errorf("the note is not quoted the way Python's !r quotes it:\n%s", stdout)
 	}
 }
 
@@ -699,10 +742,7 @@ func TestShlexQuote(t *testing.T) {
 
 // TestStateAndLabels pins the two helpers the commands share.
 func TestStateAndLabels(t *testing.T) {
-	state, err := stateFrom("", false)
-	if err != nil {
-		t.Fatalf("stateFrom: %v", err)
-	}
+	state := stateFrom("", false)
 	example, ok := state.(shisade.Object)
 	if !ok {
 		t.Fatalf("the built-in state is a %T, want shisade.Object", state)
@@ -719,10 +759,7 @@ func TestStateAndLabels(t *testing.T) {
 
 	// A JSON object keeps its numbers apart, which is why the parse is
 	// DecodeJSON and not encoding/json.
-	state, err = stateFrom(`{"n": 3}`, true)
-	if err != nil {
-		t.Fatalf("stateFrom: %v", err)
-	}
+	state = stateFrom(`{"n": 3}`, true)
 	object, ok := state.(shisade.Object)
 	if !ok {
 		t.Fatalf("a JSON state is a %T, want shisade.Object", state)
@@ -796,15 +833,21 @@ func TestSortedTopLogprobs(t *testing.T) {
 	if entries[2].token != "token_id:3" {
 		t.Errorf("the null did not sort last: %v", entries)
 	}
+	// The null is carried as a null, not collapsed into 0: the walkthrough
+	// prints `None` for it, and 0.0000 would be a number the server never sent.
+	if !entries[2].null || entries[0].null || entries[1].null {
+		t.Errorf("the null flag is %v, %v, %v", entries[0].null, entries[1].null, entries[2].null)
+	}
 }
 
 // TestExplainReportsAnUnreadableQuestion is the failure the walkthrough has to
 // report before it prints anything.
 //
 // The stub tokenizer has no word for the answer terminator, so it tokenizes as
-// ten runes and `AnswerPrefixID` refuses it. The walkthrough takes the read
-// before its first line, which is the Python command line's order, so a question
-// the readout cannot read is an error rather than half a walkthrough.
+// ten runes and `AnswerPrefixID` refuses it. The boundary check is before the
+// walkthrough's first print in both implementations, so a question whose codes
+// were not read from the answer position is an error rather than a walkthrough
+// that lies. (`TestFailedRead` covers the read, which is after sections 1-2.)
 func TestExplainReportsAnUnreadableQuestion(t *testing.T) {
 	server := newCLIServer(t, "shisa-ai/shisa-de-2")
 	installCLIModel(t, server)
@@ -832,4 +875,249 @@ func firstLines(text string, count int) string {
 		lines = lines[:count]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// TestDoctorNotOKExitsOne pins the exit contract `README.md` advertises: a
+// report that is not ok is a non-zero exit, in both output forms.
+func TestDoctorNotOKExitsOne(t *testing.T) {
+	// The endpoint answers, but it does not list the served model, so `Health`
+	// reports `model listed no` and `ok False`.
+	server := newCLIServer(t, "something-else")
+	installCLIModel(t, server)
+
+	status, stdout, stderr := invoke(t, "doctor", "--model", "shisa-ai/shisa-de-2")
+	if status != 1 {
+		t.Fatalf("a report that is not ok exited %d, want 1: %s\n%s", status, stderr, stdout)
+	}
+	if !strings.Contains(stdout, "model listed    no") ||
+		!strings.Contains(stdout, "ok              False") {
+		t.Errorf("the report does not say why it is not ok:\n%s", stdout)
+	}
+	if stderr != "" {
+		t.Errorf("a report that is not ok wrote to stderr: %q", stderr)
+	}
+
+	// The same status from `--json`, which returns before the text form.
+	status, stdout, _ = invoke(t, "doctor", "--model", "shisa-ai/shisa-de-2", "--json")
+	if status != 1 {
+		t.Errorf("doctor --json exited %d, want 1:\n%s", status, stdout)
+	}
+	if !strings.Contains(stdout, `"ok": false`) {
+		t.Errorf("the JSON report does not carry ok false:\n%s", stdout)
+	}
+}
+
+// TestReportOrderCoversHealth pins the coupling between the report `Health`
+// builds and the order `doctor --json` prints it in.
+//
+// A key added to `Health` and forgotten in `reportOrder` would vanish from the
+// JSON form while the text form still printed it, and nothing else would notice.
+func TestReportOrderCoversHealth(t *testing.T) {
+	// Three invocations, because three report keys are conditional:
+	// `family_note` needs a model id that names neither family,
+	// `calibration_note` a same-family record that does not cover the
+	// checkpoint, and `calibration_mismatch` a record from the other family.
+	// Between them the union is the whole key set.
+	server := newCLIServer(t, "shisa-ai/shisa-de-2", "my-adapter", "shisa-ai/shisa-de-2-preview")
+	for _, argv := range [][]string{
+		{"--model", "shisa-ai/shisa-de-2", "--probe"},
+		{"--model", "my-adapter", "--probe"},
+		{"--model", "shisa-ai/shisa-de-2-preview", "--probe"},
+	} {
+		parsed, err := parse("doctor", argv)
+		if err != nil {
+			t.Fatalf("parse %v: %v", argv, err)
+		}
+		config, err := parsed.modelConfig()
+		if err != nil {
+			t.Fatalf("modelConfig %v: %v", argv, err)
+		}
+		model, err := stubModel(server, config)
+		if err != nil {
+			t.Fatalf("stubModel %v: %v", argv, err)
+		}
+		report := model.Health(context.Background(), true)
+		ordered := orderedReport(report)
+		if len(ordered) != len(report) {
+			t.Errorf("%v: the ordered report has %d keys, the report has %d: %v",
+				argv, len(ordered), len(report), report)
+		}
+		// Every key the report carries has to be one `orderedReport` prints,
+		// because it drops an unknown key silently.
+		known := make(map[string]bool, len(reportOrder))
+		for _, key := range reportOrder {
+			known[key] = true
+		}
+		for key := range report {
+			if !known[key] {
+				t.Errorf("%v: the report carries %q, which reportOrder does not print", argv, key)
+			}
+		}
+		if len(argv) == 2 && argv[0] == "--model" && argv[1] == "my-adapter" {
+			if _, ok := report["family_note"]; !ok {
+				t.Errorf("an assumed family reported no family_note: %v", report)
+			}
+		}
+	}
+
+	// `calibration_mismatch` is the one key no `--calibration` value can reach:
+	// this package ships no DE-1 record, and a DE-2 record on a DE-2 model is
+	// never a family mismatch. A record from the other family is built here so
+	// the key is still exercised.
+	parsed, err := parse("doctor", []string{"--model", "shisa-ai/shisa-de-2"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	config, err := parsed.modelConfig()
+	if err != nil {
+		t.Fatalf("modelConfig: %v", err)
+	}
+	config.Calibration = &shisade.Calibration{
+		Family: shisade.FamilyDE1, ReadoutVersion: shisade.ReadoutVersionFor(shisade.FamilyDE1),
+		Model: "shisa-ai/shisa-de-1", Temperatures: map[string]float64{"choice": 1.5},
+	}
+	model, err := stubModel(server, config)
+	if err != nil {
+		t.Fatalf("stubModel: %v", err)
+	}
+	report := model.Health(context.Background(), true)
+	if _, ok := report["calibration_mismatch"]; !ok {
+		t.Fatalf("a DE-1 record on a DE-2 model reported no mismatch: %v", report)
+	}
+	if len(orderedReport(report)) != len(report) {
+		t.Errorf("the ordered mismatch report drops a key: %v", report)
+	}
+}
+
+// TestChoiceFlagsRejectAnEmptyValue pins the difference between a flag that was
+// not given and one that was given empty, which is what `argparse`'s `choices`
+// is: `--policy "$POLICY"` with `POLICY` unset is a bad invocation, not the
+// default policy.
+func TestChoiceFlagsRejectAnEmptyValue(t *testing.T) {
+	server := newCLIServer(t, "shisa-ai/shisa-de-2")
+	installCLIModel(t, server)
+
+	for _, argv := range [][]string{
+		{"doctor", "--policy", ""},
+		{"doctor", "--reads", ""},
+		{"doctor", "--family", ""},
+		{"doctor", "--calibration", ""},
+	} {
+		status, stdout, stderr := invoke(t, argv...)
+		if status != 2 {
+			t.Errorf("%v: exit status %d, want 2", argv, status)
+		}
+		if stdout != "" {
+			t.Errorf("%v: a refused command wrote to stdout: %q", argv, stdout)
+		}
+		if !strings.Contains(stderr, "usage: shisa-de") {
+			t.Errorf("%v: the error does not carry the usage: %q", argv, stderr)
+		}
+	}
+
+	// A spelling `argparse`'s `choices` does not accept is refused rather than
+	// normalized.
+	if status, _, stderr := invoke(t, "doctor", "--family", "DE-2"); status != 2 ||
+		!strings.Contains(stderr, "unknown family") {
+		t.Errorf("--family DE-2 gave %d and %q", status, stderr)
+	}
+	// The values `choices` does accept still work.
+	if status, _, stderr := invoke(t, "doctor", "--model", "shisa-ai/shisa-de-2",
+		"--family", "de2", "--calibration", "de2"); status != 0 {
+		t.Errorf("a spelled-out family and record gave %d and %q", status, stderr)
+	}
+}
+
+// TestFailedRead pins what a read failure does, which is where the walkthrough's
+// print order is visible.
+func TestFailedRead(t *testing.T) {
+	server := newCLIServer(t, "shisa-ai/shisa-de-2")
+	server.completionStatus = http.StatusInternalServerError
+	installCLIModel(t, server)
+
+	// `explain` prints the prompt and the slots before it takes the read, which
+	// is the Python command line's order, so a failed read leaves half the
+	// walkthrough on stdout rather than nothing.
+	status, stdout, stderr := invoke(t, "explain", "--model", "shisa-ai/shisa-de-2",
+		"--labels", "billing,outage")
+	if status != 1 {
+		t.Fatalf("a failed read exited %d, want 1", status)
+	}
+	for _, line := range []string{"1. The prompt the model receives", "2. The answer slots"} {
+		if !strings.Contains(stdout, line) {
+			t.Errorf("a failed read printed no %q:\n%s", line, stdout)
+		}
+	}
+	if strings.Contains(stdout, "3. One request") {
+		t.Errorf("a failed read printed the request section:\n%s", stdout)
+	}
+	if !strings.Contains(stderr, "shisa-de explain: ") {
+		t.Errorf("the failure did not reach stderr: %q", stderr)
+	}
+
+	// `ask` has nothing to print before its read, so it reports and exits.
+	status, stdout, stderr = invoke(t, "ask", "--model", "shisa-ai/shisa-de-2")
+	if status != 1 {
+		t.Fatalf("a failed classify exited %d, want 1", status)
+	}
+	if stdout != "" {
+		t.Errorf("a failed classify wrote to stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "shisa-de ask: ") {
+		t.Errorf("the classify failure did not reach stderr: %q", stderr)
+	}
+}
+
+// TestStateFromTrimsPythonsWhitespace pins that `--state` is stripped with
+// Python's `str.strip()`, which takes U+001C-U+001F and `strings.TrimSpace`
+// does not. A JSON state behind one of those four characters is JSON to the
+// Python command line.
+func TestStateFromTrimsPythonsWhitespace(t *testing.T) {
+	state := stateFrom("\x1c{\"a\": 1}", true)
+	object, ok := state.(shisade.Object)
+	if !ok {
+		t.Fatalf("a JSON state behind U+001C is a %T, want shisade.Object", state)
+	}
+	encoded, err := shisade.PythonJSON(object)
+	if err != nil {
+		t.Fatalf("PythonJSON: %v", err)
+	}
+	if encoded != `{"a": 1}` {
+		t.Errorf("the state serializes as %s", encoded)
+	}
+
+	// The labels are split with the same rule.
+	if _, labels := labelsFrom("\x1cbilling\x1c, outage"); len(labels) != 2 ||
+		labels[0] != "billing" || labels[1] != "outage" {
+		t.Errorf("the labels are %v", labels)
+	}
+}
+
+// TestExplainPrintsTheGateLikePython pins the gate's spelling: Python's f-string
+// on a float is `str(float)`, so an integral gate is `1.0` and not `1`. The
+// default 0.7 hides the difference, and `--reasoning-prob 1` is a legal value.
+func TestExplainPrintsTheGateLikePython(t *testing.T) {
+	server := newCLIServer(t, "shisa-ai/shisa-de-2")
+	installCLIModel(t, server)
+
+	status, stdout, stderr := invoke(t, "explain", "--model", "shisa-ai/shisa-de-2",
+		"--reasoning-prob", "1")
+	if status != 0 {
+		t.Fatalf("explain exited %d: %s", status, stderr)
+	}
+	if !strings.Contains(stdout, "against the gate 1.0: ") {
+		t.Errorf("the gate is not spelled the way Python spells it:\n%s", stdout)
+	}
+	if strings.Contains(stdout, "against the gate 1: ") {
+		t.Errorf("the gate printed as an integer:\n%s", stdout)
+	}
+	// The help default is spelled with the same rule, so a reader who copies it
+	// gets a value the parser accepts and the same spelling in the output.
+	status, stdout, _ = invoke(t, "explain", "--help")
+	if status != 0 {
+		t.Fatalf("explain --help exited %d", status)
+	}
+	if !strings.Contains(stdout, "the think gate (default: 0.7)") {
+		t.Errorf("the help does not spell the gate default:\n%s", stdout)
+	}
 }

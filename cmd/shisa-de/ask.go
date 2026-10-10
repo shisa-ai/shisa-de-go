@@ -17,11 +17,7 @@ import (
 // `explain` is the command for those.
 func runAsk(ctx context.Context, args *args, model *shisade.DecisionModel,
 	stdout, stderr io.Writer) int {
-	state, err := stateFrom(args.state, args.stateSet)
-	if err != nil {
-		fmt.Fprintf(stderr, "shisa-de ask: %v\n", err)
-		return 2
-	}
+	state := stateFrom(args.state, args.stateSet)
 	head, labels := labelsFrom(args.labels)
 	spec := shisade.HeadSpec{Options: optionsFromLabels(labels)}
 	if args.prompt != "" {

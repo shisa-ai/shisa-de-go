@@ -596,8 +596,8 @@ func NewDecisionModel(config DecisionModelConfig) (*DecisionModel, error) {
 	}
 	if !model_.FamilyExplicit {
 		model_.Warnings = append(model_.Warnings, fmt.Sprintf(
-			"%q names neither DE-1 nor DE-2, so it is read as %q; pass Family to say which contract it was trained for",
-			model, string(family)))
+			"%s names neither DE-1 nor DE-2, so it is read as %s; pass Family to say which contract it was trained for",
+			pythonQuote(model), pythonQuote(string(family))))
 	}
 
 	options, err := ResolveOptions(family, nil, config.Overrides)
@@ -624,8 +624,8 @@ func NewDecisionModel(config DecisionModelConfig) (*DecisionModel, error) {
 	model_.CalibrationApplied = model_.Calibration.Fitted() && (supplied || level == ApplicabilityCheckpoint)
 	if model_.Calibration.Fitted() && !model_.CalibrationApplied {
 		model_.Warnings = append(model_.Warnings, fmt.Sprintf(
-			"the bundled %s calibration is not applied to %q: %s. Answers are raw probabilities; pass Calibration to apply a record you vouch for",
-			string(family), model, strings.Join(reasons, "; ")))
+			"the bundled %s calibration is not applied to %s: %s. Answers are raw probabilities; pass Calibration to apply a record you vouch for",
+			string(family), pythonQuote(model), strings.Join(reasons, "; ")))
 	}
 
 	maxWorkers := config.MaxWorkers
@@ -767,7 +767,8 @@ func (m *DecisionModel) Health(ctx context.Context, probe bool) map[string]any {
 	}
 	if !m.FamilyExplicit {
 		report["family_note"] = fmt.Sprintf(
-			"%q carries no DE-1 or DE-2 slug; %q was assumed, not detected", m.Model, string(m.Family))
+			"%s carries no DE-1 or DE-2 slug; %s was assumed, not detected",
+			pythonQuote(m.Model), pythonQuote(string(m.Family)))
 	}
 	matched := m.CalibrationLevel != ApplicabilityMismatch
 	report["calibration_match"] = matched
@@ -810,9 +811,14 @@ func (m *DecisionModel) Health(ctx context.Context, probe bool) map[string]any {
 			report["boundary_check"] = "failed: " + err.Error()
 		} else {
 			report["boundary_check"] = "passed"
-			slotReport := map[string]any{"count": len(slots)}
+			// An `Object`, not a map: Python's `{"count": ..., **{letter: id}}`
+			// has an order, and `doctor --json` prints it. A map would come out
+			// sorted, which is the codebook's order only while the first two
+			// codes happen to sort that way.
+			slotReport := make(Object, 0, 3)
+			slotReport = append(slotReport, Member{Key: "count", Value: len(slots)})
 			for _, slot := range slots[:2] {
-				slotReport[slot.Code] = slot.TokenID
+				slotReport = append(slotReport, Member{Key: slot.Code, Value: slot.TokenID})
 			}
 			report["slots"] = slotReport
 			listed, _ := report["model_listed"].(bool)

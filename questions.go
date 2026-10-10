@@ -52,6 +52,16 @@ func trimPythonSpace(text string) string {
 	return strings.TrimFunc(text, isPythonSpace)
 }
 
+// TrimPythonSpace is Python's `str.strip()`.
+//
+// It differs from `strings.TrimSpace` on U+001C-U+001F, which Python's
+// `string.whitespace` includes and Go's `unicode.IsSpace` does not. A caller
+// parsing text the Python client would parse has to use this one to agree with
+// it on a string that ends in one of those four characters.
+func TrimPythonSpace(text string) string {
+	return trimPythonSpace(text)
+}
+
 // isNilDescription reports whether a description is absent.
 //
 // Python has one None; Go has a typed nil as well. A caller who passes a nil

@@ -246,11 +246,13 @@ func (c Calibration) Applicability(model, readoutVersion string, options Applica
 	var reasons []string
 	if c.Family != served {
 		reasons = append(reasons, fmt.Sprintf(
-			"fitted for family %q but %q is read as %q", string(c.Family), model, string(served)))
+			"fitted for family %s but %s is read as %s",
+			pythonQuote(string(c.Family)), pythonQuote(model), pythonQuote(string(served))))
 	}
 	if !CalibrationCompatibleWith(c.ReadoutVersion, readoutVersion) {
 		reasons = append(reasons, fmt.Sprintf(
-			"fitted against readout %q, whose answers %q does not reproduce", c.ReadoutVersion, readoutVersion))
+			"fitted against readout %s, whose answers %s does not reproduce",
+			pythonQuote(c.ReadoutVersion), pythonQuote(readoutVersion)))
 	}
 	if len(reasons) != 0 {
 		return ApplicabilityMismatch, reasons
@@ -270,7 +272,7 @@ func (c Calibration) Applicability(model, readoutVersion string, options Applica
 		}
 	}
 	return ApplicabilityFamily, []string{fmt.Sprintf(
-		"fitted on %q, not on %q: same family, another checkpoint", c.Model, model)}
+		"fitted on %s, not on %s: same family, another checkpoint", pythonQuote(c.Model), pythonQuote(model))}
 }
 
 // Matches reports whether this record can describe a served model at all:

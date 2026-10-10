@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"sort"
 
 	shisade "github.com/shisa-ai/shisa-de-go"
 )
@@ -65,37 +64,7 @@ func orderedReport(report map[string]any) shisade.Object {
 		if !ok {
 			continue
 		}
-		if key == "slots" {
-			value = orderedSlots(value)
-		}
 		ordered = append(ordered, shisade.Member{Key: key, Value: value})
-	}
-	return ordered
-}
-
-// orderedSlots is the slot summary in the order `Health` builds it: the count,
-// then the codes.
-//
-// The Python client writes `{"count": len(slots), **{letter: token_id}}`, so the
-// count comes first and the codes follow in codebook order.
-func orderedSlots(value any) any {
-	slots, ok := value.(map[string]any)
-	if !ok {
-		return value
-	}
-	ordered := make(shisade.Object, 0, len(slots))
-	if count, ok := slots["count"]; ok {
-		ordered = append(ordered, shisade.Member{Key: "count", Value: count})
-	}
-	codes := make([]string, 0, len(slots))
-	for key := range slots {
-		if key != "count" {
-			codes = append(codes, key)
-		}
-	}
-	sort.Strings(codes)
-	for _, code := range codes {
-		ordered = append(ordered, shisade.Member{Key: code, Value: slots[code]})
 	}
 	return ordered
 }

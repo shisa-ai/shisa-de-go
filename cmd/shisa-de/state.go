@@ -6,8 +6,7 @@ import (
 	shisade "github.com/shisa-ai/shisa-de-go"
 )
 
-// defaultState is the built-in example `ask` and `explain` use when no
-// `--state` is given.
+// The built-in example `ask` and `explain` use when no `--state` is given.
 const (
 	defaultTicket = "Order 4812 was marked delivered on Monday. The customer says the parcel " +
 		"never arrived and tracking has not updated since Friday."
@@ -28,7 +27,9 @@ var defaultLabels = []string{"order_status", "refund_request", "cancel_order", "
 // The parse is `DecodeJSON` rather than `encoding/json`, because the difference
 // is visible: a plain unmarshal turns every number into a float64, and the state
 // is serialized back into the prompt, where `3` and `3.0` are different tokens.
-func stateFrom(text string, given bool) (any, error) {
+// The trim is `TrimPythonSpace`, so a state the Python client strips is stripped
+// here too.
+func stateFrom(text string, given bool) any {
 	if !given {
 		// An `Object` rather than a map: the evidence is serialized into the
 		// prompt, and Python's `json.dumps` writes a dict in insertion order
@@ -38,18 +39,18 @@ func stateFrom(text string, given bool) (any, error) {
 		return shisade.Object{
 			{Key: "ticket", Value: defaultTicket},
 			{Key: "account", Value: defaultAccount},
-		}, nil
+		}
 	}
-	stripped := strings.TrimSpace(text)
+	stripped := shisade.TrimPythonSpace(text)
 	if strings.HasPrefix(stripped, "{") || strings.HasPrefix(stripped, "[") {
 		value, err := shisade.DecodeJSON([]byte(stripped))
 		if err == nil {
-			return value, nil
+			return value
 		}
 		// A `{`-prefixed string that is not JSON is a state like any other,
 		// which is what `json.JSONDecodeError` gives the Python command line.
 	}
-	return text, nil
+	return text
 }
 
 // labelsFrom is the Python client's `_labels_from`: one head named `intent`,
@@ -60,7 +61,7 @@ func labelsFrom(spec string) (string, []string) {
 	}
 	labels := make([]string, 0, strings.Count(spec, ",")+1)
 	for _, part := range strings.Split(spec, ",") {
-		if trimmed := strings.TrimSpace(part); trimmed != "" {
+		if trimmed := shisade.TrimPythonSpace(part); trimmed != "" {
 			labels = append(labels, trimmed)
 		}
 	}
