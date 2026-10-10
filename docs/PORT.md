@@ -129,8 +129,11 @@ is a case where the Python client picks something and this port refuses to:
   position, whatever the map holds. `prompt_logprobs: 0` asks for the prompt's
   own token and nothing else, so a response with more than one entry there is a
   server answering a different question; this port errors rather than scoring a
-  token nobody asked about. A null entry at that position is an error too, where
-  the Python client reads `None` through and reports the code as unreturned.
+  token nobody asked about. A null *value* in that position's map is the same
+  error here, where the Python client reaches `None.get("logprob")` and dies with
+  an `AttributeError` that is not a `ReadoutError` at all. A null *position*
+  (`[null, null]`) is not a difference: both clients report the code as
+  unreturned.
 - `CodeRead.Sampled` is a `string`, not `str | None`. A response that omits
   `choices[0].text` gives `""` here and `None` there. Nothing reads the value as
   anything but provenance, and Go's zero value carries the same meaning.
@@ -170,10 +173,32 @@ sums `weights.values()` in the dict order it was given, which `read_codes` sets
 to option order, and on CPython 3.12+ it sums with Neumaier compensation. This
 port sorts the keys (shortest first, then lexicographic, which is the codebook's
 own order) and sums left to right, so the result is reproducible under Go's
-randomized map iteration and matches Python for the codebook-ordered prefix the
-readout always passes. It is a relative 1e-16 or so from Python's arithmetic in
-general, and the replay gate compares the probabilities with a 1e-12 relative
+randomized map iteration and uses the same order Python does for the
+codebook-ordered prefix the readout always passes. It is still a relative 1e-16
+or so from Python's number, because the arithmetic differs even when the order
+does not, and the replay gate compares the probabilities with a 1e-12 relative
 tolerance rather than exactly for that reason.
+
+**The boundary-approval cache is keyed by code and token id, not by code.**
+Python's `_boundary_checked` is a set of letters, so a hand-built slot carrying
+an approved code and an id the tokenizer never produced passes its
+`check_code_boundary`. This port records the approved id with the code and
+re-checks when a slot's id differs. It also refuses to record an approval from a
+read that lost a `SetTokenizer` race, so a later read under the new tokenizer
+cannot inherit one.
+
+**`ListModels` reports its failures as readout errors.** Python's `list_models`
+calls `raise_for_status()`, which raises an `httpx.HTTPStatusError` outside the
+`ReadoutError` hierarchy, and lets a `response.json()` failure escape uncaught.
+This port returns `ReadoutHTTPError` for a rejected request and `ReadoutError`
+for a body that is not the expected object, so one handler covers the read paths
+and the model listing.
+
+**`SetTokenizer` has no Python counterpart.** It is a Go-only test hook that
+replaces the tokenizer and discards everything derived from the old one: the
+resolved slots, the boundary approvals, and the generation counter a concurrent
+read uses to tell whether its approvals are still current. Python's readout
+resolves its tokenizer once and has no way to swap it.
 
 **A mid-read capability downgrade re-reads every code, as Python does.** When a
 server rejects `logprob_token_ids` after an earlier block was accepted, both
@@ -244,9 +269,12 @@ This port has produced no measurements of its own against a served model.
   rather than being shaped by it. Duplicate object keys, `-0`, out-of-range
   exponents, invalid UTF-8 and Python's `str.strip()` whitespace set have their
   own unit tests; each was checked against CPython's `json` module directly.
-- **Readout.** 21 scenarios, 61 recorded exchanges, replayed request for request
-  and field for field. Each exchange records the method and the path as well as
-  the bodies, so the request line is checked too. The scenarios cover: widths 2,
+- **Readout.** 22 scenarios, 62 recorded exchanges, replayed request for request
+  and field for field. Each exchange records the method, the path and the
+  headers the client set itself -- `Content-Type`, and `Authorization` for the
+  one scenario that configures a key -- and the replay server compares all of
+  them, so a readout that posted to the wrong path or dropped a header fails the
+  gate. The scenarios cover: widths 2,
   26, 27, 128, 129 and 256 (the last two crossing the 128-candidate block
   boundary), a server that honours `logprob_token_ids`, one that ignores it, one
   that rejects it with a 400 and one that accepts the first block and rejects the
@@ -280,11 +308,6 @@ This port has produced no measurements of its own against a served model.
   points, a zero-value `Readout` reporting itself, the `closeEnough` helper
   directly, and eight concurrent readers. `go test -race` is what decides the
   concurrency claim.
-
-Every recorded exchange now carries the request method, path and the two headers
-the client sets (`Content-Type`, and `Authorization` when a key is configured),
-and the replay server compares all of them, so a readout that posted to the
-wrong path or dropped a header fails the gate.
 - **Tokenizer identity.** The test checks the loaded tokenizer's vocab size
   (262,144) and `<channel|>` id (101) before running the vectors, so a fallback
   to a different revision fails loudly. Set `SHISA_DE_TOKENIZER_REQUIRE=1` to

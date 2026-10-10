@@ -176,10 +176,11 @@ class StubDE2Server:
 class Recorder:
     """One Readout over one stub, keeping every request and response in order."""
 
-    def __init__(self, server: StubDE2Server) -> None:
+    def __init__(self, server: StubDE2Server, api_key: str = "") -> None:
         self.server = server
+        self.api_key = api_key
         self.exchanges: list[dict] = []
-        self.readout = Readout(base_url="http://replay.invalid", model="de2-test", api_key="",
+        self.readout = Readout(base_url="http://replay.invalid", model="de2-test", api_key=api_key,
                                transport=httpx.MockTransport(self._handle))
         self.readout._tokenizer = server.tokenizer
 
@@ -269,10 +270,23 @@ def scenarios() -> list[dict]:
             "op": "read-codes", "prompt": prompt, "codes": count, "debug": debug,
             "exchanges": recorder.take(), **result}]}
 
+    def keyed(name: str, count: int, api_key: str) -> dict:
+        """A scenario whose client sends a bearer token, so the recorded
+        `Authorization` header is compared rather than assumed."""
+        recorder = Recorder(StubDE2Server(), api_key=api_key)
+        prompt = render(recorder, count)
+        slots = recorder.readout.code_slots(count)
+        read = recorder.readout.read_codes(prompt, slots)
+        return {"name": name, "api_key": api_key, "steps": [{
+            "op": "read-codes", "prompt": prompt, "codes": count, "debug": False,
+            "exchanges": recorder.take(), "result": read_record(read)}]}
+
     # Every width, including the two that cross the 128-candidate block boundary.
     for count in (2, 26, 27, 128, 129, 256):
         out.append(simple(f"codes-{count}", count, StubDE2Server()))
     out.append(simple("codes-3-debug", 3, StubDE2Server(), debug=True))
+    # A keyed read, so the recorded Authorization header is compared too.
+    out.append(keyed("codes-api-key", 2, "test-key-not-a-secret"))
     # A server that sends no `choices[0].text`, which is the one place the
     # Python client's `str | None` and Go's string differ.
     out.append(simple("codes-no-text", 2, StubDE2Server(omit_text=True)))
@@ -444,7 +458,9 @@ def main() -> int:
         "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
     }
     META_OUT.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="")
-    print(f"{OUT}: {meta['scenarios']} scenarios, {meta['exchanges']} exchanges; "
+    keyed_scenarios = [case for case in recorded if case.get("api_key")]
+    print(f"{OUT}: {meta['scenarios']} scenarios, {meta['exchanges']} exchanges, "
+          f"{len(keyed_scenarios)} keyed; "
           f"{META_OUT}: {meta['sha256'][:12]}", file=sys.stderr)
     for case in recorded:
         for step in case["steps"]:

@@ -230,10 +230,12 @@ type renderedPrompt struct {
 func textPrompt(text string) renderedPrompt { return renderedPrompt{text: text} }
 
 func idPrompt(ids []int) renderedPrompt {
-	if ids == nil {
-		ids = []int{}
-	}
-	return renderedPrompt{ids: ids}
+	// A copy, because the whole read sends this list: the Python client does
+	// `list(prompt)` for the id form, so a caller that reuses its buffer while a
+	// read is in flight cannot change the prompt the later blocks send.
+	copied := make([]int, len(ids))
+	copy(copied, ids)
+	return renderedPrompt{ids: copied}
 }
 
 // isText reports which form this is. The id form is the one with a non-nil
@@ -311,8 +313,9 @@ const DefaultTimeout = 120 * time.Second
 // remembered.
 //
 // NewReadout is the only supported constructor: the zero value has no endpoint
-// and no HTTP client, and every method on it returns an error rather than
-// pretending to read something.
+// and no HTTP client, and every method that reads or spends a request returns an
+// error rather than pretending to read something. `Render` and `ResolvedFamily`
+// need neither, so they still answer on a zero value.
 type Readout struct {
 	baseURL           string
 	model             string
@@ -620,7 +623,12 @@ func (r *Readout) checkPromptTokens(response completionResponse, expected int) (
 }
 
 // Render renders one question against one state into the prompt the model sees,
-// with this readout's system line. The options select the read, as in Render.
+// with this readout's system line.
+//
+// `options.SystemPrompt` means the readout's configured line when it is empty,
+// which is not what the package-level Render means by the same field: there,
+// empty is DirectSystem. A readout built with a custom line therefore cannot ask
+// for DirectSystem through this method; call the package function for that.
 func (r *Readout) Render(state any, question Question, options RenderOptions) (string, error) {
 	if options.SystemPrompt == "" {
 		options.SystemPrompt = r.systemPrompt

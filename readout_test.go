@@ -43,8 +43,12 @@ type readoutFixture struct {
 }
 
 type readoutScenario struct {
-	Name  string        `json:"name"`
-	Steps []readoutStep `json:"steps"`
+	Name string `json:"name"`
+	// APIKey is the bearer token the Python client sent, when the scenario used
+	// one. The replay builds its readout with the same key so the recorded
+	// Authorization header is compared rather than assumed.
+	APIKey string        `json:"api_key"`
+	Steps  []readoutStep `json:"steps"`
 }
 
 type readoutStep struct {
@@ -194,6 +198,7 @@ func TestReadoutReplay(t *testing.T) {
 			readout, err := NewReadout(ReadoutConfig{
 				BaseURL:    server.URL,
 				Model:      "de2-test",
+				APIKey:     scenario.APIKey,
 				HTTPClient: server.Client(),
 			})
 			if err != nil {
@@ -387,8 +392,11 @@ func (s *replayServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if exchange.Path != "" && r.URL.Path != exchange.Path {
 		s.t.Errorf("request %d went to %s, want %s", s.at, r.URL.Path, exchange.Path)
 	}
-	// Only the headers the Python client set itself: the Go client sets the same
-	// two and Go's transport adds its own the fixture never recorded.
+	// Every header the Python client set itself, and only those: Go's transport
+	// adds its own that the fixture never recorded.
+	if len(exchange.Headers) == 0 {
+		s.t.Errorf("request %d: the fixture records no headers", s.at)
+	}
 	for name, want := range exchange.Headers {
 		if got := r.Header.Get(name); got != want {
 			s.t.Errorf("request %d sent %s: %q, want %q", s.at, name, got, want)
@@ -1033,6 +1041,45 @@ func TestCheckCodeBoundaryRefusesAForeignTokenID(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "boundary moves") {
 		t.Errorf("the error is %v, want the boundary-moves error", err)
+	}
+}
+
+// TestCheckCodeBoundaryDoesNotCacheAcrossATokenizerSwap is the stale-generation
+// branch of checkCodeBoundaryFor: a read that captured a tokenizer, lost a
+// SetTokenizer race, and then reaches the check must re-check its codes and
+// cache nothing. Without the generation guard it would write approvals for a
+// tokenizer the readout no longer holds, and the next read under the new
+// tokenizer would skip the per-code check.
+func TestCheckCodeBoundaryDoesNotCacheAcrossATokenizerSwap(t *testing.T) {
+	readout := stubReadout(t, `{"choices":[{"text":"A"}]}`)
+	slots := testSlots(t, readout, 1)
+	tok, generation, err := readout.tokenizerSnapshot()
+	if err != nil {
+		t.Fatalf("tokenizerSnapshot: %v", err)
+	}
+	prefixID, err := readout.answerPrefixIDFor(tok)
+	if err != nil {
+		t.Fatalf("answerPrefixIDFor: %v", err)
+	}
+
+	// The swap the read lost the race against. The new tokenizer resolves A to
+	// the same id and the same terminator, so only the cache decides whether the
+	// check runs.
+	readout.SetTokenizer(newFixtureTokenizer(map[string]int{AnswerPrefix: 101, "A": 65}))
+
+	// The stale read's check passes, against its own tokenizer.
+	if err := readout.checkCodeBoundaryFor(tok, generation, []int{prefixID}, slots); err != nil {
+		t.Fatalf("the stale read's boundary check: %v", err)
+	}
+	if len(readout.boundaryChecked) != 0 {
+		t.Fatalf("a read that lost the tokenizer race cached %v", readout.boundaryChecked)
+	}
+
+	// Nothing was approved, so a foreign token id under the new tokenizer still
+	// has to be checked and still has to fail.
+	forged := []Slot{{Code: slots[0].Code, TokenID: 999, Text: slots[0].Text}}
+	if err := readout.CheckCodeBoundary([]int{prefixID}, forged); err == nil {
+		t.Error("the stale read left an approval the new tokenizer trusted")
 	}
 }
 
