@@ -462,6 +462,25 @@ func (r *Readout) ensureTokenizer() (Tokenizer, error) {
 // tokenizerSnapshot returns the tokenizer and the generation it belongs to, so a
 // read can use one tokenizer throughout and know whether it is still the
 // readout's.
+// Close releases the readout's idle connections.
+//
+// The Python client's `close` closes its httpx client. Go's http.Client is
+// shared and reusable, so this drops only the pooled connections; the readout
+// stays usable and a later read opens new ones.
+func (r *Readout) Close() {
+	if r == nil || r.client == nil {
+		return
+	}
+	r.client.CloseIdleConnections()
+}
+
+// EnsureTokenizer returns the readout's tokenizer, loading it on first use.
+//
+// The Python client exposes the same method. It is here for callers that need to
+// tokenize a prompt themselves, such as a health check that verifies the answer
+// boundary before spending a request.
+func (r *Readout) EnsureTokenizer() (Tokenizer, error) { return r.ensureTokenizer() }
+
 func (r *Readout) tokenizerSnapshot() (Tokenizer, uint64, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -940,7 +959,7 @@ func (r *Readout) completions(ctx context.Context, body completionRequest, into 
 // *http.Client panics inside net/http instead of returning an error; every other
 // unusable readout reports why.
 func (r *Readout) httpClient() (*http.Client, error) {
-	if r.client == nil {
+	if r == nil || r.client == nil {
 		return nil, &ReadoutError{Message: "the readout has no HTTP client; build it with NewReadout"}
 	}
 	return r.client, nil

@@ -10,15 +10,15 @@ client deliberately behaves differently.
 | Python | Go |
 | --- | --- |
 | `shisa_de/readout.py` | `readout.go`, `render.go`, `endpoint.go` |
-| `shisa_de/policy.py` | `policy.go` (planned) |
-| `shisa_de/calibration.py` | `calibration.go` (planned) |
+| `shisa_de/policy.py` | `policy.go` |
+| `shisa_de/calibration.py` | `calibration.go` |
 | `shisa_de/family.py` | `family.go` |
 | `shisa_de/questions.py` | `questions.go` |
-| `shisa_de/client.py` | `client.go` (planned) |
+| `shisa_de/client.py` | `client.go` |
 | `json.dumps` / `json.loads` | `pyjson.go` |
 | `httpx` | `net/http` in `endpoint.go` |
 | `shisa_de/overflow.py` | not ported; DE-1 only |
-| `shisa_de/images.py` | not ported yet |
+| `shisa_de/images.py` | not ported; no image path |
 | `shisa_de/data/*.json` | `data/*.json`, embedded with `go:embed` |
 | `shisa_de/cli.py` | `cmd/shisa-de/` (planned) |
 | `tests/test_offline.py` | `*_test.go` with a stub tokenizer and `httptest` |
@@ -31,7 +31,8 @@ The tokenizer has no Python counterpart as a module: the Python client calls
 The file mapping is the target layout, not a description of the tree: M1 landed
 the codebook and the tokenizer; M2 landed the renderer, family resolution, the
 question types and the Python-JSON writer; M3 landed the DE-2 readout and its
-HTTP layer. Rows marked planned are M4 or later.
+HTTP layer; M4 landed the policy, the calibration records and the friendly layer.
+The command line is M5.
 
 ## Deliberate differences
 
@@ -223,16 +224,83 @@ and the resolved slots behind one mutex, so concurrent first calls serialize on
 one load and a failed load leaves nothing behind to be retried.
 
 **Concurrency.** `ThreadPoolExecutor` becomes goroutines with a bounded worker
-pool.
+pool, and the heads are sorted before they are dispatched, so the work order is
+fixed rather than dependent on Go's map iteration.
+
+**The default model id is still DE-1, so a zero config fails.** `DefaultModel` is
+`shisa-ai/shisa-de-1`, matching the Python client's `DEFAULT_MODEL`, because
+quietly substituting a different checkpoint would be a worse difference than an
+error. This port cannot read DE-1, so `NewDecisionModel(DecisionModelConfig{})`
+returns an `UnsupportedFamilyError` rather than a working client, and that
+error's message says to pass a DE-2 checkpoint. The Python client with the same
+empty config works; this one does not.
+
+**No images.** `shisa_de/images.py` is not ported. This client's readout has no
+image read and no chat-render probe, so `Classify` and `Decide` take no image
+argument and `Health` has no `chat_system_render` entry. A caller who needs the
+image path needs the Python client.
+
+**`Decision` is a struct, not a dict subclass.** Python's `result["route"]`
+becomes `decision.Values["route"]`, and `result.answers` becomes
+`decision.Answers`. There is no indexing operator to overload in Go, and one
+field is clearer than an accessor pair.
+
+**`Answer.Value` and `Answer.Label` hand back the value, not a pointer to it.**
+The `Answer` struct keeps `*float64` and `*string` fields, because those are the
+places the Python client has `None`; the two accessors and `ToWire` dereference
+them, so a caller reads `answer.Value().(float64)` rather than a pointer, which
+is what the Python client returns and what JSON already erases.
+
+**Warnings are recorded, not raised.** The Python client calls `warnings.warn`
+for an assumed family and for a calibration record that is held but not applied.
+Go has no warning channel, so `DecisionModel.Warnings` collects them as strings.
+Nothing is printed.
+
+**`HeadSpec` replaces the duck-typed label spec, and the order is explicit.**
+Python's `classify` accepts a list of labels, a label-to-description mapping, a
+`{"levels": [...]}` mapping, a `{"labels": [...], "multi_label": True}`
+mapping, or a question object, and tells them apart by shape. A Go map does not
+preserve insertion order, and the order of a label set decides which answer code
+each label is read as, so this port takes a `HeadSpec` whose `Options` is a slice.
+That makes the presentation order part of the API instead of an accident of the
+caller's map, and it makes the three shorthands separate fields rather than
+shapes to be sniffed. `Question` still wins over every other field.
+
+**`ResolveOptions` takes an overrides struct, because Go has no keyword
+arguments.** Python distinguishes "not passed" from "passed as None" for
+`policy`, `reads`, `reasoning` and the rest. A Go `bool` or `float64` cannot, so
+`OptionOverrides` holds pointers and nil is Python's `None`. The two names of
+one setting (`think_gate`/`reasoning_prob`, `think_budget`/`reasoning_len`,
+`overflow`/`compound`) are both fields, and passing both with different values is
+the same error it is in Python.
+
+**`ReadPolicy` takes resolved `ReadOptions`.** Python's `read_policy` has
+defaults for `policy`, `think_gate` and `think_budget` in its signature; this
+port takes the `ReadOptions` the client already resolved, so the defaults live in
+one place (`ResolveOptions`) rather than two. `ResolveOptions(family, nil, {})`
+produces the same defaults for a caller that wants them.
+
+**`Health` reports a nil readout rather than panicking.** A `DecisionModel`
+built by `NewDecisionModel` always has a readout; the zero value does not, and a
+nil `*Readout` would panic inside `net/http`. Every entry point that reads checks
+and reports.
+
+**`DecisionModel.Close` drops idle connections.** The Python client's `close`
+closes its httpx client. Go's `http.Client` is shared and reusable, so `Close`
+calls `CloseIdleConnections` and leaves the readout usable.
 
 ## Verified parity
 
-Every check recorded here is offline: it was produced on 2026-10-10 by running
-the Python client and `transformers` over the pinned snapshot
-(`shisa-ai/shisa-de-2@8f21734b27b3462471c4662d5638e52195b005a3`) and checking the
-results in as fixtures. No requests were made to a served model, so nothing below
-carries a serving fingerprint and nothing below is a measurement of a served
-checkpoint. The Python client is `shisa-de` `0.4.0`.
+Every check recorded here is offline at test time: it was produced by running the
+Python client and `transformers` over the pinned snapshot
+(`shisa-ai/shisa-de-2@8f21734b27b3462471c4662d5638e52195b005a3`) or against the
+hosted endpoint, and the results are checked in as fixtures. The Python client is
+`shisa-de` `0.4.0` at `d172d4977d133fefb9b8c82ffcc0e3d007554551`.
+
+The tokenizer, render, JSON and readout fixtures were produced with no served
+model, so they carry no serving fingerprint. The client fixture was recorded
+against the hosted endpoint and does: `shisa-hosted-2026-10-10`, on 2026-10-10.
+Where a number below is a measurement of a served checkpoint, it says so.
 
 This port has produced no measurements of its own against a served model.
 
@@ -308,6 +376,47 @@ This port has produced no measurements of its own against a served model.
   points, a zero-value `Readout` reporting itself, the `closeEnough` helper
   directly, and eight concurrent readers. `go test -race` is what decides the
   concurrency claim.
+- **Policy and calibration.** `ResolveOptions` is tested against expected values
+  produced by running the Python resolver for both families and for each layer of
+  overrides; the expectations are inline rather than a fixture, so they are not
+  re-checked against Python at test time. `ReadPolicy` is tested over a stub
+  server that answers with read bodies of the same shape the readout fixture
+  pins. The gate is checked from both sides, as is the read after a thought, the
+  close the client writes when the model does not, the option cap of 26
+  (`ThinkOptionCap`) and the 27-option case that trips it, the aliased names
+  (`reasoning_prob`, `reasoning_len`, `compound`) and the error for passing both,
+  a policy name the resolver does not know, a `reads` value that is not 1 or 2,
+  and `direct` spending one request where the default spends two. The calibration
+  tests cover the two arithmetic helpers against hand-computed values, the
+  shipped record's temperatures and provenance, the applicability levels for each
+  family and checkpoint, `CalibrationForRead` returning nothing for a read the
+  record does not describe, and `ResolveCalibration` choosing between a bundled
+  record, a named one and a caller's.
+- **Friendly layer.** `Classify` and `Decide` are tested against a stub server
+  over the same readout the policy tests use, for the shapes the live fixture
+  cannot force: a head that is refused before any request goes out, probability
+  with reasoning refused in the same way, the multi-label threshold and its
+  three views, the per-head provenance block, a call's overrides not leaking into
+  the model's defaults, three concurrent heads through a bounded pool, and a
+  `DecisionModel` with no readout reporting rather than panicking.
+- **Client.** 23 cases, 32 recorded exchanges, replayed request for request and
+  answer for answer. The fixture was recorded live against the hosted endpoint
+  (`shisa-hosted-2026-10-10`, 2026-10-10) through a forwarding transport, so the
+  responses are the server's and the answers are the Python client's; the Go test
+  replays the recorded responses and makes no request of its own. The cases
+  cover the gate from both sides (`decide-noul-sure` spends one request,
+  `decide-noul-near-gate` thinks), a choice, a three-way choice, an ordered
+  score, a 27-option head above the think cap, `direct`, an explicit `repeat`,
+  `probability`, a checkpoint the shipped record does not cover, an aliased
+  checkpoint, several heads in one call, the debug read, and `classify` with
+  label sets, levels, multi-label, the mapping and levels shorthands, the
+  probability view and mixed head types. Every request body the Go client sends
+  is matched against a recorded one -- a body the Python client never sent fails
+  the case -- and the answer, its probabilities, confidence, level, legend,
+  strategy and provenance are compared field for field.
+  `testdata/client_parity.meta.json` records the endpoint, the serving
+  fingerprint, the Python revision, the readout version, the counts and a sha256
+  of the fixture; the test fails if the fixture disagrees with it.
 - **Tokenizer identity.** The test checks the loaded tokenizer's vocab size
   (262,144) and `<channel|>` id (101) before running the vectors, so a fallback
   to a different revision fails loudly. Set `SHISA_DE_TOKENIZER_REQUIRE=1` to

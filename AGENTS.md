@@ -32,27 +32,30 @@ through the other family's contract.
   fit per read (`direct`, `repeat2`, `think`), each applied only to that read.
 - Every answer records its provenance (`Family`, `ReadoutVersion`, `Policy`,
   `Strategy`, `Calibration`, `Temperature`, `Calibrated`, `Requests`) so a
-  caller can tell which read produced it. (Planned: there is no `Answer` type
-  yet.)
+  caller can tell which read produced it. `Answer` and `Decision` carry them;
+  `Decision.Meta` carries the call-level block.
 - The Python package is the reference implementation. Where this port and the
   Python client disagree on a wire shape, the Python client and the readout page
   win; report the divergence instead of quietly matching the Go code to itself.
 
 ## Project Overview
 
-Two layers, one contract. This is the target layout: M1 and M2 landed the
+Three layers, one contract. This is the target layout: M1 and M2 landed the
 codebook, the tokenizer, the renderer, family resolution, the question types and
-the Python-JSON writer; M3 landed the DE-2 readout itself. The rows marked
-planned do not exist yet. The Key Files table below says what is in the tree.
+the Python-JSON writer; M3 landed the DE-2 readout itself; M4 landed the policy,
+the calibration records and the friendly layer. The command line is M5 and the
+live suite is M6. The Key Files table below says what is in the tree.
 
 - `readout.go` — the raw reads: render the repeated prompt, request every
   option's code by token id, softmax over the codes, optionally generate a
   bounded thought and read the codes again after it.
 - `endpoint.go` — the HTTP layer under those reads: the two completion request
   shapes, the response shapes, and the error conventions.
-- `policy.go` — sequences the reads: twice, then think when unsure. (Planned.)
+- `policy.go` — sequences the reads: twice, then think when unsure.
+- `calibration.go` — temperature scaling, the confidence statistic, record
+  selection, and `Calibration.Applicability`.
 - `client.go` — the friendly layer. `Classify` for label sets, `Decide` for
-  typed questions. (Planned.)
+  typed questions.
 
 What must not change casually:
 
@@ -88,9 +91,10 @@ What must not change casually:
 | `tokenizer/` | The pure-Go Hugging Face BPE tokenizer. No cgo. `LoadWith`/`ResolveWith` take a local-only policy |
 | `data/codebook-de2.json` | The 256 DE-2 answer codes, in order, with the audit they came from |
 | `data/calibration-de2.json` | The DE-2 record: temperatures per read with the fit's provenance, and one withheld earlier fit |
-| `policy.go` | Planned (M4): the DE-2 policy: repeated read, gate, thought, read after it |
-| `calibration.go` | Planned (M4): temperature scaling, the confidence statistic, record selection, and `Calibration.Applicability` |
-| `client.go` | Planned (M4): `DecisionModel.Classify`, `DecisionModel.Decide`, `Health`, `Decision`, `Answer` |
+| `policy.go` | The DE-2 policy: repeated read, gate, thought, read after it; `ReadOptions` and the settings that select a read |
+| `calibration.go` | Temperature scaling, the confidence statistic, record selection, and `Calibration.Applicability` |
+| `client.go` | `DecisionModel.Classify`, `DecisionModel.Decide`, `SystemOne`, `Health`, `Decision`, `Answer`, `HeadSpec` |
+| `scripts/gen_client_parity.py` | Records live Python `DecisionModel` exchanges against the hosted endpoint and writes the fixture the parity test replays |
 | `cmd/shisa-de/` | Planned (M5): `shisa-de doctor`, `ask`, `explain` |
 
 ## Workflow Expectations
@@ -145,6 +149,7 @@ What must not change casually:
 | Offline suite | `go test ./...` |
 | Tokenizer parity | `go test ./tokenizer/` (reads the pinned tokenizer from the hub cache or `SHISA_DE_TOKENIZER_JSON`; `SHISA_DE_TOKENIZER_REQUIRE=1` fails instead of skipping) |
 | Readout replay | `go test . -run TestReadout` (replays recorded Python request/response pairs through an `httptest` stub; offline) |
+| Client replay | `go test . -run TestClientParity` (replays recorded live Python `DecisionModel` exchanges through an `httptest` stub; offline) |
 | Race detector | `go test -race ./...` (the concurrency claim for `Readout` rests on this) |
 | Live suite, hosted DE-2 | Planned (M6): `SHISA_DE_LIVE=1 go test ./... -run Live`. No test in the tree matches that name yet, so the command passes without running anything |
 | Endpoint check | Planned: `shisa-de doctor`, and `shisa-de doctor --probe` to spend two requests on the reads |
@@ -170,6 +175,14 @@ writes a `.meta.json` with the provenance and a digest of the fixture, and each
 test fails when the fixture disagrees with it. Both need the Python repository
 next to this one; neither needs network access.
 
+`scripts/gen_client_parity.py` is the one generator that spends real requests: it
+drives the Python `DecisionModel` against the hosted endpoint through a
+forwarding transport and records each exchange. The parity test replays those
+recorded responses, so the test itself is offline. Regenerating the fixture needs
+`SHISA_API_KEY` and the Python repository; the fixture's `.meta.json` records the
+endpoint, the serving fingerprint and the date, and the test fails when the
+fixture disagrees with it.
+
 ## Evidence Rules
 
 - Measured numbers carry a date and the serving fingerprint. The fingerprint in
@@ -184,7 +197,8 @@ next to this one; neither needs network access.
   which.
 - Do not present a temperature-scaled probability as a raw one, or the reverse.
   `Calibrated` is on every answer for that reason.
-- This port has produced no measurements of its own yet. Say so rather than
+- This port has produced no measurements of its own against a served model. The
+  parity fixtures are the Python client's results, replayed; say so rather than
   restating the Python repository's numbers as if this code had been measured.
 
 ## Git Discipline
@@ -203,6 +217,8 @@ fewer, body bullets for the change and the validation.
 
 - `docs/READOUT-DE2.md` and `README.md` are the high-conflict files; two agents
   editing them at once will conflict. Coordinate before editing either.
+- `docs/PORT.md` carries one paragraph per deliberate difference. A difference
+  that is not in it is an accident, not a decision.
 - Readout versions live in one place, `readout.go`: one per family in
   `ReadoutVersionFor`. Do not define a copy elsewhere.
 - The Python repository is the reference. Do not change it from here, and do not

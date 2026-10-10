@@ -1,0 +1,434 @@
+package shisade
+
+import (
+	"math"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+// TestTemperBinary pins binary temperature scaling, including the two
+// temperatures the Python client treats as "no fit".
+func TestTemperBinary(t *testing.T) {
+	cases := []struct {
+		name        string
+		p           float64
+		temperature float64
+		want        float64
+	}{
+		{"no fit at one", 0.3, 1.0, 0.3},
+		{"no fit at zero", 0.3, 0.0, 0.3},
+		{"no fit below zero", 0.3, -2.0, 0.3},
+		{"a half stays a half", 0.5, 2.0, 0.5},
+		// A temperature above 1 flattens: the fit corrects an overconfident
+		// read, so 0.9 becomes 0.75.
+		{"flattens toward the middle", 0.9, 2.0, 0.7500000000000001},
+		// The 1e-12 floor keeps the arithmetic finite, so neither end is exact.
+		{"one is floored, not divided by zero", 1.0, 2.0, 0.9999990000010001},
+		{"zero is floored, not divided by zero", 0.0, 2.0, 9.99999000001e-07},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := TemperBinary(tc.p, tc.temperature)
+			if math.Abs(got-tc.want) > 1e-12 {
+				t.Errorf("TemperBinary(%v, %v) = %v, want %v", tc.p, tc.temperature, got, tc.want)
+			}
+		})
+	}
+	// The measured DE-2 repeat2 fit, on the recorded read.
+	got := TemperBinary(0.9999988155306109, 1.89)
+	if math.Abs(got-0.9992688929544757) > 1e-15 {
+		t.Errorf("TemperBinary on the recorded read = %v, want 0.9992688929544757", got)
+	}
+	// A temperature of exactly 1 must return the input bit for bit, not a
+	// recomputed value.
+	if got := TemperBinary(0.1234567890123456789, 1); got != 0.1234567890123456789 {
+		t.Errorf("a temperature of 1 changed the probability: %v", got)
+	}
+}
+
+// TestTemperDistribution pins multiclass temperature scaling and the fact that
+// it cannot move the argmax.
+func TestTemperDistribution(t *testing.T) {
+	raw := map[string]float64{"A": 0.9999988155306109, "B": 6.475946049178305e-07,
+		"C": 5.368747842534138e-07}
+	got := TemperDistribution(raw, 1.89)
+	want := map[string]float64{"A": 0.9989880955110652, "B": 0.0005310285188485659,
+		"C": 0.00048087597008630184}
+	if !closeEnough(got, want, 1e-15) {
+		t.Errorf("TemperDistribution = %v, want %v", got, want)
+	}
+	total := 0.0
+	for _, value := range got {
+		total += value
+	}
+	if math.Abs(total-1) > 1e-12 {
+		t.Errorf("the tempered distribution sums to %v", total)
+	}
+	// A temperature of 1 returns a copy, not the same map.
+	unchanged := TemperDistribution(raw, 1)
+	if len(unchanged) != len(raw) {
+		t.Fatalf("TemperDistribution with no fit changed the size: %v", unchanged)
+	}
+	unchanged["A"] = 0
+	if raw["A"] == 0 {
+		t.Error("TemperDistribution with no fit aliased the caller's map")
+	}
+	if _, ok := TemperDistribution(nil, 2.0)["A"]; ok {
+		t.Error("TemperDistribution of an empty map invented a key")
+	}
+}
+
+// TestConfidence pins the statistic and its clipping.
+func TestConfidence(t *testing.T) {
+	cases := []struct {
+		name          string
+		probabilities map[string]float64
+		want          float64
+	}{
+		{"empty", map[string]float64{}, 0},
+		{"one option", map[string]float64{"A": 1}, 1},
+		{"even", map[string]float64{"A": 0.5, "B": 0.5}, 0},
+		{"even four", map[string]float64{"A": .25, "B": .25, "C": .25, "D": .25}, 0},
+		{"two of three", map[string]float64{"A": 0.9, "B": 0.1}, 0.8},
+		{"all on one", map[string]float64{"A": 1, "B": 0}, 1},
+		{"three of a kind", map[string]float64{"A": 0.1, "B": 0.45, "C": 0.45}, 0.17500000000000004},
+		// The clip only matters for a distribution that does not sum to 1: a
+		// normalized one always has a peak of at least 1/k. Python's
+		// max(0.0, ...) is what keeps this from going negative.
+		{"under even", map[string]float64{"A": 0.1, "B": 0.3, "C": 0.3}, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Confidence(tc.probabilities); math.Abs(got-tc.want) > 1e-12 {
+				t.Errorf("Confidence(%v) = %v, want %v", tc.probabilities, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestShippedCalibration pins the record this repository ships. The id is on
+// every answer, so a change to it is a change to what a caller can tell about
+// which checkpoint a number beside it was fitted on.
+func TestShippedCalibration(t *testing.T) {
+	record, err := CalibrationFor(FamilyDE2)
+	if err != nil {
+		t.Fatalf("CalibrationFor(de2): %v", err)
+	}
+	want := "shisa-ai/shisa-de-2|de2-codebook-v1|vllm-0.30.0-merged-bf16-triton-tp1[" +
+		"direct:choice=1.81,noul=2.69;repeat2:choice=1.89,noul=2.76;think:choice=6.8,noul=6.8]"
+	if got := record.ID(); got != want {
+		t.Errorf("the shipped record's id is\n  %s\nwant\n  %s", got, want)
+	}
+	if !record.Fitted() {
+		t.Error("the shipped record is not fitted")
+	}
+	if record.Family != FamilyDE2 || record.Model != "shisa-ai/shisa-de-2" {
+		t.Errorf("the shipped record is for %q %q", record.Family, record.Model)
+	}
+	if record.ReadoutVersion != ReadoutVersionFor(FamilyDE2) {
+		t.Errorf("the shipped record was fitted against %q, the readout is %q",
+			record.ReadoutVersion, ReadoutVersionFor(FamilyDE2))
+	}
+	if record.FittedOn == "" || record.ServingShape == "" || record.Source == "" {
+		t.Error("the shipped record does not carry its provenance")
+	}
+	if len(record.TestECE) == 0 || len(record.Withheld) == 0 {
+		t.Error("the shipped record lost its measurements or its withheld fit")
+	}
+}
+
+// TestCalibrationTemperatureFor pins per-read selection: a record with per-read
+// temperatures applies only the entry for the read, and 1.0 to a read it has no
+// fit for. A record without them has one fit, for the direct read.
+func TestCalibrationTemperatureFor(t *testing.T) {
+	record, err := CalibrationFor(FamilyDE2)
+	if err != nil {
+		t.Fatalf("CalibrationFor: %v", err)
+	}
+	cases := []struct {
+		questionType string
+		read         string
+		want         float64
+	}{
+		{"noul", "direct", 2.69},
+		{"noul", "repeat2", 2.76},
+		{"noul", "think", 6.8},
+		{"choice", "direct", 1.81},
+		{"choice", "repeat2", 1.89},
+		{"choice", "think", 6.8},
+		// A score distribution uses the choice fit.
+		{"score", "repeat2", 1.89},
+		// A read the record does not name stays raw.
+		{"choice", "", 1.0},
+		{"choice", "image", 1.0},
+		{"noul", "bogus", 1.0},
+	}
+	for _, tc := range cases {
+		if got := record.TemperatureFor(tc.questionType, tc.read); got != tc.want {
+			t.Errorf("TemperatureFor(%q, %q) = %v, want %v",
+				tc.questionType, tc.read, got, tc.want)
+		}
+	}
+
+	// A single-fit record ignores the read name and falls back to the direct
+	// fit, which is the DE-1 shape.
+	single := Calibration{Temperatures: map[string]float64{"noul": 2.0, "choice": 3.0},
+		ReadoutVersion: "de1-letter-slots-v3", Model: "shisa-ai/shisha-de-1"}
+	if got := single.TemperatureFor("choice", "repeat2"); got != 3.0 {
+		t.Errorf("a single-fit record returned %v for a named read, want 3.0", got)
+	}
+	if got := single.TemperatureFor("choice", ""); got != 3.0 {
+		t.Errorf("a single-fit record returned %v, want 3.0", got)
+	}
+	if got := single.TemperatureFor("noul", ""); got != 2.0 {
+		t.Errorf("a single-fit record returned %v for a noul, want 2.0", got)
+	}
+	empty := Calibration{}
+	if got := empty.TemperatureFor("choice", ""); got != 1.0 {
+		t.Errorf("an empty record returned %v, want 1.0", got)
+	}
+}
+
+// TestCalibrationFitted pins "a record is fitted when some temperature is not
+// 1.0", including the per-read tables.
+func TestCalibrationFitted(t *testing.T) {
+	if (Calibration{}).Fitted() {
+		t.Error("a zero record reports itself as fitted")
+	}
+	if (Calibration{Temperatures: map[string]float64{"choice": 1.0}}).Fitted() {
+		t.Error("a record of only 1.0 reports itself as fitted")
+	}
+	if !(Calibration{Temperatures: map[string]float64{"choice": 1.0, "noul": 1.5}}).Fitted() {
+		t.Error("a record with one temperature above 1.0 is not reported as fitted")
+	}
+	perRead := Calibration{
+		Temperatures: map[string]float64{"choice": 1.0},
+		Reads:        map[string]map[string]float64{"think": {"choice": 6.8}},
+	}
+	if !perRead.Fitted() {
+		t.Error("a record whose only fit is in a per-read table is not reported as fitted")
+	}
+}
+
+// TestCalibrationID pins the identifier's shape for both record forms.
+func TestCalibrationID(t *testing.T) {
+	single := Calibration{
+		Temperatures:   map[string]float64{"noul": 2.69, "choice": 1.81},
+		ReadoutVersion: "de2-codebook-v1",
+		Model:          "shisa-ai/shisa-de-2",
+		ServingShape:   "vllm-0.30.0",
+	}
+	if got, want := single.ID(), "shisa-ai/shisa-de-2|de2-codebook-v1|vllm-0.30.0[choice=1.81,noul=2.69]"; got != want {
+		t.Errorf("ID() = %q, want %q", got, want)
+	}
+	perRead := Calibration{
+		Temperatures: map[string]float64{"noul": 2.76, "choice": 1.89},
+		Reads: map[string]map[string]float64{
+			"repeat2": {"noul": 2.76, "choice": 1.89},
+			"direct":  {"noul": 2.69, "choice": 1.81},
+		},
+		ReadoutVersion: "de2-codebook-v1",
+		Model:          "shisa-ai/shisa-de-2",
+		ServingShape:   "vllm-0.30.0",
+	}
+	want := "shisa-ai/shisa-de-2|de2-codebook-v1|vllm-0.30.0[" +
+		"direct:choice=1.81,noul=2.69;repeat2:choice=1.89,noul=2.76]"
+	if got := perRead.ID(); got != want {
+		t.Errorf("ID() = %q, want %q", got, want)
+	}
+	// A whole-number temperature keeps Python's float formatting, so 6.0 is
+	// "6.0" and not "6".
+	whole := Calibration{Temperatures: map[string]float64{"choice": 6.0}}
+	if got := whole.ID(); !strings.HasSuffix(got, "[choice=6.0]") {
+		t.Errorf("ID() = %q, want a 6.0 temperature spelled the way Python spells it", got)
+	}
+}
+
+// TestCalibrationApplicability pins the four levels and the reasons that go
+// with a mismatch.
+func TestCalibrationApplicability(t *testing.T) {
+	record, err := CalibrationFor(FamilyDE2)
+	if err != nil {
+		t.Fatalf("CalibrationFor: %v", err)
+	}
+	cases := []struct {
+		name       string
+		model      string
+		version    string
+		options    ApplicabilityOptions
+		wantLevel  ApplicabilityLevel
+		wantReason bool
+	}{
+		{"the fitted checkpoint", "shisa-ai/shisa-de-2", "de2-codebook-v1",
+			ApplicabilityOptions{Family: FamilyDE2}, ApplicabilityCheckpoint, false},
+		{"the fitted checkpoint, case-insensitively", "SHISA-AI/Shisa-DE-2", "de2-codebook-v1",
+			ApplicabilityOptions{Family: FamilyDE2}, ApplicabilityCheckpoint, false},
+		{"an aliased checkpoint, recognised by its tokenizer", "de2-served-as", "de2-codebook-v1",
+			ApplicabilityOptions{Family: FamilyDE2, Tokenizer: "shisa-ai/shisa-de-2"},
+			ApplicabilityCheckpoint, false},
+		{"another checkpoint of the same family", "de2-v4-lr5e5-e3-s7", "de2-codebook-v1",
+			ApplicabilityOptions{Family: FamilyDE2}, ApplicabilityFamily, true},
+		{"another readout version", "shisa-ai/shisa-de-2", "de1-letter-slots-v3",
+			ApplicabilityOptions{Family: FamilyDE2}, ApplicabilityMismatch, true},
+		{"another family", "shisa-ai/shisa-de-1", "de2-codebook-v1",
+			ApplicabilityOptions{}, ApplicabilityMismatch, true},
+		// The family is read from the model id when the caller does not say.
+		{"another family, inferred", "shisa-ai/shisa-de-1", "de2-codebook-v1",
+			ApplicabilityOptions{}, ApplicabilityMismatch, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			level, reasons := record.Applicability(tc.model, tc.version, tc.options)
+			if level != tc.wantLevel {
+				t.Errorf("level = %q, want %q (reasons %v)", level, tc.wantLevel, reasons)
+			}
+			if tc.wantReason != (len(reasons) != 0) {
+				t.Errorf("reasons = %v, want %v", reasons, tc.wantReason)
+			}
+		})
+	}
+
+	// A record with no temperature has nothing to apply and nothing to mismatch
+	// on, so an unfitted record reports "unfitted" rather than "family".
+	unfitted := Calibration{Family: FamilyDE2, ReadoutVersion: "de2-codebook-v1",
+		Model: "shisa-ai/shisa-de-2"}
+	if level, reasons := unfitted.Applicability("another-de2", "de2-codebook-v1",
+		ApplicabilityOptions{Family: FamilyDE2}); level != ApplicabilityUnfitted {
+		t.Errorf("an unfitted record reports %q, want %q (reasons %v)",
+			level, ApplicabilityUnfitted, reasons)
+	}
+	// But a family or version mismatch still wins over "unfitted".
+	if level, _ := unfitted.Applicability("shisa-ai/shisa-de-1", "de2-codebook-v1",
+		ApplicabilityOptions{}); level != ApplicabilityMismatch {
+		t.Errorf("an unfitted record for the wrong family reports %q", level)
+	}
+	// Both reasons are reported when both are wrong.
+	_, reasons := record.Applicability("shisa-ai/shisa-de-1", "de1-letter-slots-v3",
+		ApplicabilityOptions{})
+	if len(reasons) != 2 {
+		t.Errorf("a double mismatch reported %d reasons, want 2: %v", len(reasons), reasons)
+	}
+}
+
+// TestCalibrationMatches pins the boolean form: only a mismatch is false.
+func TestCalibrationMatches(t *testing.T) {
+	record, err := CalibrationFor(FamilyDE2)
+	if err != nil {
+		t.Fatalf("CalibrationFor: %v", err)
+	}
+	ok, reasons := record.Matches("de2-v4-lr5e5-e3-s7", "de2-codebook-v1",
+		ApplicabilityOptions{Family: FamilyDE2})
+	if !ok || len(reasons) != 0 {
+		t.Errorf("Matches on another checkpoint = %v %v, want true with no reasons", ok, reasons)
+	}
+	ok, reasons = record.Matches("shisa-ai/shisa-de-1", "de2-codebook-v1", ApplicabilityOptions{})
+	if ok || len(reasons) == 0 {
+		t.Errorf("Matches on the wrong family = %v %v, want false with reasons", ok, reasons)
+	}
+}
+
+// TestCalibrationForUnknownFamily pins that this package ships one record and
+// says so rather than falling back.
+func TestCalibrationForUnknownFamily(t *testing.T) {
+	if _, err := CalibrationFor(FamilyDE1); err == nil {
+		t.Error("CalibrationFor(de1) succeeded, but this package ships no DE-1 record")
+	} else if !strings.Contains(err.Error(), "de2") {
+		t.Errorf("the error does not name the family that does ship: %v", err)
+	}
+}
+
+// TestResolveCalibration pins the `--calibration` argument: a family name, a
+// path, "auto", and neither.
+func TestResolveCalibration(t *testing.T) {
+	for _, spec := range []string{"", "auto"} {
+		if _, ok, err := ResolveCalibration(spec); ok || err != nil {
+			t.Errorf("ResolveCalibration(%q) = %v, %v; want no record and no error", spec, ok, err)
+		}
+	}
+	for _, spec := range []string{"de2", "DE-2", "de_2"} {
+		record, ok, err := ResolveCalibration(spec)
+		if err != nil || !ok {
+			t.Fatalf("ResolveCalibration(%q): ok=%v err=%v", spec, ok, err)
+		}
+		if record.Model != "shisa-ai/shisa-de-2" {
+			t.Errorf("ResolveCalibration(%q) returned the record for %q", spec, record.Model)
+		}
+	}
+	if _, _, err := ResolveCalibration("de1"); err == nil {
+		t.Error("ResolveCalibration(\"de1\") succeeded, but no DE-1 record ships")
+	}
+	if _, _, err := ResolveCalibration("/nonexistent/calibration.json"); err == nil {
+		t.Error("ResolveCalibration of a missing path succeeded")
+	} else if !strings.Contains(err.Error(), "neither a family") {
+		t.Errorf("the error does not explain what was expected: %v", err)
+	}
+
+	// A path to a real record file.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "record.json")
+	body := `{"model":"shisa-ai/shisa-de-2","readout_version":"de2-codebook-v1",
+	          "serving_shape":"test","fitted_on":"now","temperatures":{"choice":2.0},
+	          "family":"de2"}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("writing the record: %v", err)
+	}
+	record, ok, err := ResolveCalibration(path)
+	if err != nil || !ok {
+		t.Fatalf("ResolveCalibration(%q): ok=%v err=%v", path, ok, err)
+	}
+	if got := record.TemperatureFor("choice", ""); got != 2.0 {
+		t.Errorf("the record from disk has temperature %v, want 2.0", got)
+	}
+}
+
+// TestCalibrationFromJSON pins the record's defaulting and its refusals.
+func TestCalibrationFromJSON(t *testing.T) {
+	// The family is read from the model id when the record does not say.
+	record, err := CalibrationFromJSON([]byte(`{"model":"shisa-ai/shisa-de-2",
+	    "readout_version":"de2-codebook-v1","temperatures":{"choice":2.0}}`), "test")
+	if err != nil {
+		t.Fatalf("CalibrationFromJSON: %v", err)
+	}
+	if record.Family != FamilyDE2 {
+		t.Errorf("the family defaulted to %q, want de2", record.Family)
+	}
+	if record.Temperatures == nil || record.TestECE == nil || record.Withheld == nil {
+		t.Error("a record with no tables has nil maps, which would panic on a read")
+	}
+	// An explicit family wins over the model id, which is how a record for a
+	// checkpoint whose name says nothing is read.
+	record, err = CalibrationFromJSON([]byte(`{"model":"my-checkpoint","family":"de2",
+	    "readout_version":"de2-codebook-v1","temperatures":{"choice":2.0}}`), "test")
+	if err != nil {
+		t.Fatalf("CalibrationFromJSON: %v", err)
+	}
+	if record.Family != FamilyDE2 {
+		t.Errorf("the explicit family was ignored: %q", record.Family)
+	}
+
+	for _, tc := range []struct{ name, body string }{
+		{"not JSON", `{`},
+		{"no model", `{"readout_version":"de2-codebook-v1"}`},
+		{"no readout version", `{"model":"shisa-ai/shisa-de-2"}`},
+		{"unknown family", `{"model":"x","readout_version":"de2-codebook-v1","family":"de3"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := CalibrationFromJSON([]byte(tc.body), "test"); err == nil {
+				t.Errorf("%s was accepted", tc.name)
+			}
+		})
+	}
+}
+
+// TestLoadCalibrationUnknownName pins that a missing embedded record is an
+// error rather than an empty record.
+func TestLoadCalibrationUnknownName(t *testing.T) {
+	if _, err := LoadCalibration("data/not-a-record.json"); err == nil {
+		t.Error("LoadCalibration of an unknown name succeeded")
+	}
+	if _, err := LoadCalibrationFile("/nonexistent/record.json"); err == nil {
+		t.Error("LoadCalibrationFile of a missing path succeeded")
+	}
+}
