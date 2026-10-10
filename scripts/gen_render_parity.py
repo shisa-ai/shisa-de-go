@@ -13,18 +13,33 @@ the token count. The Go test rebuilds each case and compares.
     python scripts/gen_render_parity.py
 
 Needs `transformers` (no torch) and the `shisa-de` Python repository next to
-this one. Output: testdata/render_parity.json.
+this one. Output: testdata/render_parity.json and
+ testdata/render_parity.meta.json.
+
+The model and revision are pinned below and passed to `Readout` as
+`tokenizer_revision`, so the prompts are rendered and tokenized by the same
+snapshot the Go tokenizer is pinned to; the meta file records it. The Go test
+reads the meta file and fails when the fixture's digest or counts move.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import pathlib
 import sys
 
+import tokenizers
+import transformers
+
 HERE = pathlib.Path(__file__).resolve().parent
 OUT = HERE.parent / "testdata" / "render_parity.json"
+META_OUT = HERE.parent / "testdata" / "render_parity.meta.json"
 PY_REPO = pathlib.Path.home() / "data" / "dev" / "shisa" / "shisa-de"
+
+# The same pin the Go tokenizer uses (tokenizer.PinnedRepo/PinnedSnapshot).
+MODEL = "shisa-ai/shisa-de-2"
+REVISION = "8f21734b27b3462471c4662d5638e52195b005a3"
 
 sys.path.insert(0, str(PY_REPO))
 
@@ -137,7 +152,8 @@ def cases() -> list[dict]:
 
 
 def main() -> int:
-    readout = Readout(base_url="http://unused.invalid", model="shisa-ai/shisa-de-2")
+    readout = Readout(base_url="http://unused.invalid", model=MODEL,
+                      tokenizer_revision=REVISION)
     tokenizer = readout.ensure_tokenizer()
 
     vectors = []
@@ -167,10 +183,23 @@ def main() -> int:
         serialization.append({"name": name, "json": json.dumps(value, ensure_ascii=False)})
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(json.dumps({"renders": vectors, "serialization": serialization},
-                              ensure_ascii=False) + "\n", encoding="utf-8")
-    print(f"{OUT}: {len(vectors)} renders, {len(serialization)} serialization cases",
-          file=sys.stderr)
+    body = json.dumps({"renders": vectors, "serialization": serialization},
+                      ensure_ascii=False) + "\n"
+    OUT.write_text(body, encoding="utf-8")
+    total_tokens = sum(len(case["tokens"]) for case in vectors)
+    meta = {
+        "model": MODEL,
+        "revision": REVISION,
+        "transformers": transformers.__version__,
+        "tokenizers": tokenizers.__version__,
+        "renders": len(vectors),
+        "serialization": len(serialization),
+        "tokens": total_tokens,
+        "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
+    }
+    META_OUT.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+    print(f"{OUT}: {len(vectors)} renders, {len(serialization)} serialization cases; "
+          f"{META_OUT}: {meta['sha256'][:12]}", file=sys.stderr)
     for case in vectors:
         if case["name"] in ("spam-choice-repeat2", "spam-choice-repeat1", "jp-choice-repeat2"):
             print(f"  {case['name']}: {len(case['tokens'])} tokens", file=sys.stderr)

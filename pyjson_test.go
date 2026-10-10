@@ -62,6 +62,12 @@ func TestPythonJSONGoValues(t *testing.T) {
 		{"json number int", json.Number("3"), "3"},
 		{"json number float", json.Number("3.0"), "3.0"},
 		{"json number exponent", json.Number("1e16"), "1e+16"},
+		// Python parses -0 as the integer 0 and dumps "0".
+		{"json number negative zero", json.Number("-0"), "0"},
+		// Python parses an out-of-range literal as an infinity or a zero.
+		{"json number overflow", json.Number("1e400"), "Infinity"},
+		{"json number negative overflow", json.Number("-1e400"), "-Infinity"},
+		{"json number underflow", json.Number("1e-400"), "0.0"},
 		{"raw message is verbatim", json.RawMessage(`{"a":1}`), `{"a":1}`},
 	}
 	for _, tc := range cases {
@@ -90,10 +96,58 @@ func TestPythonJSONRejectsWhatItCannotRender(t *testing.T) {
 		{"struct", struct{ A int }{A: 1}},
 		{"nested too deep", deep},
 		{"invalid raw message", json.RawMessage(`{`)},
+		// Python's str is always valid UTF-8, so there is no Python output to
+		// match; substituting U+FFFD would invent bytes.
+		{"invalid utf-8", "a\xffb"},
+		{"lone surrogate in cesu-8", "\xed\xa0\x80"},
+		{"invalid utf-8 in an object key", Object{{"\xff", 1}}},
+		{"invalid utf-8 in a json number", json.Number("1\xff")},
 	}
 	for _, tc := range cases {
 		if _, err := PythonJSON(tc.value); err == nil {
 			t.Errorf("%s: expected an error", tc.name)
+		}
+	}
+}
+
+// TestDecodeJSONKeepsTheLastOfARepeatedKey pins the one place a JSON object can
+// hold a key twice. json.loads keeps the last value at the first occurrence's
+// position, and the user turn is the serialized object, so the choice changes
+// the prompt.
+func TestDecodeJSONKeepsTheLastOfARepeatedKey(t *testing.T) {
+	value, err := DecodeJSON([]byte(`{"a": 1, "b": 2, "a": 3}`))
+	if err != nil {
+		t.Fatalf("DecodeJSON: %v", err)
+	}
+	got, err := PythonJSON(value)
+	if err != nil {
+		t.Fatalf("PythonJSON: %v", err)
+	}
+	if want := `{"a": 3, "b": 2}`; got != want {
+		t.Errorf("PythonJSON(DecodeJSON(...)) = %s, want %s", got, want)
+	}
+	object, ok := value.(Object)
+	if !ok {
+		t.Fatalf("DecodeJSON returned %T, want Object", value)
+	}
+	member, ok := object.Get("a")
+	if !ok || member != json.Number("3") {
+		t.Errorf("Object.Get(\"a\") = %v, %v; want the last value", member, ok)
+	}
+}
+
+// TestDecodeJSONStaysStricterThanPythonOnBareNonFiniteLiterals documents the one
+// asymmetry: json.loads accepts NaN, Infinity and -Infinity by default, and this
+// parser rejects them. PythonJSON still writes them for a NaN or infinite float.
+func TestDecodeJSONStaysStricterThanPythonOnBareNonFiniteLiterals(t *testing.T) {
+	for _, text := range []string{"NaN", "Infinity", "-Infinity"} {
+		if _, err := DecodeJSON([]byte(text)); err == nil {
+			t.Errorf("DecodeJSON(%q) should be rejected, matching encoding/json", text)
+		}
+	}
+	for _, value := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if _, err := PythonJSON(value); err != nil {
+			t.Errorf("PythonJSON(%v) = %v, and Python writes these", value, err)
 		}
 	}
 }
@@ -164,6 +218,55 @@ func TestQuestionValidation(t *testing.T) {
 	if err := NewNoul("Is it?").Validate(MaxOptions); err != nil {
 		t.Errorf("a noul returned %v", err)
 	}
+	// A non-positive limit is the letter limit, the same default Payload and
+	// Render use, not a limit of zero.
+	if err := NewNoul("Is it?").Validate(0); err != nil {
+		t.Errorf("Validate(0) returned %v, want the letter-limit default", err)
+	}
+	if err := NewChoice("Which?", make([]Option, MaxOptions)).Validate(0); err != nil {
+		t.Errorf("Validate(0) on a 26-option choice returned %v", err)
+	}
+	if err := NewChoice("Which?", make([]Option, MaxOptions+1)).Validate(0); err == nil {
+		t.Error("Validate(0) should still apply the letter limit to 27 options")
+	}
+	if err := NewChoice("Which?", make([]Option, MaxOptions+1)).Validate(-1); err == nil {
+		t.Error("Validate(-1) should still apply the letter limit")
+	}
+}
+
+// TestPythonSpaceIsPythonsStrip pins the one place Go's whitespace set differs
+// from Python's: the U+001C-U+001F separators are whitespace to str.strip() and
+// not to strings.TrimSpace.
+func TestPythonSpaceIsPythonsStrip(t *testing.T) {
+	for _, text := range []string{"\u001c", "\u001d", "\u001e", "\u001f", " \u001c\u001f "} {
+		if trimmed := trimPythonSpace(text); trimmed != "" {
+			t.Errorf("trimPythonSpace(%q) = %q, want empty", text, trimmed)
+		}
+	}
+	// The rest of Python's set, for the same reason.
+	for _, text := range []string{"\t", "\n", "\v", "\f", "\r", " ", "\u0085", "\u00a0", "\u2028", "\u3000"} {
+		if trimmed := trimPythonSpace(text); trimmed != "" {
+			t.Errorf("trimPythonSpace(%q) = %q, want empty", text, trimmed)
+		}
+	}
+	if got := trimPythonSpace("\u200b"); got != "\u200b" {
+		t.Errorf("a zero-width space is not whitespace to Python, got %q", got)
+	}
+	if got := trimPythonSpace(" \u001cspam\u001d "); got != "spam" {
+		t.Errorf("trimPythonSpace = %q, want %q", got, "spam")
+	}
+	// The separator reaches the renderer: a description of "\u001c" is blank to
+	// Python and is shown as the key.
+	choice := NewChoice("\u001cWhich?\u001d", []Option{
+		{Key: "alpha", Description: "\u001c"},
+		{Key: "beta", Description: "Beta"},
+	})
+	if got := choice.Options()[0].Description; got != "alpha" {
+		t.Errorf("a U+001C description rendered as %v, want the key", got)
+	}
+	if err := choice.Validate(MaxOptions); err != nil {
+		t.Errorf("a U+001C-wrapped question is not blank to Python: %v", err)
+	}
 }
 
 func TestQuestionOptions(t *testing.T) {
@@ -197,18 +300,47 @@ func TestQuestionOptions(t *testing.T) {
 	}
 }
 
-func TestSoftmaxDoesNotDependOnMapOrder(t *testing.T) {
+// TestSoftmaxIsDeterministic requires bit-identical results across calls. The
+// sum runs in codebook order rather than Go's randomized map order, so there is
+// no tolerance to hide behind.
+func TestSoftmaxIsDeterministic(t *testing.T) {
 	first, err := Softmax(map[string]float64{"A": -1, "B": -2, "C": -3})
 	if err != nil {
 		t.Fatalf("Softmax: %v", err)
 	}
-	second, err := Softmax(map[string]float64{"C": -3, "B": -2, "A": -1})
+	for i := 0; i < 50; i++ {
+		second, err := Softmax(map[string]float64{"C": -3, "B": -2, "A": -1})
+		if err != nil {
+			t.Fatalf("Softmax: %v", err)
+		}
+		for key := range first {
+			if first[key] != second[key] {
+				t.Fatalf("iteration %d: %s is %v then %v", i, key, first[key], second[key])
+			}
+		}
+	}
+}
+
+// TestSoftmaxSumsInCodebookOrder checks that the accumulation order is the one
+// the Python client uses, which is the codebook's: shortest code first, then
+// lexicographic. "Z" comes before "AA" in the codebook even though it sorts
+// after it as a string, and a sum that ran in plain string order would differ in
+// the last bits.
+func TestSoftmaxSumsInCodebookOrder(t *testing.T) {
+	logprobs := map[string]float64{"AA": -0.1, "Z": -0.2, "B": -0.3, "A": -0.4}
+	got, err := Softmax(logprobs)
 	if err != nil {
 		t.Fatalf("Softmax: %v", err)
 	}
-	for key := range first {
-		if math.Abs(first[key]-second[key]) > 1e-15 {
-			t.Errorf("%s differs by map order: %v against %v", key, first[key], second[key])
+	peak := -0.1
+	total := 0.0
+	for _, key := range []string{"A", "B", "Z", "AA"} {
+		total += math.Exp(logprobs[key] - peak)
+	}
+	for _, key := range []string{"A", "B", "Z", "AA"} {
+		want := math.Exp(logprobs[key]-peak) / total
+		if got[key] != want {
+			t.Errorf("%s = %v, want %v (codebook-order sum)", key, got[key], want)
 		}
 	}
 }

@@ -3,6 +3,7 @@ package shisade
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -40,12 +41,18 @@ type Object []Member
 // The values accepted are those a JSON payload is built from: nil, bool, string,
 // every integer kind, float32 and float64, Object, slices and arrays, and maps
 // with string keys. `json.Number` keeps the int-or-float distinction Python's
-// parser makes; `json.RawMessage` is inserted verbatim. Anything else is an
-// error naming the type rather than a guess at its JSON form.
+// parser makes, and must be a JSON number literal; `json.RawMessage` is inserted
+// verbatim. Anything else is an error naming the type rather than a guess at its
+// JSON form.
 //
 // Use DecodeJSON to get Python-equivalent numbers from a byte slice: a plain
 // json.Unmarshal into `any` turns every number into a float64, and 3 would then
 // render as 3.0 where Python renders 3.
+//
+// Two inputs Python can hold are errors here rather than a silent substitution:
+// a string that is not valid UTF-8, and a value with no JSON form (a channel,
+// a func, a map with non-string keys). Python's `str` is always valid, so the
+// first has no Python bytes to match.
 func PythonJSON(value any) (string, error) {
 	var buffer bytes.Buffer
 	if err := appendPythonJSON(&buffer, value, 0); err != nil {
@@ -61,6 +68,14 @@ func PythonJSON(value any) (string, error) {
 // object, so reordering the keys of `evidence` changes the tokens the model
 // sees. Go maps have no order, which is why this returns Object rather than
 // map[string]any.
+//
+// A repeated object key keeps the last value at the first occurrence's position,
+// which is what json.loads and a Python dict do.
+//
+// It is stricter than json.loads in one place: the bare literals NaN, Infinity
+// and -Infinity are rejected, where Python accepts them by default. PythonJSON
+// still writes them for a NaN or infinite float, so a round trip through this
+// pair is asymmetric for those three values.
 func DecodeJSON(data []byte) (any, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
@@ -109,7 +124,19 @@ func decodeValue(decoder *json.Decoder) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			object = append(object, Member{Key: key, Value: value})
+			// A repeated key keeps the last value, at the first occurrence's
+			// position: that is what json.loads and a Python dict do.
+			replaced := false
+			for i := range object {
+				if object[i].Key == key {
+					object[i].Value = value
+					replaced = true
+					break
+				}
+			}
+			if !replaced {
+				object = append(object, Member{Key: key, Value: value})
+			}
 		}
 		if _, err := decoder.Token(); err != nil {
 			return nil, err
@@ -150,8 +177,7 @@ func appendPythonJSON(buffer *bytes.Buffer, value any, depth int) error {
 		buffer.WriteString(strconv.FormatBool(typed))
 		return nil
 	case string:
-		appendPythonString(buffer, typed)
-		return nil
+		return appendPythonString(buffer, typed)
 	case Object:
 		return appendPythonObject(buffer, typed, depth)
 	case json.Number:
@@ -169,7 +195,7 @@ func appendPythonJSON(buffer *bytes.Buffer, value any, depth int) error {
 	reflected := reflect.ValueOf(value)
 	switch reflected.Kind() {
 	case reflect.String:
-		appendPythonString(buffer, reflected.String())
+		return appendPythonString(buffer, reflected.String())
 	case reflect.Bool:
 		buffer.WriteString(strconv.FormatBool(reflected.Bool()))
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
@@ -222,7 +248,9 @@ func appendPythonObject(buffer *bytes.Buffer, object Object, depth int) error {
 		if i > 0 {
 			buffer.WriteString(", ")
 		}
-		appendPythonString(buffer, member.Key)
+		if err := appendPythonString(buffer, member.Key); err != nil {
+			return err
+		}
 		buffer.WriteString(": ")
 		if err := appendPythonJSON(buffer, member.Value, depth+1); err != nil {
 			return err
@@ -235,26 +263,92 @@ func appendPythonObject(buffer *bytes.Buffer, object Object, depth int) error {
 // appendJSONNumber renders a number the way Python's parser and dumper would:
 // an integer stays an integer, and anything with a fraction or an exponent is a
 // float and gets Python's float repr.
+//
+// The text has to be a JSON number literal. A json.Number is a string type, so a
+// caller can hand over anything, and writing it back unquoted would emit a bare
+// non-number; Python's parser only ever produces literals.
 func appendJSONNumber(buffer *bytes.Buffer, text string) error {
-	if text == "" {
-		return fmt.Errorf("shisade: an empty json.Number")
+	if !isJSONNumberLiteral(text) {
+		return fmt.Errorf("shisade: json.Number %q is not a JSON number literal", text)
 	}
 	if !strings.ContainsAny(text, ".eE") {
+		// Python parses -0 as the integer 0 and dumps "0".
+		if text == "-0" {
+			text = "0"
+		}
 		buffer.WriteString(text)
 		return nil
 	}
 	value, err := strconv.ParseFloat(text, 64)
 	if err != nil {
+		// Python parses an out-of-range literal as an infinity (1e400) or a
+		// zero (1e-400), and ParseFloat already returns that value with the
+		// range error, so the value is what Python would dump.
+		var numberError *strconv.NumError
+		if errors.As(err, &numberError) && errors.Is(numberError.Err, strconv.ErrRange) {
+			appendPythonFloat(buffer, value)
+			return nil
+		}
 		return fmt.Errorf("shisade: json.Number %q is not a number: %w", text, err)
 	}
 	appendPythonFloat(buffer, value)
 	return nil
 }
 
+// isJSONNumberLiteral reports whether text is a JSON number literal:
+// `-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`. It is what JSON's grammar
+// allows, and therefore what Python's parser can have produced.
+func isJSONNumberLiteral(text string) bool {
+	i := 0
+	if i < len(text) && text[i] == '-' {
+		i++
+	}
+	start := i
+	for i < len(text) && isDigit(text[i]) {
+		i++
+	}
+	if i == start || (text[start] == '0' && i-start > 1) {
+		return false
+	}
+	if i < len(text) && text[i] == '.' {
+		i++
+		start = i
+		for i < len(text) && isDigit(text[i]) {
+			i++
+		}
+		if i == start {
+			return false
+		}
+	}
+	if i < len(text) && (text[i] == 'e' || text[i] == 'E') {
+		i++
+		if i < len(text) && (text[i] == '+' || text[i] == '-') {
+			i++
+		}
+		start = i
+		for i < len(text) && isDigit(text[i]) {
+			i++
+		}
+		if i == start {
+			return false
+		}
+	}
+	return i == len(text)
+}
+
+func isDigit(b byte) bool { return b >= '0' && b <= '9' }
+
 // appendPythonString writes a string with Python's json escaping: the short
 // forms for the control characters that have them, \u00xx for the rest, and no
 // escaping of non-ASCII, <, >, &, / or the line separators.
-func appendPythonString(buffer *bytes.Buffer, text string) {
+//
+// A string that is not valid UTF-8 is an error. Python's str is always valid,
+// so there is no Python output to match; substituting U+FFFD would put bytes in
+// the prompt that neither the caller nor Python produced.
+func appendPythonString(buffer *bytes.Buffer, text string) error {
+	if !utf8.ValidString(text) {
+		return fmt.Errorf("shisade: a string is not valid UTF-8, and Python cannot hold one")
+	}
 	buffer.WriteByte('"')
 	for i := 0; i < len(text); {
 		r, size := utf8.DecodeRuneInString(text[i:])
@@ -283,6 +377,7 @@ func appendPythonString(buffer *bytes.Buffer, text string) {
 		i += size
 	}
 	buffer.WriteByte('"')
+	return nil
 }
 
 // appendPythonFloat writes a float with Python's repr.

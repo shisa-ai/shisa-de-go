@@ -1,0 +1,10 @@
+{
+  "model": "shisa-ai/shisa-de-2",
+  "revision": "8f21734b27b3462471c4662d5638e52195b005a3",
+  "transformers": "5.19.0",
+  "tokenizers": "0.23.3",
+  "renders": 33,
+  "serialization": 37,
+  "tokens": 22948,
+  "sha256": "5c584af504aaee07ff6d262ddfb1e14788a968fb5976acfc7ab1cc3237222207"
+}

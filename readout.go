@@ -2,6 +2,7 @@ package shisade
 
 import (
 	"math"
+	"sort"
 )
 
 // The measured scaffold. These strings are part of the readout identity, not
@@ -56,6 +57,10 @@ func ReadoutVersionFor(family Family) string {
 // fitted against one of them still describes the answers this client returns. A
 // version bump that changes the direct text read must not list its predecessors
 // here.
+//
+// The DE-1 entry mirrors the shared source of truth. It is inert here: this
+// port implements DE-2 only, and RequireDE2 refuses a DE-1 model before a
+// calibration can be selected.
 var calibrationCompatible = map[string][]string{
 	DE1ReadoutVersion: {"de1-letter-slots-v1", "de1-letter-slots-v2"},
 	DE2ReadoutVersion: {},
@@ -79,26 +84,43 @@ func CalibrationCompatibleWith(fitted, current string) bool {
 //
 // Only the keys given take part: tokens outside the option codes are discarded
 // even when they outrank a valid option.
+//
+// The sum runs in a fixed order -- shortest key first, then lexicographic,
+// which is the codebook's own order -- so the result is reproducible. A Go map
+// iterates in a randomized order, and summing floats in a different order
+// changes the last bits; the Python client sums in codebook order, so this
+// order also matches its arithmetic for code keys. The returned map carries no
+// order, so a caller that needs the option order keeps its own list of codes.
 func Softmax(logprobs map[string]float64) (map[string]float64, error) {
 	if len(logprobs) == 0 {
 		return nil, &ReadoutError{Message: "no code logprobs to normalize"}
 	}
+	keys := make([]string, 0, len(logprobs))
+	for key := range logprobs {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if len(keys[i]) != len(keys[j]) {
+			return len(keys[i]) < len(keys[j])
+		}
+		return keys[i] < keys[j]
+	})
 	peak := math.Inf(-1)
-	for _, value := range logprobs {
-		if value > peak {
+	for _, key := range keys {
+		if value := logprobs[key]; value > peak {
 			peak = value
 		}
 	}
 	weights := make(map[string]float64, len(logprobs))
 	total := 0.0
-	for key, value := range logprobs {
-		weight := math.Exp(value - peak)
+	for _, key := range keys {
+		weight := math.Exp(logprobs[key] - peak)
 		weights[key] = weight
 		total += weight
 	}
 	probabilities := make(map[string]float64, len(logprobs))
-	for key, weight := range weights {
-		probabilities[key] = weight / total
+	for _, key := range keys {
+		probabilities[key] = weights[key] / total
 	}
 	return probabilities, nil
 }

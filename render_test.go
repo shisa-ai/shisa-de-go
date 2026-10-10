@@ -1,8 +1,10 @@
 package shisade
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,6 +50,62 @@ type serializationCase struct {
 	JSON string `json:"json"`
 }
 
+// renderMeta is the provenance scripts/gen_render_parity.py records beside the
+// fixture: the snapshot it was generated from, and the counts and digest of the
+// bytes it wrote.
+type renderMeta struct {
+	Model         string `json:"model"`
+	Revision      string `json:"revision"`
+	Transformers  string `json:"transformers"`
+	Tokenizers    string `json:"tokenizers"`
+	Renders       int    `json:"renders"`
+	Serialization int    `json:"serialization"`
+	Tokens        int    `json:"tokens"`
+	Sha256        string `json:"sha256"`
+}
+
+// TestRenderFixtureProvenance checks the fixture against the provenance the
+// generator wrote: the same snapshot the tokenizer is pinned to, and the counts
+// and digest the corpus was recorded with. A fixture that silently shrank, or
+// came from another snapshot, fails here rather than passing a smaller gate.
+func TestRenderFixtureProvenance(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "render_parity.json"))
+	if err != nil {
+		t.Fatalf("reading the render fixture: %v", err)
+	}
+	metaRaw, err := os.ReadFile(filepath.Join("testdata", "render_parity.meta.json"))
+	if err != nil {
+		t.Fatalf("reading the render provenance: %v", err)
+	}
+	var meta renderMeta
+	if err := json.Unmarshal(metaRaw, &meta); err != nil {
+		t.Fatalf("parsing the render provenance: %v", err)
+	}
+	if meta.Model != tokenizer.PinnedRepo || meta.Revision != tokenizer.PinnedSnapshot {
+		t.Fatalf("the fixture was generated from %s@%s, want %s@%s",
+			meta.Model, meta.Revision, tokenizer.PinnedRepo, tokenizer.PinnedSnapshot)
+	}
+	if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != meta.Sha256 {
+		t.Fatalf("the render fixture hashes to %s, the provenance records %s", got, meta.Sha256)
+	}
+	fixture := loadRenderFixture(t)
+	if len(fixture.Renders) != meta.Renders {
+		t.Errorf("the fixture has %d renders, the provenance records %d",
+			len(fixture.Renders), meta.Renders)
+	}
+	if len(fixture.Serialization) != meta.Serialization {
+		t.Errorf("the fixture has %d serialization cases, the provenance records %d",
+			len(fixture.Serialization), meta.Serialization)
+	}
+	total := 0
+	for _, tc := range fixture.Renders {
+		total += len(tc.Tokens)
+	}
+	if total != meta.Tokens {
+		t.Errorf("the fixture holds %d prompt tokens, the provenance records %d", total, meta.Tokens)
+	}
+}
+
 func loadRenderFixture(t *testing.T) renderFixture {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("testdata", "render_parity.json"))
@@ -60,6 +118,9 @@ func loadRenderFixture(t *testing.T) renderFixture {
 	}
 	if len(fixture.Renders) == 0 {
 		t.Fatal("the render fixture holds no cases")
+	}
+	if len(fixture.Serialization) == 0 {
+		t.Fatal("the render fixture holds no serialization cases")
 	}
 	return fixture
 }
@@ -153,22 +214,29 @@ func TestRenderParity(t *testing.T) {
 	}
 }
 
-// TestRenderMatchesTheReadoutPage pins the three prompts the readout page names,
+// TestRenderMatchesTheReadoutPage pins the token counts the readout page names,
 // so a change to the scaffold cannot pass by agreeing with itself.
+//
+// The Japanese choice is not on the page. Its 216 is the count in
+// testdata/render_parity.json, kept as a regression pin on the render and the
+// tokenizer together rather than as a published value.
 func TestRenderMatchesTheReadoutPage(t *testing.T) {
 	fixture := loadRenderFixture(t)
-	want := map[string]int{
-		"spam-choice-repeat2": 238, // section 2: "That prompt is 238 tokens"
-		"spam-choice-repeat1": 137, // section 2: "the one-pass prompt is 137"
-		"jp-choice-repeat2":   216,
+	want := map[string]struct {
+		tokens int
+		source string
+	}{
+		"spam-choice-repeat2": {238, `docs/READOUT-DE2.md section 2: "That prompt is 238 tokens"`},
+		"spam-choice-repeat1": {137, `docs/READOUT-DE2.md section 2: "the one-pass prompt is 137"`},
+		"jp-choice-repeat2":   {216, "the render fixture's own count, a regression pin and not a page value"},
 	}
 	seen := map[string]bool{}
 	for _, tc := range fixture.Renders {
 		if expected, ok := want[tc.Name]; ok {
 			seen[tc.Name] = true
-			if len(tc.Tokens) != expected {
-				t.Errorf("%s: the fixture has %d tokens, and the readout page says %d",
-					tc.Name, len(tc.Tokens), expected)
+			if len(tc.Tokens) != expected.tokens {
+				t.Errorf("%s: the fixture has %d tokens, and %s says %d",
+					tc.Name, len(tc.Tokens), expected.source, expected.tokens)
 			}
 		}
 	}

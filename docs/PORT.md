@@ -27,9 +27,9 @@ The tokenizer has no Python counterpart as a module: the Python client calls
 `transformers.AutoTokenizer`. This port implements the tokenizer in
 `tokenizer/` so the library needs neither cgo nor a Python runtime.
 
-The file mapping is the target layout, not a description of the tree: M1 has
-landed the codebook, the tokenizer, the renderer, family resolution, the
-question types and the Python-JSON writer. Rows marked planned are M2 or later.
+The file mapping is the target layout, not a description of the tree: M1 landed
+the codebook and the tokenizer; M2 landed the renderer, family resolution, the
+question types and the Python-JSON writer. Rows marked planned are M3 or later.
 
 ## Deliberate differences
 
@@ -44,6 +44,21 @@ template. This port renders the two message shapes the readout uses with a
 pinned function. It is byte-identical for those shapes and for no others, which
 is the whole of what the readout needs. The `usage.prompt_tokens` check and the
 code-boundary check are what catch a divergence.
+
+**Python's JSON, not Go's.** The user turn is
+`json.dumps(payload, ensure_ascii=False)`, and its bytes are the prompt, so
+`pyjson.go` reimplements that writer rather than using `encoding/json`. Go's
+encoder writes `{"a":1}` where Python writes `{"a": 1}`, escapes `<`, `>` and
+`&`, and formats floats over a different range; each difference would move the
+prompt away from the one the calibration was fitted on. `DecodeJSON` keeps
+Python's int-or-float distinction, which an `any` from `json.Unmarshal` loses,
+and keeps an object's key order in `Object` because the order reaches the prompt;
+a Go map is accepted and has its keys sorted. `PythonJSON` is deliberately
+stricter than Python in two places, both of which have no Python counterpart: a
+string that is not valid UTF-8 is an error rather than U+FFFD, and a
+`json.Number` must be a JSON number literal. `DecodeJSON` rejects the bare
+`NaN`/`Infinity` literals that `json.loads` accepts by default, while
+`PythonJSON` still writes them for a NaN or infinite float.
 
 **No cgo.** The tokenizer is pure Go. `sugarme/tokenizer` was evaluated and
 rejected: it does not match added tokens inside a rendered prompt, and it took
@@ -103,12 +118,29 @@ the Python client at `shisa-de` `0.4.0`:
   either fixture disagrees with it. Regenerate with
   `scripts/gen_tokenizer_parity.py`, which pins the revision it passes to
   `from_pretrained`.
+- **Render.** All 33 fixture renders are byte-identical to what
+  `Readout._payload` and `Readout.render` produced for the same case: both
+  template shapes (the repeated/direct read and the thinking read), the
+  empty-description rule, non-string descriptions, 17 evidence shapes, widths
+  2/26/27/77/256, and long evidence. Each fixture prompt also re-tokenizes to
+  the same ids the Python client produced. The readout page's 238 and 137 token
+  counts are pinned; the fixture's third pin (216, the Japanese choice) is a
+  regression check and is not a published value.
+  `testdata/render_parity.meta.json` records the model, the revision, the
+  library versions, the counts and a sha256 of the fixture, and the test fails
+  if the fixture disagrees with it. Regenerate with
+  `scripts/gen_render_parity.py`, which pins the revision it passes to
+  `Readout` as `tokenizer_revision`.
+- **Python JSON.** 37 fixed points, produced by Python's own `json.dumps`: the
+  33 payloads above replayed through `DecodeJSON` then `PythonJSON`, plus
+  scalar, float, string and nested values. The fixtures constrain the encoder
+  rather than being shaped by it. Duplicate object keys, `-0`, out-of-range
+  exponents and Python's `str.strip()` whitespace set have their own unit tests;
+  each was checked against CPython's `json` module directly.
 - **Tokenizer identity.** The test checks the loaded tokenizer's vocab size
   (262,144) and `<channel|>` id (101) before running the vectors, so a fallback
   to a different revision fails loudly. Set `SHISA_DE_TOKENIZER_REQUIRE=1` to
   make a missing tokenizer.json a failure instead of a skip.
-- The rendered DE-2 repeated prompt for the section 2 spam question is
-  byte-identical to the Python render and to the page, 238 tokens.
 - All 256 code ids in `data/codebook-de2.json` match
   `AutoTokenizer.from_pretrained("shisa-ai/shisa-de-2")`, and `<channel|>` is
   token 101.

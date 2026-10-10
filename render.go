@@ -24,10 +24,15 @@ type RenderOptions struct {
 // six fixed fragments. The render is byte-identical for the system-plus-user
 // shape with and without thinking, which is the whole of what the readout sends.
 //
-// It is pinned to the Gemma 4 template `shisa-ai/shisa-de-2` carries. A
-// checkpoint with a different template needs this function changed, and the
-// guard is indirect: every read checks that the prompt ends on AnswerPrefix, and
-// the first read checks the server's prompt-token count against this client's.
+// It is pinned to the Gemma 4 template `shisa-ai/shisa-de-2` carries, including
+// the literal `bos_token` the template's `{{- bos_token -}}` expands to.
+// `bos_token` is a tokenizer-config value rather than part of the template, so a
+// checkpoint with the same template and a different one would differ in the
+// prompt's first token; the M3 read resolves it from the tokenizer and checks it
+// against this literal. A checkpoint with a different template needs this
+// function changed, and the guard is indirect: every read checks that the prompt
+// ends on AnswerPrefix, and the first read checks the server's prompt-token
+// count against this client's.
 const (
 	templateBOS       = "<bos>"
 	templateTurnOpen  = "<|turn>"

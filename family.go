@@ -145,6 +145,12 @@ func ModelFamily(modelID string) Family {
 //
 // The order is: a family the caller declared, then a slug in the served model
 // id, then a slug in the tokenizer source, then DefaultFamily as an assumption.
+//
+// An empty declared string means "not declared", so resolution falls through.
+// Python's resolve_family treats family="" as an invalid declaration and raises;
+// Go's zero value is the empty string, so "not declared" is the better reading
+// of it here. A caller that wants Python's strictness validates the string
+// first.
 func ResolveFamily(modelID, tokenizer, declared string) (Family, FamilySource, error) {
 	if declared != "" {
 		family, err := NormalizeFamily(declared)

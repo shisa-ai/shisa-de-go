@@ -3,6 +3,7 @@ package shisade
 import (
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // Option is one answer option: the key the caller gets back, and what the model
@@ -30,8 +31,24 @@ type Question interface {
 	// order. The first is shown as A.
 	Options() []Option
 	// Validate rejects a question the readout cannot render, with at most
-	// optionLimit options.
+	// optionLimit options. A non-positive optionLimit means the letter limit,
+	// the same default Render and Payload use.
 	Validate(optionLimit int) error
+}
+
+// isPythonSpace reports whether a rune is whitespace to Python's `str.strip()`.
+//
+// Python strips a character whose Unicode general category is Zs or whose
+// bidirectional class is WS, B or S. Go's unicode.IsSpace is that set minus the
+// U+001C-U+001F separators, which Python's class B includes, so a description of
+// "\u001c" is blank to Python and not to Go. The two sets agree everywhere else.
+func isPythonSpace(r rune) bool {
+	return unicode.IsSpace(r) || (r >= 0x1C && r <= 0x1F)
+}
+
+// trimPythonSpace is Python's `str.strip()`.
+func trimPythonSpace(text string) string {
+	return strings.TrimFunc(text, isPythonSpace)
 }
 
 // RenderOption is what the model is shown for one option.
@@ -44,15 +61,20 @@ func RenderOption(key string, description any) any {
 	if description == nil {
 		return key
 	}
-	if text, ok := description.(string); ok && strings.TrimSpace(text) == "" {
+	if text, ok := description.(string); ok && trimPythonSpace(text) == "" {
 		return key
 	}
 	return description
 }
 
 func validateQuestion(kind, instructions string, options, optionLimit int) error {
-	if strings.TrimSpace(instructions) == "" {
+	if trimPythonSpace(instructions) == "" {
 		return &QuestionError{Message: "instructions must be a non-empty question"}
+	}
+	if optionLimit <= 0 {
+		// The same default Payload and Render use: a zero limit is the letter
+		// limit, not a limit of zero.
+		optionLimit = MaxOptions
 	}
 	if options < 2 {
 		return &QuestionError{Message: fmt.Sprintf(

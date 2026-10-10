@@ -28,21 +28,26 @@ through the other family's contract.
   fit per read (`direct`, `repeat2`, `think`), each applied only to that read.
 - Every answer records its provenance (`Family`, `ReadoutVersion`, `Policy`,
   `Strategy`, `Calibration`, `Temperature`, `Calibrated`, `Requests`) so a
-  caller can tell which read produced it.
+  caller can tell which read produced it. (Planned: there is no `Answer` type
+  yet.)
 - The Python package is the reference implementation. Where this port and the
   Python client disagree on a wire shape, the Python client and the readout page
   win; report the divergence instead of quietly matching the Go code to itself.
 
 ## Project Overview
 
-Two layers, one contract:
+Two layers, one contract. This is the target layout: M1 and M2 landed the
+codebook, the tokenizer, the renderer, family resolution, the question types and
+the Python-JSON writer; the rows marked planned do not exist yet. The Key Files
+table below says what is in the tree.
 
 - `readout.go` — the raw reads: render the repeated prompt, request every
   option's code by token id, softmax over the codes, optionally generate a
-  bounded thought and read the codes again after it.
-- `policy.go` — sequences the reads: twice, then think when unsure.
+  bounded thought and read the codes again after it. (Planned past the scaffold
+  constants, the readout identities and `Softmax`.)
+- `policy.go` — sequences the reads: twice, then think when unsure. (Planned.)
 - `client.go` — the friendly layer. `Classify` for label sets, `Decide` for
-  typed questions.
+  typed questions. (Planned.)
 
 What must not change casually:
 
