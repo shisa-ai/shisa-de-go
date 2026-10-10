@@ -16,9 +16,12 @@ The contract this port implements is
 repository, which remains the reference implementation. What the Go port maps
 onto, and where it deliberately differs, is in [`docs/PORT.md`](docs/PORT.md).
 
-**This port reads DE-2 only.** It does not read **DE-1**, it has no **image**
-path, and it has no text-choice **overflow** path, because DE-1's wide-choice
-handling is the only thing that needs one. Each absence is explained under
+**This port reads DE-2's text readout.** It does not read **DE-1**, and it does
+not implement DE-2's **image** read either: that is a scope decision, not a
+family limitation, and the image read is specified in
+[`docs/READOUT-DE2.md`](docs/READOUT-DE2.md#6-images) like the text one. It also
+has no text-choice **overflow** path, because DE-1's wide-choice handling is the
+only thing that needs one. Each absence is explained under
 [What this port does not have](#what-this-port-does-not-have).
 
 ## Install
@@ -472,22 +475,53 @@ comparison against `daulet/tokenizers` that the tokenizer was written against.
 
 ## What this port does not have
 
-Four things the Python client has, and why:
+The Python client has four things this port does not. Two of them are about a
+model family this port does not read, and two are not:
 
-- **DE-1.** The Python client reads DE-1 and DE-2. This port implements
-  `de2-codebook-v1` only, and a checkpoint that resolves to DE-1 is an error
-  rather than an assumption, because reading a checkpoint through the other
-  family's contract returns answers nobody has measured. Use the
-  [Python client](https://github.com/shisa-ai/shisa-de) for DE-1.
-- **Images.** There is no image path, so no vision question and no
-  `chat_system_render` probe. `decide` and `classify` take text only.
-- **Wide-choice overflow.** DE-1 caps a text choice at 26 options and the Python
-  client splits anything larger into chunks with a finalist round. DE-2 reads up
-  to 256 options natively, so nothing here needs that, and `Overflow` is refused
-  by name rather than accepted and ignored.
-- **DE-1's single fixed read.** DE-1 has one way to be read. DE-2's policy
-  machinery is the only read selection this port has, and `Policy: "direct"` is
-  what a single DE-2 read is called here.
+**The image read, which DE-2 does have.** DE-2 is not a text-only model: it has
+an image read, specified in [`docs/READOUT-DE2.md`](docs/READOUT-DE2.md#6-images)
+-- a page this repository ships -- and implemented by the Python client for both
+families. It is a third read alongside the text one: an image cannot travel
+through the text readout at all, because the client renders that prompt itself
+with the checkpoint's chat template and only the server can expand an image
+placeholder into the image tokens the checkpoint expects. So an image question
+posts to `/v1/chat/completions`, lets the server render the prompt, and takes one
+direct read: no repeat, no thinking step, at most 26 options, no fallback for a
+code outside the returned top-k, and no calibration. The readout version is
+still `de2-codebook-v1`.
+
+**This port does not implement that read.** That is a scope decision and not a
+family limitation -- it was left out rather than found impossible, and the
+[Python client](https://github.com/shisa-ai/shisa-de) is the way to ask a
+question about an image today. Concretely, what is missing is
+`shisa_de/images.py` (161 lines: media-type sniffing by file signature, base64
+data URLs for local files, URL validation), a `read_image` on the readout, an
+image argument on `Classify` and `Decide`, the `chat_system_render` probe in
+`Health`, and `--image` on the command line.
+
+The part that needs care is not the plumbing. vLLM hands Gemma 4's chat template
+every message of an image request as content parts, and the template then writes
+a space after a system message that arrives that way, so the image prompt carries
+one token the text prompt does not. DE-2 was trained on the string rendering,
+without images. The Python client records the difference in
+`result.raw[head]["system_render"]` and answers anyway, and
+`doctor --probe` reports it. Any port has to decide the same thing: record it, or
+refuse. `docs/READOUT-DE2.md` section 6 has the measurement.
+
+**DE-1.** The Python client reads DE-1 and DE-2. This port implements
+`de2-codebook-v1` only, and a checkpoint that resolves to DE-1 is an error rather
+than an assumption, because reading a checkpoint through the other family's
+contract returns answers nobody has measured. Use the
+[Python client](https://github.com/shisa-ai/shisa-de) for DE-1.
+
+**Wide-choice overflow.** DE-1 caps a text choice at 26 options and the Python
+client splits anything larger into chunks with a finalist round. DE-2 reads up to
+256 options natively, so nothing here needs that, and `Overflow` is refused by
+name rather than accepted and ignored.
+
+**DE-1's single fixed read.** DE-1 has one way to be read. DE-2's policy
+machinery is the only read selection this port has, and `Policy: "direct"` is
+what a single DE-2 read is called here.
 
 Everything else in the Python client's API has a Go counterpart, and
 [`docs/PORT.md`](docs/PORT.md) maps them file by file.

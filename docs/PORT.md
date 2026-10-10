@@ -17,8 +17,8 @@ client deliberately behaves differently.
 | `shisa_de/client.py` | `client.go` |
 | `json.dumps` / `json.loads` | `pyjson.go` |
 | `httpx` | `net/http` in `endpoint.go` |
-| `shisa_de/overflow.py` | not ported; DE-1 only |
-| `shisa_de/images.py` | not ported; no image path |
+| `shisa_de/overflow.py` | not ported; DE-1 only, so nothing here needs it |
+| `shisa_de/images.py` | not ported; see "No images" below -- DE-2 has an image read, this port does not implement it |
 | `shisa_de/data/*.json` | `data/*.json`, embedded with `go:embed` |
 | `shisa_de/cli.py` | `cmd/shisa-de/` |
 | `tests/test_offline.py` | `*_test.go` with a stub tokenizer and `httptest` |
@@ -253,10 +253,36 @@ returns an `UnsupportedFamilyError` rather than a working client, and that
 error's message says to pass a DE-2 checkpoint. The Python client with the same
 empty config works; this one does not.
 
-**No images.** `shisa_de/images.py` is not ported. This client's readout has no
-image read and no chat-render probe, so `Classify` and `Decide` take no image
-argument and `Health` has no `chat_system_render` entry. A caller who needs the
-image path needs the Python client.
+**No images, and this one is a scope decision rather than a family limit.**
+DE-2 is not a text-only model. It has an image read, specified in
+`docs/READOUT-DE2.md` section 6 -- a page this repository ships -- and the Python
+client implements it for both families. It is a third read beside the text one,
+because an image cannot travel through the text readout at all: the client
+renders that prompt itself with the checkpoint's chat template, and only the
+server can expand an image placeholder into the image tokens the checkpoint
+expects. So an image question posts to `/v1/chat/completions`, lets the server
+render the prompt, and takes one direct read: no repeat, no thinking step, at
+most 26 options, no fallback for a code outside the returned top-k, and no
+calibration. `readout_version` stays `de2-codebook-v1`.
+
+This port left that read out rather than finding it impossible. `readout.go` and
+`render.go` have no chat path at all, so there is no `/v1/chat/completions`
+request, no `image_url` content part, and no `system_render` recording;
+`Classify` and `Decide` take no image argument, and `Health` has no
+`chat_system_render` entry. What a port needs is `shisa_de/images.py` (161 lines:
+media-type sniffing by file signature, base64 data URLs for local files, URL
+validation), a `read_image` on the readout, the image argument and its rules on
+the two entry points, the probe, and `--image` on the command line.
+
+The part that needs a decision rather than plumbing is the system turn. vLLM
+hands Gemma 4's chat template every message of an image request as content
+parts, and the template writes a space after a system message that arrives that
+way, so the image prompt carries one token the text prompt does not. DE-2 was
+trained on the string rendering, without images. Python records the difference
+in `result.raw[head]["system_render"]` (`string`, `differs` or `unverified`) and
+answers anyway, with `require_string_system=True` available for a server whose
+template has been fixed. A Go port would have to make the same call, and section
+6 of the DE-2 page has the measurement it would be making it on.
 
 **The command line drops what the image path carries.** Three things follow from
 the paragraph above. `ask` has no `--image` or `--image-top-logprobs`, because
