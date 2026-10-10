@@ -105,6 +105,8 @@ What must not change casually:
 | `calibration.go` | Temperature scaling, the confidence statistic, record selection, and `Calibration.Applicability` |
 | `client.go` | `DecisionModel.Classify`, `DecisionModel.Decide`, `SystemOne`, `Health`, `Decision`, `Answer`, `HeadSpec` |
 | `scripts/gen_client_parity.py` | Records live Python `DecisionModel` exchanges against the hosted endpoint and writes the fixture the parity test replays |
+| `example_test.go` | The README's snippets as `Example*` functions `go test` runs, against a stub endpoint, so a signature or behaviour change breaks them |
+| `readme_test.go` | The documentation rot check: every `shisade.X` in `README.md` and `docs/PORT.md` is an exported identifier, the Go blocks parse, and the README's sections are present |
 | `live_test.go` | The live suite behind `SHISA_DE_LIVE=1`, including the M6 gate: the fixed question set in `testdata/live_questions.json` through both clients in one session |
 | `scripts/live_parity.py` | Runs the fixed live question set through the Python client and records the answers the Go test compares against; invoked by the test, and by hand to inspect one |
 | `scripts/test_live_parity.py` | Offline tests for the recorder's endpoint and model resolution, its tokenizer pin and its drift arithmetic |
@@ -139,7 +141,11 @@ What must not change casually:
 
 ### Before Claiming Done
 
-- `go build ./...`, `go vet ./...`, and `go test ./...` pass.
+- `go build ./...`, `go vet ./...`, and `go test ./...` pass. The last one
+  includes the `Example*` functions and the documentation check, so a change to
+  an exported name, a struct field, or an answer's behaviour fails the suite
+  until `README.md` and `example_test.go` are updated in the same commit. That
+  is deliberate: it is the only thing keeping the README true.
 - A readout version identifies the answer-producing contract, not the client
   build or the contents of `readout.go`. Bump it only when rendering, requests,
   code handling, policy, or scoring semantics change, and update
@@ -163,6 +169,8 @@ What must not change casually:
 | --- | --- |
 | Build and vet | `go build ./...` and `go vet ./...` |
 | Offline suite | `go test ./...` |
+| Documented examples | `go test . -run Example` (runs the `Example*` functions in `example_test.go`, whose `// Output:` blocks are the README's snippets) |
+| Documentation rot | `go test . -run TestReadme` (every `shisade.X` the README and `PORT.md` name has to be an exported identifier; the blocks also have to parse) |
 | Tokenizer parity | `go test ./tokenizer/` (reads the pinned tokenizer from the hub cache or `SHISA_DE_TOKENIZER_JSON`; `SHISA_DE_TOKENIZER_REQUIRE=1` fails instead of skipping) |
 | Readout replay | `go test . -run TestReadout` (replays recorded Python request/response pairs through an `httptest` stub; offline) |
 | Client replay | `go test . -run TestClientParity` (replays recorded live Python `DecisionModel` exchanges through an `httptest` stub; offline) |
