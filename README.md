@@ -1,84 +1,508 @@
 # shisa-de-go
 
-A Go client for [Shisa DE-2](https://huggingface.co/shisa-ai/shisa-de-2), a
-model for classification and typed decisions.
+A Go client for [Shisa DE-2](https://huggingface.co/shisa-ai/shisa-de-2), a model
+for classification and typed decisions.
 
-Give it text and a set of labels or questions. It returns answers,
-probabilities, and request usage, not generated prose. The client loads only a
-tokenizer; model weights stay on the server.
+Give it text and a set of labels or questions. It returns answers, probabilities,
+and request usage, not generated prose. The client loads only a tokenizer; the
+model weights stay on the server.
 
-**Status: early port.** Landed so far: the pinned codebook, the pure-Go
-tokenizer, the DE-2 prompt renderer, the question types, family resolution, the
-Python-compatible JSON writer and reader, the DE-2 readout itself -- the code
-read, the fallback for a server without `logprob_token_ids`, the bounded thought
-and the read after it -- the layers above it: the DE-2 policy, the calibration
-records, and `DecisionModel` with `Classify` and `Decide`; the command line,
-`shisa-de doctor`, `ask` and `explain`; and the live suite behind
-`SHISA_DE_LIVE=1`, including the gate that runs the same questions through this
-client and the Python one in one session and compares the answers.
+```go
+import shisade "github.com/shisa-ai/shisa-de-go"
+```
 
 The contract this port implements is
 [`docs/READOUT-DE2.md`](docs/READOUT-DE2.md), copied verbatim from the Python
 repository, which remains the reference implementation. What the Go port maps
 onto, and where it deliberately differs, is in [`docs/PORT.md`](docs/PORT.md).
 
-DE-2 is read from your own OpenAI-compatible server. This port does not read
-DE-1: a model that resolves to DE-1 is an error rather than an assumption,
-because reading a checkpoint through the other family's contract returns answers
-nobody has measured. That includes the default model id, which is the Python
-client's DE-1 one, so `Model` is required.
+**This port reads DE-2 only.** It does not read **DE-1**, it has no **image**
+path, and it has no text-choice **overflow** path, because DE-1's wide-choice
+handling is the only thing that needs one. Each absence is explained under
+[What this port does not have](#what-this-port-does-not-have).
+
+## Install
+
+```bash
+go get github.com/shisa-ai/shisa-de-go
+```
+
+Requires Go 1.25 or newer. There is no cgo and no Python: the tokenizer is pure
+Go, so a build needs nothing but the toolchain.
+
+## Quick start
+
+DE-2 is served from your own OpenAI-compatible server; the
+[DE-2 readout](docs/READOUT-DE2.md#8-serving) has the `vllm serve` command. Point
+the client at it and classify text against a set of labels:
 
 ```go
 model, err := shisade.NewDecisionModel(shisade.DecisionModelConfig{
-    BaseURL: "http://localhost:8000/v1",
-    Model:   "shisa-ai/shisa-de-2",
+	BaseURL: "http://localhost:8000/v1",
+	Model:   "shisa-ai/shisa-de-2",
 })
 if err != nil {
-    log.Fatal(err)
+	return err
 }
 defer model.Close()
 
 decision, err := model.Classify(ctx,
-    map[string]any{"text": "My invoice was charged twice."},
-    map[string]shisade.HeadSpec{
-        "route": {Options: []shisade.Option{
-            {Key: "billing", Description: "Charges and invoices"},
-            {Key: "shipping", Description: "Delivery and tracking"},
-        }},
-    }, shisade.ClassifyOptions{})
+	map[string]any{"text": "WINNER! Claim your free prize now!"},
+	map[string]shisade.HeadSpec{"intent": {Options: []shisade.Option{
+		{Key: "spam", Description: "Unsolicited bulk or scam message"},
+		{Key: "ham", Description: "Ordinary message"},
+	}}}, shisade.ClassifyOptions{})
 if err != nil {
-    log.Fatal(err)
+	return err
 }
-fmt.Println(decision.Values["route"]) // billing
+fmt.Println(decision.Values["intent"]) // spam
 ```
 
-Every answer records the read that produced it (`Strategy`, `Calibrated`,
-`Temperature`, `Requests`), and every decision carries a provenance block, so a
-caller can tell a calibrated answer from a raw one and a direct read from one
-that followed a thought.
+Nothing is fetched at construction: the tokenizer is downloaded from Hugging
+Face on the first call, not by `NewDecisionModel`, so building a client is free
+and a client you never use costs nothing.
+
+Check your setup from the command line:
+
+```bash
+shisa-de doctor --model shisa-ai/shisa-de-2
+```
+
+## Classify with labels
+
+Each named label set is a separate question. Labels can be plain strings or a
+mapping from labels to descriptions:
+
+```go
+decision, err := model.Classify(ctx,
+	map[string]any{
+		"subject": "Charged twice",
+		"body":    "Please refund the duplicate charge.",
+	},
+	map[string]shisade.HeadSpec{"intent": {Options: []shisade.Option{
+		{Key: "refund_request", Description: "The customer wants money returned"},
+		{Key: "order_status", Description: "The customer wants a delivery update"},
+	}}}, shisade.ClassifyOptions{IncludeProbabilities: true})
+if err != nil {
+	return err
+}
+
+// The value is the answer's full view, and the answer itself is on Answers.
+view := decision.Values["intent"].(map[string]any)
+fmt.Println(view["label"])
+fmt.Println(decision.Answers["intent"].Probabilities)
+fmt.Println(decision.Usage["requests"])
+```
+
+By default each name maps straight to its label. `IncludeConfidence` returns the
+label with a confidence, and `IncludeProbabilities` adds the full probability
+map; both change `Values[head]` from the bare label to a map.
+
+A `HeadSpec` has four shapes:
+
+| Shape | Behavior |
+| --- | --- |
+| `Options: []Option{{Key: "a"}, {Key: "b"}}` | Choose one option; a nil `Description` shows the key |
+| `Options: []Option{{Key: "a", Description: "..."}}` | Choose one option using its description |
+| `Options: ..., Instructions: "Which applies?"` | Supply your own question |
+| `Options: ..., MultiLabel: true, Threshold: &t` | Ask yes/no for each option; return the keys above the threshold |
+| `Levels: []any{"low", "medium", "high"}` | Choose a level on an ordered scale |
+
+`Threshold` nil means 0.5. A multi-label value is a `[]string` of the keys above
+the cutoff. A `Levels` head returns the level name, and the weighted position is
+on `decision.Answers[head].Score`.
+
+## Ask typed questions
+
+`Decide` supports yes/no probabilities (`Noul`), named choices (`Choice`), and
+ordered scores (`Score`):
+
+```go
+decision, err := model.Decide(ctx,
+	"Reply with your full card number and CVV to claim your prize.",
+	map[string]shisade.Question{
+		"is_spam": shisade.NewNoul("Is this message spam?"),
+		"asks_for": shisade.NewChoice("What does the sender want?", []shisade.Option{
+			{Key: "card_details", Description: "Payment card details"},
+			{Key: "callback", Description: "A support callback"},
+			{Key: "nothing", Description: "Nothing; it is routine"},
+		}),
+		"risk": shisade.NewScore("How risky is acting on this message?",
+			[]any{"Safe", "Suspicious", "Dangerous"}),
+	}, shisade.CallOptions{})
+if err != nil {
+	return err
+}
+
+fmt.Println(decision.Values["asks_for"])                     // card_details
+fmt.Println(decision.Answers["risk"].Level)                  // Dangerous
+fmt.Println(decision.Answers["asks_for"].Probabilities)
+fmt.Println(decision.Usage["requests"])
+```
+
+- `Noul` returns the probability of yes.
+- `Choice` returns the selected option key.
+- `Score` returns the probability-weighted, zero-based position in the scale. The
+  most likely level is on `decision.Answers[name].Level`.
+
+Questions run concurrently, bounded by `DecisionModelConfig.MaxWorkers` (8 by
+default). The order the questions are asked in is by head name and not by map
+iteration, so a recorded exchange replays. `decision.Usage` holds the request,
+token, thought-token and logical-read counts, and `decision.Answers[name]` holds
+each answer's probabilities, confidence and cost.
+
+Option keys within a head must be distinct: a repeated key would read two codes
+into one option and the distribution would not sum to one, so it is refused
+before anything is sent. The same goes for a repeated label in a multi-label
+head.
+
+## Large label sets
+
+DE-2 reads up to 256 options in one question and returns an ordinary probability
+distribution over them. There is no chunking and no finalist round, so a wide
+choice needs nothing special:
+
+```go
+options := make([]shisade.Option, 0, 200)
+for index := 0; index < 200; index++ {
+	options = append(options, shisade.Option{
+		Key:         fmt.Sprintf("queue_%d", index),
+		Description: fmt.Sprintf("Support queue %d", index),
+	})
+}
+decision, err := model.Decide(ctx, "Route this support request",
+	map[string]shisade.Question{"route": shisade.NewChoice("Which queue applies?", options)},
+	shisade.CallOptions{})
+if err != nil {
+	return err
+}
+
+answer := decision.Answers["route"]
+fmt.Println(answer.Choice, answer.Confidence, answer.Requests)
+```
+
+Up to 128 options is one request and more than that is two, because the candidate
+block is written in two parts. The distribution covers all 200 options, so
+`Confidence` is meaningful and the answer is calibrated like any other.
+
+Two limits are worth knowing:
+
+- **256 options** is the cap. `CodesFor` returns an error above it, and a
+  question with more is refused before anything is sent.
+- **Questions above 26 options never think.** That is the adopted policy: the
+  gate only applies where the model has been measured to reason usefully.
+
+## Probabilities and calibration
+
+Every answer carries its probabilities and records whether they were calibrated,
+in `answer.Calibrated` and `answer.Temperature`.
+
+| Call | Probabilities returned |
+| --- | --- |
+| DE-2 text | Calibrated by default, with a separate fit for each read; pass `Calibrated` to get raw |
+| A checkpoint the shipped record does not cover | Raw, with a warning in `DecisionModel.Warnings` |
+
+Each bundled calibration is applied only to the checkpoint it was fitted on,
+`shisa-ai/shisa-de-2`. DE-2 has three reads and each has its own fit: a question
+read once, read twice, and read after a thinking step are tempered differently,
+and `answer.Temperature` says which was used.
+
+Calibration depends on the model, the way it is read, and how it is served.
+Refit before using these probabilities to drive a threshold on your own
+deployment. The [DE-2 readout](docs/READOUT-DE2.md#7-calibration) has the
+details, including the caveat that probabilities read after a thinking step are
+the least reliable.
+
+To use a calibration you fitted yourself, or to vouch for the bundled one on
+another checkpoint, pass it in:
+
+```go
+record, err := shisade.LoadCalibrationFile("my.json")
+if err != nil {
+	return err
+}
+model, err := shisade.NewDecisionModel(shisade.DecisionModelConfig{
+	BaseURL:     "http://localhost:8000/v1",
+	Model:       "my-de2-finetune",
+	Family:      "de2",
+	Calibration: &record,
+})
+```
+
+A record passed in is your assertion and is applied as given. `Health` still
+reports how far it matches the served model, in `calibration_level` and
+`calibration_match`.
+
+### When the probability is the result
+
+Pass `Probability: true` when you need the distribution itself, such as a
+forecast, rather than the winning label:
+
+```go
+off := false
+decision, err := model.Decide(ctx,
+	map[string]any{"forecast": "Rain is expected tomorrow afternoon."},
+	map[string]shisade.Question{"rain": shisade.NewNoul("Will it rain tomorrow?")},
+	shisade.CallOptions{Probability: true, Calibrated: &off})
+if err != nil {
+	return err
+}
+pYes := decision.Values["rain"]
+distribution := decision.Answers["rain"].Probabilities
+```
+
+The flag guarantees that every answer is one distribution over all of its
+options, taken from a single logical read: on DE-2 it skips the thinking step, so
+a choice up to 256 options is accepted and answered in one pass. It does not
+change prompts, answer shapes, or calibration. It is separate from
+`IncludeProbabilities`, which only changes what `Classify` returns.
+
+`Calibrated` is a `*bool` so that unset and false are different: nil means "on",
+which is the default for text.
+
+## Use a local server
+
+Start an OpenAI-compatible server with the model loaded, then point the client at
+it. `FromEndpoint` is the shorthand:
+
+```go
+empty := ""
+model, err := shisade.FromEndpoint("http://127.0.0.1:8000/v1", "shisa-ai/shisa-de-2",
+	shisade.DecisionModelConfig{APIKey: &empty})
+if err != nil {
+	return err
+}
+defer model.Close()
+
+decision, err := model.Classify(ctx,
+	"I was charged twice. Please refund the duplicate payment.",
+	map[string]shisade.HeadSpec{"intent": {Options: []shisade.Option{
+		{Key: "refund_request"}, {Key: "order_status"}, {Key: "cancel_order"},
+	}}}, shisade.ClassifyOptions{})
+```
+
+```bash
+export SHISA_DE_ENDPOINT=http://127.0.0.1:8000/v1
+shisa-de doctor --model shisa-ai/shisa-de-2
+shisa-de ask --model shisa-ai/shisa-de-2 --labels refund_request,order_status
+```
+
+- A server root URL and a URL ending in `/v1` are both accepted; the `/v1` is
+  stripped.
+- `APIKey` is a `*string`, so `&empty` disables authentication rather than
+  falling back to the environment. A nil `APIKey` reads `SHISA_DE_API_KEY`, then
+  `SHISA_API_KEY`, and sends that to a local endpoint too.
+- If the server uses an alias for the checkpoint, pass the alias as `Model` and
+  the real checkpoint as `Tokenizer`. The tokenizer name also tells the client
+  which family the alias is, so a DE-2 alias keeps the DE-2 calibration.
+- The server needs `/v1/completions` with `logprobs` and `logprob_token_ids`, and
+  `doctor` needs `/v1/models`. vLLM supports both; `docs/READOUT-DE2.md` has the
+  exact request shapes.
+
+For a checkpoint your server names differently, say the family out loud and name
+a tokenizer, because the family decides how the model is asked and the tokenizer
+decides which codes are read:
+
+```go
+model, err := shisade.FromPretrained("my-de2-finetune", shisade.DecisionModelConfig{
+	BaseURL:   "http://127.0.0.1:8000/v1",
+	Family:    "de2",
+	Tokenizer: "google/gemma-4-26B-A4B-it",
+})
+if err != nil {
+	return err
+}
+fmt.Println(model.Family, model.FamilySource, model.FamilyExplicit)
+```
+
+**Say which family the model is.** DE-1 and DE-2 are asked differently, so a
+checkpoint read as the wrong family returns answers nobody has measured. The
+client recognizes `de-1` or `de-2` in the model id or the tokenizer name. Anything
+else is treated as DE-2 with a warning in `DecisionModel.Warnings`, so pass
+`Family: "de2"` when the id does not say. A checkpoint that resolves to DE-1 is
+an error, not a fallback, because this port cannot read it.
+
+### Configuration
+
+| Setting | Field | Resolution order |
+| --- | --- | --- |
+| Endpoint | `BaseURL` | the field, then `SHISA_DE_ENDPOINT`, then `https://api.shisa.ai/openai` |
+| API key | `APIKey` | the field (an empty string disables auth), then `SHISA_DE_API_KEY`, then `SHISA_API_KEY` |
+| Model | `Model` | the field, otherwise `shisa-ai/shisa-de-1` |
+| Tokenizer | `Tokenizer` | the field, otherwise the model id |
+| Family | `Family` | the field, then `de-1` or `de-2` in the model id, then in the tokenizer name, otherwise DE-2 with a warning |
+| Read | `Overrides` | the family's default read |
+
+The library's zero-config model id is the Python client's DE-1 one, which this
+port cannot read, so `Model` is required in practice. The command line defaults
+to `shisa-ai/shisa-de-2` instead.
+
+## Read settings
+
+DE-2 has one default way of reading a question and two ways to trade quality for
+latency. Set them on the model to change its default, or on a call to change that
+call:
+
+| Setting | What it does | Default |
+| --- | --- | --- |
+| `Policy` | A whole read: `"repeat-think"`, `"repeat"`, or `"direct"` | `"repeat-think"` |
+| `Reads` | `"single"` or `"double"`: how often the question is shown in the prompt | `"double"` |
+| `Reasoning` | Think when the answer is unsure, then answer again | `true` |
+| `ReasoningProb` | Think when the top probability is below this | `0.7` |
+| `ReasoningLen` | The most tokens a thinking step may run to | `1024` |
+
+```go
+// Model default: never think.
+gate := 0.9
+budget := 256
+model, err := shisade.NewDecisionModel(shisade.DecisionModelConfig{
+	BaseURL: "http://localhost:8000/v1",
+	Model:   "shisa-ai/shisa-de-2",
+	Overrides: shisade.OptionOverrides{
+		ReasoningProb: &gate,
+		ThinkBudget:   &budget,
+	},
+})
+if err != nil {
+	return err
+}
+
+direct := "direct"
+decision, err := model.Decide(ctx, state, questions,
+	shisade.CallOptions{Overrides: shisade.OptionOverrides{Policy: &direct}})
+if err != nil {
+	return err
+}
+fmt.Println(model.Policy(), model.Reasoning(), model.ThinkGate(), model.ThinkBudget())
+```
+
+A call inherits whatever it does not set. `decision.Meta["policy"]` records the
+policy the call ran under, and each answer's `Strategy` says which read actually
+produced it.
+
+**Fastest or best.** The three DE-2 reads are also named, as `Policy`:
+
+| Goal | `Policy` | Strategy | HTTP requests per question |
+| --- | --- | --- | --- |
+| Best quality (default) | `"repeat-think"` | `repeat2` or `repeat2-think` | 1, or 3 when it thinks |
+| Balanced | `"repeat"` | `repeat2` | 1 |
+| Lowest latency | `"direct"` | `direct` | 1, with about half the prompt tokens |
+
+A repeated read shows the question to the model **twice inside one prompt**, so
+`repeat2` costs one HTTP request and not two. Only a thinking answer costs more,
+and that is three: the read, the thought, and the read after it.
+
+Things to know:
+
+- `Reasoning: true` always shows the question twice first, and `Reads: "single"`
+  never thinks. Asking for both at once is an error.
+- Questions above 26 options never think, and neither does a call made with
+  `Probability: true`.
+- An unknown policy, or a setting that disagrees with the policy it was combined
+  with, is refused by name before anything is sent.
+- `ReasoningProb`/`ThinkGate` and `ReasoningLen`/`ThinkBudget` are the same two
+  settings under two names.
 
 ## Command line
+
+| Command | What it does |
+| --- | --- |
+| `shisa-de doctor` | Checks the endpoint, the model id, the tokenizer, the answer boundary, and whether the calibration belongs to the served model. Exits non-zero on a problem |
+| `shisa-de doctor --probe` | Also spends one question on the read |
+| `shisa-de ask` | Classifies `--state` (text or JSON) against `--labels` |
+| `shisa-de explain` | Prints the prompt, the answer slots, the one request with the answer codes by token id, the distribution, and a `curl` line that reproduces the request without Python |
 
 ```bash
 go install ./cmd/shisa-de
 export SHISA_DE_API_KEY=...
 
-shisa-de doctor   --model shisa-ai/shisa-de-2                 # is this endpoint usable?
+shisa-de doctor   --model shisa-ai/shisa-de-2
 shisa-de ask      --model shisa-ai/shisa-de-2 --labels billing,shipping
 shisa-de explain  --model shisa-ai/shisa-de-2 --labels billing,shipping
 ```
 
-`doctor` checks the endpoint, the served model id, the answer boundary and the
-calibration record, and exits non-zero when the report is not ok. `ask` is the
-one-line classification. `explain` prints every step of one question: the prompt
-the model receives, the answer slots, the top-k the codes were read from, the
-distribution, and a `curl` line that reproduces the request without Python.
+All of them accept `--base-url`, `--model`, `--tokenizer`, `--family`,
+`--calibration`, `--policy` and `--timeout`. The read settings are `--reads`,
+`--reasoning` / `--no-reasoning`, `--reasoning-prob`, `--reasoning-len`, and
+`--compound` / `--no-compound`, which this port refuses when it is turned on:
+DE-2 reads up to 256 options in one prompt, so there is nothing to compound. The
+endpoint comes
+from `SHISA_DE_ENDPOINT` and the key from `SHISA_DE_API_KEY`, then
+`SHISA_API_KEY`; the command line's `--model` defaults to `shisa-ai/shisa-de-2`
+rather than the library's DE-1 default, because this port has no DE-1 read and a
+command whose zero-config form can only fail is not a command.
 
-The command line reads the endpoint from `SHISA_DE_ENDPOINT` and the key from
-`SHISA_DE_API_KEY`, then `SHISA_API_KEY`. Its `--model` defaults to
-`shisa-ai/shisa-de-2` rather than the library's DE-1 default, because this port
-has no DE-1 read and a command whose zero-config form can only fail is not a
-command. `PORT.md` records what else differs from the Python command line.
+`PORT.md` records what else differs from the Python command line, including the
+one `chat system` line `doctor --probe` does not print.
+
+## Performance
+
+Measured on an 8-core Intel Xeon E5-2690 v4 against the hosted
+`shisa-ai/shisa-de-2` (`vllm-0.30.0-tp2-ca69195e`), 2026-10-10, both clients
+answering the same question:
+
+| | Go | Python |
+| --- | ---: | ---: |
+| Client construction | 0.6 ms | 91 ms |
+| Cold process to first answer | 2,220 ms | 5,041 ms |
+| Warm decision, median | 86.9 ms | 87.8 ms |
+| Warm decision, minimum | 85.2 ms | 85.2 ms |
+
+**Per-call latency is the same.** The server round trip is about 85 ms and the
+client's own work is a few milliseconds on both sides, so it does not surface.
+The minimums agree to the tenth of a millisecond. If you make decisions in a
+long-lived process, there is no performance reason to prefer either client.
+
+**Startup is where they differ.** The Go client constructs in under a
+millisecond because it defers the tokenizer to the first call, which then costs
+about 2.2 seconds; the Python client's first call costs about 5.0 seconds,
+including a 1.15-second `import transformers`. So Go is roughly 2.3 times faster
+from a cold process to a first answer, and about 2.8 seconds faster for a CLI
+invoked once per question.
+
+The Go 2.2 seconds is mostly two things: about 0.85 s parsing the 32 MB
+`tokenizer.json` with `encoding/json`, and about 1.0 s building 514,906 merge
+ranks and 262,144 vocabulary entries.
+
+**Tokenization is not faster than `transformers`.** For the same 8,879-byte
+prompt, this package encodes in 4.67 ms against 5.08 ms for `transformers`' Rust
+tokenizer and 3.44 ms for its pure-Python one. The port is in the same band, not
+ahead of it; [`docs/PORT.md`](docs/PORT.md#performance) also records the
+comparison against `daulet/tokenizers` that the tokenizer was written against.
+
+## What this port does not have
+
+Four things the Python client has, and why:
+
+- **DE-1.** The Python client reads DE-1 and DE-2. This port implements
+  `de2-codebook-v1` only, and a checkpoint that resolves to DE-1 is an error
+  rather than an assumption, because reading a checkpoint through the other
+  family's contract returns answers nobody has measured. Use the
+  [Python client](https://github.com/shisa-ai/shisa-de) for DE-1.
+- **Images.** There is no image path, so no vision question and no
+  `chat_system_render` probe. `decide` and `classify` take text only.
+- **Wide-choice overflow.** DE-1 caps a text choice at 26 options and the Python
+  client splits anything larger into chunks with a finalist round. DE-2 reads up
+  to 256 options natively, so nothing here needs that, and `Overflow` is refused
+  by name rather than accepted and ignored.
+- **DE-1's single fixed read.** DE-1 has one way to be read. DE-2's policy
+  machinery is the only read selection this port has, and `Policy: "direct"` is
+  what a single DE-2 read is called here.
+
+Everything else in the Python client's API has a Go counterpart, and
+[`docs/PORT.md`](docs/PORT.md) maps them file by file.
+
+## How it works
+
+The client renders each question into a prompt, asks the server for one token,
+and reads the probabilities of the answer codes at that position. Nothing is
+generated except DE-2's optional thinking step. The exact prompts, requests and
+arithmetic are specified so that another client can be written from them:
+
+- [The DE-2 readout](docs/READOUT-DE2.md)
+
+The Go port's own choices, and the places it deliberately differs from the
+reference, are in [`docs/PORT.md`](docs/PORT.md).
 
 ## Development
 
@@ -88,9 +512,14 @@ go vet ./...
 go test ./...
 ```
 
-The tokenizer is pure Go, so the build needs no cgo and no Python. The
-tokenizer parity tests compare against golden vectors derived from
-`transformers`; they skip when the vectors are absent.
+The tokenizer parity tests compare against golden vectors derived from
+`transformers`; they skip when the vectors are absent, and
+`SHISA_DE_TOKENIZER_REQUIRE=1` turns that skip into a failure.
+
+The examples in `example_test.go` are the snippets in this file in a form
+`go test` runs, so a signature change breaks them rather than leaving this page
+wrong. `readme_test.go` checks that every `shisade.X` this page names is an
+exported identifier, which catches a rename that the examples do not cover.
 
 Live tests spend real API requests and are opt in:
 
@@ -102,10 +531,11 @@ SHISA_DE_LIVE=1 SHISA_API_KEY=... go test . -run Live
 set in `testdata/live_questions.json` through this client and through the Python
 one, against the same endpoint in the same session, and requires the chosen
 values and the distributions to agree. The Python half is recorded by
-`scripts/live_parity.py`, which needs a `shisa-de` checkout (`SHISA_DE_PYTHON_REPO`
-points at one elsewhere); without it the parity test skips and the rest of the
-live suite still runs. `SHISA_DE_MODEL`, `SHISA_DE_ENDPOINT` and
-`SHISA_DE_TOKENIZER` point the whole suite at another served checkpoint.
+`scripts/live_parity.py`, which needs a `shisa-de` checkout
+(`SHISA_DE_PYTHON_REPO` points at one elsewhere); without it the parity test
+skips and the rest of the live suite still runs. `SHISA_DE_MODEL`,
+`SHISA_DE_ENDPOINT` and `SHISA_DE_TOKENIZER` point the whole suite at another
+served checkpoint.
 
 The recorder's own logic has offline tests that need nothing but `python3`:
 
@@ -115,4 +545,6 @@ python3 -m unittest discover -s scripts -p 'test_*.py'
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE).
+Apache 2.0. See [LICENSE](LICENSE). See the
+[model card](https://huggingface.co/shisa-ai/shisa-de-2) for the model's license
+and usage requirements.

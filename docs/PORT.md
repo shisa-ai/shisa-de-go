@@ -477,6 +477,46 @@ test replays it. Neither direction of the old disagreement is left.
 closes its httpx client. Go's `http.Client` is shared and reusable, so `Close`
 calls `CloseIdleConnections` and leaves the readout usable.
 
+## Performance
+
+Measured on an 8-core Intel Xeon E5-2690 v4 against the hosted
+`shisa-ai/shisa-de-2` (`vllm-0.30.0-tp2-ca69195e`), 2026-10-10. Both clients
+answered the same question against the same endpoint in one session.
+
+| | Go | Python |
+| --- | ---: | ---: |
+| Client construction | 0.6 ms | 91 ms |
+| Cold process to first answer | 2,220 ms | 5,041 ms |
+| Warm decision, median of 10 | 86.9 ms | 87.8 ms |
+| Warm decision, minimum of 10 | 85.2 ms | 85.2 ms |
+| Warm decision, mean of 10 | 90.1 ms | 91.2 ms |
+
+**Per-decision latency is the same, and that is the finding.** The server round
+trip is about 85 ms and the client's own work is a few milliseconds on both
+sides, so it does not surface; the minimums agree to the tenth of a millisecond.
+The difference between the two is entirely in startup, and it is one process's
+worth:
+
+- **Construction is free here and not in Python.** `NewDecisionModel` resolves
+  and returns in 0.6 ms because it defers the tokenizer to the first call, which
+  then costs 1.87 s. Python's construction is 91 ms on top of a 267 ms cold
+  `import shisa_de`, and its first call costs 5.0 s, of which 1.15 s is
+  `import transformers` and about 3.2 s is `AutoTokenizer.from_pretrained`.
+- **The Go 1.87 s is parse and structure, not I/O.** The tokenizer is already
+  cached. About 0.85 s is `encoding/json` over the 32 MB `tokenizer.json`
+  (measured directly: 801 ms into a `map[string]any`, 875 ms into the typed
+  fields), and the rest is building 514,906 merge ranks and 262,144 vocabulary
+  entries. A streaming or generated parser is the obvious place to look if this
+  ever matters, and it has not mattered yet: one load per process.
+
+Both clients skip the tokenizer entirely until the first call, so a client that
+is constructed and never used costs nothing in either language.
+
+This is one machine, one endpoint and one day. The warm-latency comparison is
+robust because the minimums coincide exactly and the client-side work is two
+orders of magnitude below the network; the absolute startup figures are
+machine-dependent, though the ratio is not.
+
 ## Verified parity
 
 Every check recorded here is offline at test time: it was produced by running the
@@ -732,3 +772,11 @@ checkpoint, and says so where it appears.
   tokenizer normalizes a whole prompt into a single pre-token, so the merge
   runs over tens of thousands of symbols in one call; that is why the merge is
   heap-based rather than a repeated scan.
+
+  That comparison is against the Rust tokenizer a `daulet/tokenizers` caller
+  uses, which is not what the Python client uses. Measured against
+  `transformers` 5.19.0 on the same machine, for an 8,879-byte prompt: this
+  package 4.67 ms, `transformers`' fast (Rust) tokenizer 5.08 ms, its slow
+  (pure-Python) one 3.44 ms. **This port is not faster than `transformers` here**
+  and the port docs should not be read as claiming it is; it is in the same band.
+  The three agree on the ids.
