@@ -22,7 +22,7 @@ client deliberately behaves differently.
 | `shisa_de/data/*.json` | `data/*.json`, embedded with `go:embed` |
 | `shisa_de/cli.py` | `cmd/shisa-de/` |
 | `tests/test_offline.py` | `*_test.go` with a stub tokenizer and `httptest` |
-| `tests/test_live.py` | live tests behind `SHISA_DE_LIVE=1` |
+| `tests/test_live.py` | `live_test.go` behind `SHISA_DE_LIVE=1`, plus the parity gate |
 
 The tokenizer has no Python counterpart as a module: the Python client calls
 `transformers.AutoTokenizer`. This port implements the tokenizer in
@@ -32,7 +32,8 @@ The file mapping is the target layout, not a description of the tree: M1 landed
 the codebook and the tokenizer; M2 landed the renderer, family resolution, the
 question types and the Python-JSON writer; M3 landed the DE-2 readout and its
 HTTP layer; M4 landed the policy, the calibration records and the friendly layer;
-M5 landed the command line. Live tests are M6.
+M5 landed the command line; M6 landed the live suite and its parity gate. The
+port is complete.
 
 ## Deliberate differences
 
@@ -653,6 +654,47 @@ This port has produced no measurements of its own against a served model.
   boundary failure that precedes every print, the read failure that follows the
   first two sections, the `--json` shape and its key set, and the exact `!r`
   quoting of `doctor`'s note and calibration-reason lines.
+- **Live gate.** `TestLiveParityAgainstPython` runs the fixed set in
+  `testdata/live_questions.json` -- a noul, a three-option choice, a choice with
+  unnamed options, an ordered score, a 27-option choice, a 256-option choice and
+  a choice whose gate is 1.0 so it thinks -- through both clients against the
+  same served checkpoint in one session, and requires the chosen value, the
+  label, the strategy, the request count, the level and the thought length to
+  match and every probability to agree within 1e-6. The measured deltas are
+  float-epsilon, 1e-16 to 1e-19, which is what a `temperature: 0` read against a
+  deterministic server should give.
+
+  The Python side is recorded by `scripts/live_parity.py` during the run rather
+  than read from a checked-in file, and the reason is a measurement. The served
+  checkpoint is deterministic **within** a session: three back-to-back reads of
+  one prompt came back bit-identical, and the recorder's own two passes over the
+  whole set differ by 0. It is not deterministic **across** sessions: the same
+  prompt a day later answered with the same chosen option and probabilities that
+  differed by up to 4e-3, which is far more than the arithmetic and far less than
+  a port defect would show. Comparing a live run against a recording made earlier
+  therefore measures the endpoint, not the port; the first version of this gate
+  did exactly that and reported 4e-3 disagreements that the Python client
+  reproduced exactly against the Go client on the same day. The recorder runs the
+  set twice and records the difference so the test can say which of the two it is
+  looking at: when the Python client's own passes disagree, the run is reported
+  as inconclusive rather than as a parity failure. `testdata/live_python.json` is
+  a run artifact and is not checked in.
+
+  The rest of the live suite is the DE-2 half of the Python `tests/test_live.py`:
+  the endpoint report and its probe, an obvious classification, three heads in
+  one call with the request accounting, a JSON round trip, the 27/128/256-option
+  read at one request and two, and the thinking read. The DE-1 overflow case, the
+  model card's 161-token example and the image case are absent because this port
+  has no DE-1 read and no image path.
+
+  One Python assertion is stale and the port does not copy it.
+  `test_de2_thinks_when_the_repeated_read_is_unsure` ends with
+  `assert answer.calibrated is False`, which was written before the DE-2 record
+  gained its `think` fit. The Python client returns `calibrated=True` and
+  `temperature=6.8` for that exact call today, which is what `shisa_de/data/
+  calibration-de2.json` ships, and what this port returns; the Go test asserts
+  the current behaviour and says why. The Python test is the one that should
+  change.
 - **Tokenizer identity.** The test checks the loaded tokenizer's vocab size
   (262,144) and `<channel|>` id (101) before running the vectors, so a fallback
   to a different revision fails loudly. Set `SHISA_DE_TOKENIZER_REQUIRE=1` to

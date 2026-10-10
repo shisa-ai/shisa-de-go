@@ -1,0 +1,1256 @@
+{
+  "note": "The fixed question set the live parity harness runs through both clients. Each entry is one head: a Noul, a Choice, or a Score. `gate` overrides the think gate for that question, which is how the thinking read is exercised without sending every other question through a thought.",
+  "evidence_note": "`evidence` is the JSON value the readout serializes into the prompt, so it is the same bytes on both sides.",
+  "questions": [
+    {
+      "id": "noul-spam",
+      "head": "is_spam",
+      "type": "noul",
+      "instructions": "Is this message spam?",
+      "evidence": {
+        "sms": "WINNER!! You have won a $1000 gift card. Claim it now: bit.ly/xyz",
+        "sender": "+1-555-0199"
+      }
+    },
+    {
+      "id": "choice-intent",
+      "head": "intent",
+      "type": "choice",
+      "instructions": "What does the sender want?",
+      "options": [
+        {
+          "key": "card_details",
+          "description": "Payment card details"
+        },
+        {
+          "key": "callback",
+          "description": "A support callback"
+        },
+        {
+          "key": "nothing",
+          "description": "Nothing; it is routine"
+        }
+      ],
+      "evidence": {
+        "sms": "WINNER!! You have won a $1000 gift card. Claim it now: bit.ly/xyz",
+        "sender": "+1-555-0199"
+      }
+    },
+    {
+      "id": "choice-card",
+      "head": "obtain",
+      "type": "choice",
+      "instructions": "What is this message trying to obtain?",
+      "options": [
+        {
+          "key": "payment_card_details",
+          "description": null
+        },
+        {
+          "key": "a_support_callback",
+          "description": null
+        },
+        {
+          "key": "nothing",
+          "description": null
+        }
+      ],
+      "evidence": "From: billing@acme-support.example\nSubject: Your invoice is overdue\n\nWe could not charge your card. Reply with your full card number, expiry, and CVV so we can release the pending refund."
+    },
+    {
+      "id": "score-risk",
+      "head": "risk",
+      "type": "score",
+      "instructions": "How risky is acting on this message?",
+      "levels": [
+        "Safe",
+        "Suspicious",
+        "Dangerous"
+      ],
+      "evidence": {
+        "sms": "WINNER!! You have won a $1000 gift card. Claim it now: bit.ly/xyz",
+        "sender": "+1-555-0199"
+      }
+    },
+    {
+      "id": "choice-wide-27",
+      "head": "category",
+      "type": "choice",
+      "instructions": "Which category number is stated?",
+      "options": [
+        {
+          "key": "label_0",
+          "description": "Category number 0"
+        },
+        {
+          "key": "label_1",
+          "description": "Category number 1"
+        },
+        {
+          "key": "label_2",
+          "description": "Category number 2"
+        },
+        {
+          "key": "label_3",
+          "description": "Category number 3"
+        },
+        {
+          "key": "label_4",
+          "description": "Category number 4"
+        },
+        {
+          "key": "label_5",
+          "description": "Category number 5"
+        },
+        {
+          "key": "label_6",
+          "description": "Category number 6"
+        },
+        {
+          "key": "label_7",
+          "description": "Category number 7"
+        },
+        {
+          "key": "label_8",
+          "description": "Category number 8"
+        },
+        {
+          "key": "label_9",
+          "description": "Category number 9"
+        },
+        {
+          "key": "label_10",
+          "description": "Category number 10"
+        },
+        {
+          "key": "label_11",
+          "description": "Category number 11"
+        },
+        {
+          "key": "label_12",
+          "description": "Category number 12"
+        },
+        {
+          "key": "label_13",
+          "description": "Category number 13"
+        },
+        {
+          "key": "label_14",
+          "description": "Category number 14"
+        },
+        {
+          "key": "label_15",
+          "description": "Category number 15"
+        },
+        {
+          "key": "label_16",
+          "description": "Category number 16"
+        },
+        {
+          "key": "label_17",
+          "description": "Category number 17"
+        },
+        {
+          "key": "label_18",
+          "description": "Category number 18"
+        },
+        {
+          "key": "label_19",
+          "description": "Category number 19"
+        },
+        {
+          "key": "label_20",
+          "description": "Category number 20"
+        },
+        {
+          "key": "label_21",
+          "description": "Category number 21"
+        },
+        {
+          "key": "label_22",
+          "description": "Category number 22"
+        },
+        {
+          "key": "label_23",
+          "description": "Category number 23"
+        },
+        {
+          "key": "label_24",
+          "description": "Category number 24"
+        },
+        {
+          "key": "label_25",
+          "description": "Category number 25"
+        },
+        {
+          "key": "label_26",
+          "description": "Category number 26"
+        }
+      ],
+      "evidence": {
+        "category": 7
+      }
+    },
+    {
+      "id": "choice-wide-256",
+      "head": "category",
+      "type": "choice",
+      "instructions": "Which category number is stated?",
+      "options": [
+        {
+          "key": "label_0",
+          "description": "Category number 0"
+        },
+        {
+          "key": "label_1",
+          "description": "Category number 1"
+        },
+        {
+          "key": "label_2",
+          "description": "Category number 2"
+        },
+        {
+          "key": "label_3",
+          "description": "Category number 3"
+        },
+        {
+          "key": "label_4",
+          "description": "Category number 4"
+        },
+        {
+          "key": "label_5",
+          "description": "Category number 5"
+        },
+        {
+          "key": "label_6",
+          "description": "Category number 6"
+        },
+        {
+          "key": "label_7",
+          "description": "Category number 7"
+        },
+        {
+          "key": "label_8",
+          "description": "Category number 8"
+        },
+        {
+          "key": "label_9",
+          "description": "Category number 9"
+        },
+        {
+          "key": "label_10",
+          "description": "Category number 10"
+        },
+        {
+          "key": "label_11",
+          "description": "Category number 11"
+        },
+        {
+          "key": "label_12",
+          "description": "Category number 12"
+        },
+        {
+          "key": "label_13",
+          "description": "Category number 13"
+        },
+        {
+          "key": "label_14",
+          "description": "Category number 14"
+        },
+        {
+          "key": "label_15",
+          "description": "Category number 15"
+        },
+        {
+          "key": "label_16",
+          "description": "Category number 16"
+        },
+        {
+          "key": "label_17",
+          "description": "Category number 17"
+        },
+        {
+          "key": "label_18",
+          "description": "Category number 18"
+        },
+        {
+          "key": "label_19",
+          "description": "Category number 19"
+        },
+        {
+          "key": "label_20",
+          "description": "Category number 20"
+        },
+        {
+          "key": "label_21",
+          "description": "Category number 21"
+        },
+        {
+          "key": "label_22",
+          "description": "Category number 22"
+        },
+        {
+          "key": "label_23",
+          "description": "Category number 23"
+        },
+        {
+          "key": "label_24",
+          "description": "Category number 24"
+        },
+        {
+          "key": "label_25",
+          "description": "Category number 25"
+        },
+        {
+          "key": "label_26",
+          "description": "Category number 26"
+        },
+        {
+          "key": "label_27",
+          "description": "Category number 27"
+        },
+        {
+          "key": "label_28",
+          "description": "Category number 28"
+        },
+        {
+          "key": "label_29",
+          "description": "Category number 29"
+        },
+        {
+          "key": "label_30",
+          "description": "Category number 30"
+        },
+        {
+          "key": "label_31",
+          "description": "Category number 31"
+        },
+        {
+          "key": "label_32",
+          "description": "Category number 32"
+        },
+        {
+          "key": "label_33",
+          "description": "Category number 33"
+        },
+        {
+          "key": "label_34",
+          "description": "Category number 34"
+        },
+        {
+          "key": "label_35",
+          "description": "Category number 35"
+        },
+        {
+          "key": "label_36",
+          "description": "Category number 36"
+        },
+        {
+          "key": "label_37",
+          "description": "Category number 37"
+        },
+        {
+          "key": "label_38",
+          "description": "Category number 38"
+        },
+        {
+          "key": "label_39",
+          "description": "Category number 39"
+        },
+        {
+          "key": "label_40",
+          "description": "Category number 40"
+        },
+        {
+          "key": "label_41",
+          "description": "Category number 41"
+        },
+        {
+          "key": "label_42",
+          "description": "Category number 42"
+        },
+        {
+          "key": "label_43",
+          "description": "Category number 43"
+        },
+        {
+          "key": "label_44",
+          "description": "Category number 44"
+        },
+        {
+          "key": "label_45",
+          "description": "Category number 45"
+        },
+        {
+          "key": "label_46",
+          "description": "Category number 46"
+        },
+        {
+          "key": "label_47",
+          "description": "Category number 47"
+        },
+        {
+          "key": "label_48",
+          "description": "Category number 48"
+        },
+        {
+          "key": "label_49",
+          "description": "Category number 49"
+        },
+        {
+          "key": "label_50",
+          "description": "Category number 50"
+        },
+        {
+          "key": "label_51",
+          "description": "Category number 51"
+        },
+        {
+          "key": "label_52",
+          "description": "Category number 52"
+        },
+        {
+          "key": "label_53",
+          "description": "Category number 53"
+        },
+        {
+          "key": "label_54",
+          "description": "Category number 54"
+        },
+        {
+          "key": "label_55",
+          "description": "Category number 55"
+        },
+        {
+          "key": "label_56",
+          "description": "Category number 56"
+        },
+        {
+          "key": "label_57",
+          "description": "Category number 57"
+        },
+        {
+          "key": "label_58",
+          "description": "Category number 58"
+        },
+        {
+          "key": "label_59",
+          "description": "Category number 59"
+        },
+        {
+          "key": "label_60",
+          "description": "Category number 60"
+        },
+        {
+          "key": "label_61",
+          "description": "Category number 61"
+        },
+        {
+          "key": "label_62",
+          "description": "Category number 62"
+        },
+        {
+          "key": "label_63",
+          "description": "Category number 63"
+        },
+        {
+          "key": "label_64",
+          "description": "Category number 64"
+        },
+        {
+          "key": "label_65",
+          "description": "Category number 65"
+        },
+        {
+          "key": "label_66",
+          "description": "Category number 66"
+        },
+        {
+          "key": "label_67",
+          "description": "Category number 67"
+        },
+        {
+          "key": "label_68",
+          "description": "Category number 68"
+        },
+        {
+          "key": "label_69",
+          "description": "Category number 69"
+        },
+        {
+          "key": "label_70",
+          "description": "Category number 70"
+        },
+        {
+          "key": "label_71",
+          "description": "Category number 71"
+        },
+        {
+          "key": "label_72",
+          "description": "Category number 72"
+        },
+        {
+          "key": "label_73",
+          "description": "Category number 73"
+        },
+        {
+          "key": "label_74",
+          "description": "Category number 74"
+        },
+        {
+          "key": "label_75",
+          "description": "Category number 75"
+        },
+        {
+          "key": "label_76",
+          "description": "Category number 76"
+        },
+        {
+          "key": "label_77",
+          "description": "Category number 77"
+        },
+        {
+          "key": "label_78",
+          "description": "Category number 78"
+        },
+        {
+          "key": "label_79",
+          "description": "Category number 79"
+        },
+        {
+          "key": "label_80",
+          "description": "Category number 80"
+        },
+        {
+          "key": "label_81",
+          "description": "Category number 81"
+        },
+        {
+          "key": "label_82",
+          "description": "Category number 82"
+        },
+        {
+          "key": "label_83",
+          "description": "Category number 83"
+        },
+        {
+          "key": "label_84",
+          "description": "Category number 84"
+        },
+        {
+          "key": "label_85",
+          "description": "Category number 85"
+        },
+        {
+          "key": "label_86",
+          "description": "Category number 86"
+        },
+        {
+          "key": "label_87",
+          "description": "Category number 87"
+        },
+        {
+          "key": "label_88",
+          "description": "Category number 88"
+        },
+        {
+          "key": "label_89",
+          "description": "Category number 89"
+        },
+        {
+          "key": "label_90",
+          "description": "Category number 90"
+        },
+        {
+          "key": "label_91",
+          "description": "Category number 91"
+        },
+        {
+          "key": "label_92",
+          "description": "Category number 92"
+        },
+        {
+          "key": "label_93",
+          "description": "Category number 93"
+        },
+        {
+          "key": "label_94",
+          "description": "Category number 94"
+        },
+        {
+          "key": "label_95",
+          "description": "Category number 95"
+        },
+        {
+          "key": "label_96",
+          "description": "Category number 96"
+        },
+        {
+          "key": "label_97",
+          "description": "Category number 97"
+        },
+        {
+          "key": "label_98",
+          "description": "Category number 98"
+        },
+        {
+          "key": "label_99",
+          "description": "Category number 99"
+        },
+        {
+          "key": "label_100",
+          "description": "Category number 100"
+        },
+        {
+          "key": "label_101",
+          "description": "Category number 101"
+        },
+        {
+          "key": "label_102",
+          "description": "Category number 102"
+        },
+        {
+          "key": "label_103",
+          "description": "Category number 103"
+        },
+        {
+          "key": "label_104",
+          "description": "Category number 104"
+        },
+        {
+          "key": "label_105",
+          "description": "Category number 105"
+        },
+        {
+          "key": "label_106",
+          "description": "Category number 106"
+        },
+        {
+          "key": "label_107",
+          "description": "Category number 107"
+        },
+        {
+          "key": "label_108",
+          "description": "Category number 108"
+        },
+        {
+          "key": "label_109",
+          "description": "Category number 109"
+        },
+        {
+          "key": "label_110",
+          "description": "Category number 110"
+        },
+        {
+          "key": "label_111",
+          "description": "Category number 111"
+        },
+        {
+          "key": "label_112",
+          "description": "Category number 112"
+        },
+        {
+          "key": "label_113",
+          "description": "Category number 113"
+        },
+        {
+          "key": "label_114",
+          "description": "Category number 114"
+        },
+        {
+          "key": "label_115",
+          "description": "Category number 115"
+        },
+        {
+          "key": "label_116",
+          "description": "Category number 116"
+        },
+        {
+          "key": "label_117",
+          "description": "Category number 117"
+        },
+        {
+          "key": "label_118",
+          "description": "Category number 118"
+        },
+        {
+          "key": "label_119",
+          "description": "Category number 119"
+        },
+        {
+          "key": "label_120",
+          "description": "Category number 120"
+        },
+        {
+          "key": "label_121",
+          "description": "Category number 121"
+        },
+        {
+          "key": "label_122",
+          "description": "Category number 122"
+        },
+        {
+          "key": "label_123",
+          "description": "Category number 123"
+        },
+        {
+          "key": "label_124",
+          "description": "Category number 124"
+        },
+        {
+          "key": "label_125",
+          "description": "Category number 125"
+        },
+        {
+          "key": "label_126",
+          "description": "Category number 126"
+        },
+        {
+          "key": "label_127",
+          "description": "Category number 127"
+        },
+        {
+          "key": "label_128",
+          "description": "Category number 128"
+        },
+        {
+          "key": "label_129",
+          "description": "Category number 129"
+        },
+        {
+          "key": "label_130",
+          "description": "Category number 130"
+        },
+        {
+          "key": "label_131",
+          "description": "Category number 131"
+        },
+        {
+          "key": "label_132",
+          "description": "Category number 132"
+        },
+        {
+          "key": "label_133",
+          "description": "Category number 133"
+        },
+        {
+          "key": "label_134",
+          "description": "Category number 134"
+        },
+        {
+          "key": "label_135",
+          "description": "Category number 135"
+        },
+        {
+          "key": "label_136",
+          "description": "Category number 136"
+        },
+        {
+          "key": "label_137",
+          "description": "Category number 137"
+        },
+        {
+          "key": "label_138",
+          "description": "Category number 138"
+        },
+        {
+          "key": "label_139",
+          "description": "Category number 139"
+        },
+        {
+          "key": "label_140",
+          "description": "Category number 140"
+        },
+        {
+          "key": "label_141",
+          "description": "Category number 141"
+        },
+        {
+          "key": "label_142",
+          "description": "Category number 142"
+        },
+        {
+          "key": "label_143",
+          "description": "Category number 143"
+        },
+        {
+          "key": "label_144",
+          "description": "Category number 144"
+        },
+        {
+          "key": "label_145",
+          "description": "Category number 145"
+        },
+        {
+          "key": "label_146",
+          "description": "Category number 146"
+        },
+        {
+          "key": "label_147",
+          "description": "Category number 147"
+        },
+        {
+          "key": "label_148",
+          "description": "Category number 148"
+        },
+        {
+          "key": "label_149",
+          "description": "Category number 149"
+        },
+        {
+          "key": "label_150",
+          "description": "Category number 150"
+        },
+        {
+          "key": "label_151",
+          "description": "Category number 151"
+        },
+        {
+          "key": "label_152",
+          "description": "Category number 152"
+        },
+        {
+          "key": "label_153",
+          "description": "Category number 153"
+        },
+        {
+          "key": "label_154",
+          "description": "Category number 154"
+        },
+        {
+          "key": "label_155",
+          "description": "Category number 155"
+        },
+        {
+          "key": "label_156",
+          "description": "Category number 156"
+        },
+        {
+          "key": "label_157",
+          "description": "Category number 157"
+        },
+        {
+          "key": "label_158",
+          "description": "Category number 158"
+        },
+        {
+          "key": "label_159",
+          "description": "Category number 159"
+        },
+        {
+          "key": "label_160",
+          "description": "Category number 160"
+        },
+        {
+          "key": "label_161",
+          "description": "Category number 161"
+        },
+        {
+          "key": "label_162",
+          "description": "Category number 162"
+        },
+        {
+          "key": "label_163",
+          "description": "Category number 163"
+        },
+        {
+          "key": "label_164",
+          "description": "Category number 164"
+        },
+        {
+          "key": "label_165",
+          "description": "Category number 165"
+        },
+        {
+          "key": "label_166",
+          "description": "Category number 166"
+        },
+        {
+          "key": "label_167",
+          "description": "Category number 167"
+        },
+        {
+          "key": "label_168",
+          "description": "Category number 168"
+        },
+        {
+          "key": "label_169",
+          "description": "Category number 169"
+        },
+        {
+          "key": "label_170",
+          "description": "Category number 170"
+        },
+        {
+          "key": "label_171",
+          "description": "Category number 171"
+        },
+        {
+          "key": "label_172",
+          "description": "Category number 172"
+        },
+        {
+          "key": "label_173",
+          "description": "Category number 173"
+        },
+        {
+          "key": "label_174",
+          "description": "Category number 174"
+        },
+        {
+          "key": "label_175",
+          "description": "Category number 175"
+        },
+        {
+          "key": "label_176",
+          "description": "Category number 176"
+        },
+        {
+          "key": "label_177",
+          "description": "Category number 177"
+        },
+        {
+          "key": "label_178",
+          "description": "Category number 178"
+        },
+        {
+          "key": "label_179",
+          "description": "Category number 179"
+        },
+        {
+          "key": "label_180",
+          "description": "Category number 180"
+        },
+        {
+          "key": "label_181",
+          "description": "Category number 181"
+        },
+        {
+          "key": "label_182",
+          "description": "Category number 182"
+        },
+        {
+          "key": "label_183",
+          "description": "Category number 183"
+        },
+        {
+          "key": "label_184",
+          "description": "Category number 184"
+        },
+        {
+          "key": "label_185",
+          "description": "Category number 185"
+        },
+        {
+          "key": "label_186",
+          "description": "Category number 186"
+        },
+        {
+          "key": "label_187",
+          "description": "Category number 187"
+        },
+        {
+          "key": "label_188",
+          "description": "Category number 188"
+        },
+        {
+          "key": "label_189",
+          "description": "Category number 189"
+        },
+        {
+          "key": "label_190",
+          "description": "Category number 190"
+        },
+        {
+          "key": "label_191",
+          "description": "Category number 191"
+        },
+        {
+          "key": "label_192",
+          "description": "Category number 192"
+        },
+        {
+          "key": "label_193",
+          "description": "Category number 193"
+        },
+        {
+          "key": "label_194",
+          "description": "Category number 194"
+        },
+        {
+          "key": "label_195",
+          "description": "Category number 195"
+        },
+        {
+          "key": "label_196",
+          "description": "Category number 196"
+        },
+        {
+          "key": "label_197",
+          "description": "Category number 197"
+        },
+        {
+          "key": "label_198",
+          "description": "Category number 198"
+        },
+        {
+          "key": "label_199",
+          "description": "Category number 199"
+        },
+        {
+          "key": "label_200",
+          "description": "Category number 200"
+        },
+        {
+          "key": "label_201",
+          "description": "Category number 201"
+        },
+        {
+          "key": "label_202",
+          "description": "Category number 202"
+        },
+        {
+          "key": "label_203",
+          "description": "Category number 203"
+        },
+        {
+          "key": "label_204",
+          "description": "Category number 204"
+        },
+        {
+          "key": "label_205",
+          "description": "Category number 205"
+        },
+        {
+          "key": "label_206",
+          "description": "Category number 206"
+        },
+        {
+          "key": "label_207",
+          "description": "Category number 207"
+        },
+        {
+          "key": "label_208",
+          "description": "Category number 208"
+        },
+        {
+          "key": "label_209",
+          "description": "Category number 209"
+        },
+        {
+          "key": "label_210",
+          "description": "Category number 210"
+        },
+        {
+          "key": "label_211",
+          "description": "Category number 211"
+        },
+        {
+          "key": "label_212",
+          "description": "Category number 212"
+        },
+        {
+          "key": "label_213",
+          "description": "Category number 213"
+        },
+        {
+          "key": "label_214",
+          "description": "Category number 214"
+        },
+        {
+          "key": "label_215",
+          "description": "Category number 215"
+        },
+        {
+          "key": "label_216",
+          "description": "Category number 216"
+        },
+        {
+          "key": "label_217",
+          "description": "Category number 217"
+        },
+        {
+          "key": "label_218",
+          "description": "Category number 218"
+        },
+        {
+          "key": "label_219",
+          "description": "Category number 219"
+        },
+        {
+          "key": "label_220",
+          "description": "Category number 220"
+        },
+        {
+          "key": "label_221",
+          "description": "Category number 221"
+        },
+        {
+          "key": "label_222",
+          "description": "Category number 222"
+        },
+        {
+          "key": "label_223",
+          "description": "Category number 223"
+        },
+        {
+          "key": "label_224",
+          "description": "Category number 224"
+        },
+        {
+          "key": "label_225",
+          "description": "Category number 225"
+        },
+        {
+          "key": "label_226",
+          "description": "Category number 226"
+        },
+        {
+          "key": "label_227",
+          "description": "Category number 227"
+        },
+        {
+          "key": "label_228",
+          "description": "Category number 228"
+        },
+        {
+          "key": "label_229",
+          "description": "Category number 229"
+        },
+        {
+          "key": "label_230",
+          "description": "Category number 230"
+        },
+        {
+          "key": "label_231",
+          "description": "Category number 231"
+        },
+        {
+          "key": "label_232",
+          "description": "Category number 232"
+        },
+        {
+          "key": "label_233",
+          "description": "Category number 233"
+        },
+        {
+          "key": "label_234",
+          "description": "Category number 234"
+        },
+        {
+          "key": "label_235",
+          "description": "Category number 235"
+        },
+        {
+          "key": "label_236",
+          "description": "Category number 236"
+        },
+        {
+          "key": "label_237",
+          "description": "Category number 237"
+        },
+        {
+          "key": "label_238",
+          "description": "Category number 238"
+        },
+        {
+          "key": "label_239",
+          "description": "Category number 239"
+        },
+        {
+          "key": "label_240",
+          "description": "Category number 240"
+        },
+        {
+          "key": "label_241",
+          "description": "Category number 241"
+        },
+        {
+          "key": "label_242",
+          "description": "Category number 242"
+        },
+        {
+          "key": "label_243",
+          "description": "Category number 243"
+        },
+        {
+          "key": "label_244",
+          "description": "Category number 244"
+        },
+        {
+          "key": "label_245",
+          "description": "Category number 245"
+        },
+        {
+          "key": "label_246",
+          "description": "Category number 246"
+        },
+        {
+          "key": "label_247",
+          "description": "Category number 247"
+        },
+        {
+          "key": "label_248",
+          "description": "Category number 248"
+        },
+        {
+          "key": "label_249",
+          "description": "Category number 249"
+        },
+        {
+          "key": "label_250",
+          "description": "Category number 250"
+        },
+        {
+          "key": "label_251",
+          "description": "Category number 251"
+        },
+        {
+          "key": "label_252",
+          "description": "Category number 252"
+        },
+        {
+          "key": "label_253",
+          "description": "Category number 253"
+        },
+        {
+          "key": "label_254",
+          "description": "Category number 254"
+        },
+        {
+          "key": "label_255",
+          "description": "Category number 255"
+        }
+      ],
+      "evidence": {
+        "category": 7
+      }
+    },
+    {
+      "id": "choice-think",
+      "head": "sum",
+      "type": "choice",
+      "instructions": "Which option is correct?",
+      "options": [
+        {
+          "key": "a",
+          "description": "270"
+        },
+        {
+          "key": "b",
+          "description": "280"
+        },
+        {
+          "key": "c",
+          "description": "290"
+        },
+        {
+          "key": "d",
+          "description": "391"
+        }
+      ],
+      "evidence": "What is 17 * 23 - 111?",
+      "gate": 1.0
+    }
+  ]
+}

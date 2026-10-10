@@ -43,8 +43,9 @@ through the other family's contract.
 Three layers, one contract. This is the target layout: M1 and M2 landed the
 codebook, the tokenizer, the renderer, family resolution, the question types and
 the Python-JSON writer; M3 landed the DE-2 readout itself; M4 landed the policy,
-the calibration records and the friendly layer; M5 landed the command line. The
-live suite is M6. The Key Files table below says what is in the tree.
+the calibration records and the friendly layer; M5 landed the command line; M6
+landed the live suite and its parity gate. The Key Files table below says what is
+in the tree.
 
 - `readout.go` — the raw reads: render the repeated prompt, request every
   option's code by token id, softmax over the codes, optionally generate a
@@ -104,6 +105,8 @@ What must not change casually:
 | `calibration.go` | Temperature scaling, the confidence statistic, record selection, and `Calibration.Applicability` |
 | `client.go` | `DecisionModel.Classify`, `DecisionModel.Decide`, `SystemOne`, `Health`, `Decision`, `Answer`, `HeadSpec` |
 | `scripts/gen_client_parity.py` | Records live Python `DecisionModel` exchanges against the hosted endpoint and writes the fixture the parity test replays |
+| `live_test.go` | The live suite behind `SHISA_DE_LIVE=1`, including the M6 gate: the fixed question set in `testdata/live_questions.json` through both clients in one session |
+| `scripts/live_parity.py` | Runs the fixed live question set through the Python client and records the answers the Go test compares against; invoked by the test, and by hand to inspect one |
 | `scripts/gen_python_printable.py` | Generates `data/python-printable.json` and `testdata/python_repr.json` from the running interpreter |
 | `scripts/gen_pyjson_dumps.py` | Generates `testdata/pyjson_dumps.json`: `json.dumps` over `indent` and `ensure_ascii`, which is what the command line prints |
 | `questions_test.go` | The validation rules Python cannot reach: a repeated option key, and a repeated label in a multi-label head |
@@ -163,12 +166,23 @@ What must not change casually:
 | Readout replay | `go test . -run TestReadout` (replays recorded Python request/response pairs through an `httptest` stub; offline) |
 | Client replay | `go test . -run TestClientParity` (replays recorded live Python `DecisionModel` exchanges through an `httptest` stub; offline) |
 | Race detector | `go test -race ./...` (the concurrency claim for `Readout` rests on this) |
-| Live suite, hosted DE-2 | Planned (M6): `SHISA_DE_LIVE=1 go test ./... -run Live`. No test in the tree matches that name yet, so the command passes without running anything |
+| Live suite, hosted DE-2 | `SHISA_DE_LIVE=1 go test . -run Live` (spends real requests; the parity gate also runs the Python client, so it needs the `shisa-de` checkout, `SHISA_DE_PYTHON_REPO` to point elsewhere) |
 | Endpoint check | `go run ./cmd/shisa-de doctor --model shisa-ai/shisa-de-2`, and `--probe` to spend one question on the read |
 | Readout walkthrough | `go run ./cmd/shisa-de explain --model shisa-ai/shisa-de-2 --labels billing,shipping` |
 
 The live suite spends real requests and needs `SHISA_API_KEY`. It is skipped
-unless `SHISA_DE_LIVE=1`.
+unless `SHISA_DE_LIVE=1`. `SHISA_DE_MODEL`, `SHISA_DE_ENDPOINT` and
+`SHISA_DE_TOKENIZER` point it at another served checkpoint, which is the same
+environment contract the Python suite uses.
+
+The served checkpoint is deterministic within a session and not across sessions:
+three back-to-back reads of one prompt have come back bit-identical, and the same
+prompt a day later has not. So `TestLiveParityAgainstPython` records the Python
+client's answers in the same run rather than reading a checked-in file, and the
+recorder runs the set twice to measure the server's own repeatability. When those
+two passes disagree, the test reports the server rather than the port. Compare
+recorded exchanges offline with `TestClientParity` when the port is what is in
+question.
 
 `doctor` and `explain` also spend real requests. They read the endpoint from
 `SHISA_DE_ENDPOINT` and the key from `SHISA_DE_API_KEY`, then `SHISA_API_KEY`.
@@ -218,9 +232,23 @@ version, and the test fails when the fixture disagrees with it.
   which.
 - Do not present a temperature-scaled probability as a raw one, or the reverse.
   `Calibrated` is on every answer for that reason.
-- This port has produced no measurements of its own against a served model. The
-  parity fixtures are the Python client's results, replayed; say so rather than
-  restating the Python repository's numbers as if this code had been measured.
+- The hosted checkpoint is deterministic within a session and not across
+  sessions. Three back-to-back reads of one prompt came back bit-identical, and
+  the recorder's own two passes over the whole live set differ by 0; the same
+  prompt a day later answered with the same chosen option and probabilities that
+  differed by up to 4e-3. Never compare a live run against an earlier recording
+  and call the difference a defect. `TestLiveParityAgainstPython` records both
+  clients in one session and measures the server's own repeatability so it can
+  say which one moved.
+- The port's own live measurements are the M6 gate: the fixed question set
+  through both clients in one session, agreeing to float epsilon. Anything else
+  measured here is the Python client's result replayed, and should be said that
+  way rather than restated as if this code had been measured against a server.
+- `tests/test_live.py` in the Python repository has one stale assertion:
+  `test_de2_thinks_when_the_repeated_read_is_unsure` expects
+  `calibrated is False`, which predates the DE-2 record's `think` fit. The Python
+  client returns `True` at 6.8 today. `docs/PORT.md` records it; do not copy the
+  assertion here.
 
 ## Git Discipline
 
