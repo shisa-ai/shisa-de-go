@@ -95,6 +95,7 @@ What must not change casually:
 | `calibration.go` | Temperature scaling, the confidence statistic, record selection, and `Calibration.Applicability` |
 | `client.go` | `DecisionModel.Classify`, `DecisionModel.Decide`, `SystemOne`, `Health`, `Decision`, `Answer`, `HeadSpec` |
 | `scripts/gen_client_parity.py` | Records live Python `DecisionModel` exchanges against the hosted endpoint and writes the fixture the parity test replays |
+| `questions_test.go` | The one validation rule Python cannot reach: a repeated option key |
 | `cmd/shisa-de/` | Planned (M5): `shisa-de doctor`, `ask`, `explain` |
 
 ## Workflow Expectations
@@ -179,17 +180,21 @@ next to this one; neither needs network access.
 drives the Python `DecisionModel` against the hosted endpoint through a
 forwarding transport and records each exchange. The parity test replays those
 recorded responses, so the test itself is offline. Regenerating the fixture needs
-`SHISA_API_KEY` and the Python repository; the fixture's `.meta.json` records the
-endpoint, the serving fingerprint and the date, and the test fails when the
-fixture disagrees with it.
+a key in `SHISA_DE_API_KEY`, `SHISA_API_KEY` or a bare `API_KEY` (in that order)
+and the Python repository. It reads the tokenizer revision from the hub cache and
+pins it, so a later run against a different snapshot fails rather than silently
+replacing the measurements. The fixture's `.meta.json` records the endpoint, the
+served `system_fingerprint`, the date, the tokenizer revision and the readout
+version, and the test fails when the fixture disagrees with it.
 
 ## Evidence Rules
 
-- Measured numbers carry a date and the serving fingerprint. The fingerprint in
+- Measured numbers carry a date and the serving fingerprint, which is the
+  server's `system_fingerprint` and not an endpoint label. The fingerprint in
   `docs/READOUT-DE2.md` (`vllm-0.30.0-709530de`) is the local DE-2 server the
-  page's numbers came from. The hosted endpoint's fingerprint on 2026-10-10 was
-  `vllm-0.30.0-tp2-ca69195e`. Logprobs move between serving shapes; a number
-  without its fingerprint is not reproducible.
+  page's numbers came from. The client parity fixture's responses carried
+  `vllm-0.30.0-tp2-ca69195e` on 2026-10-10. Logprobs move between serving shapes;
+  a number without its fingerprint is not reproducible.
 - The research repository's numbers are its own, not this repo's. Cite them with
   their source and say they were not reproduced here.
 - The model card's published numbers are the card's, not this repo's. When a

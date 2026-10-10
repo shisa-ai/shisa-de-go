@@ -83,7 +83,7 @@ func RenderOption(key string, description any) any {
 	return description
 }
 
-func validateQuestion(kind, instructions string, options, optionLimit int) error {
+func validateQuestion(kind, instructions string, keys []string, optionLimit int) error {
 	if trimPythonSpace(instructions) == "" {
 		return &QuestionError{Message: "instructions must be a non-empty question"}
 	}
@@ -92,14 +92,27 @@ func validateQuestion(kind, instructions string, options, optionLimit int) error
 		// limit, not a limit of zero.
 		optionLimit = MaxOptions
 	}
-	if options < 2 {
+	if len(keys) < 2 {
 		return &QuestionError{Message: fmt.Sprintf(
-			"%s question needs at least two answers, got %d", kind, options)}
+			"%s question needs at least two answers, got %d", kind, len(keys))}
 	}
-	if options > optionLimit {
+	if len(keys) > optionLimit {
 		return &QuestionError{Message: fmt.Sprintf(
 			"%s question offers %d answers; the readout binds one code per answer and this "+
-				"contract supports at most %d per prompt", kind, options, optionLimit)}
+				"contract supports at most %d per prompt", kind, len(keys), optionLimit)}
+	}
+	// Python's criteria are a dict, so a repeated key cannot survive into a read.
+	// This port takes a slice, because a Go map has no order and the order is what
+	// assigns the answer codes; a repeated key would score two codes into one
+	// entry and the returned distribution would no longer sum to one.
+	seen := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		if seen[key] {
+			return &QuestionError{Message: fmt.Sprintf(
+				"%s question repeats the answer key %q; a repeated key would read two codes "+
+					"into one option, so the distribution would not sum to one", kind, key)}
+		}
+		seen[key] = true
 	}
 	return nil
 }
@@ -120,7 +133,7 @@ func (Noul) Options() []Option {
 	return []Option{{Key: "yes", Description: "Yes"}, {Key: "no", Description: "No"}}
 }
 func (n Noul) Validate(limit int) error {
-	return validateQuestion(n.Kind(), n.instructions, 2, limit)
+	return validateQuestion(n.Kind(), n.instructions, []string{"yes", "no"}, limit)
 }
 
 // Choice is one option out of a set. The answer is the chosen key plus the
@@ -149,7 +162,7 @@ func (c Choice) Options() []Option {
 }
 
 func (c Choice) Validate(limit int) error {
-	return validateQuestion(c.Kind(), c.instructions, len(c.criteria), limit)
+	return validateQuestion(c.Kind(), c.instructions, optionKeys(c.criteria), limit)
 }
 
 // Score is a position along ordered levels. The answer is a probability-weighted,
@@ -181,5 +194,9 @@ func (s Score) Options() []Option {
 }
 
 func (s Score) Validate(limit int) error {
-	return validateQuestion(s.Kind(), s.instructions, len(s.levels), limit)
+	keys := make([]string, len(s.levels))
+	for i := range s.levels {
+		keys[i] = fmt.Sprint(i)
+	}
+	return validateQuestion(s.Kind(), s.instructions, keys, limit)
 }

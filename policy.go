@@ -338,7 +338,15 @@ func (p PolicyRead) Raw(debug bool) map[string]any {
 			"ranks":            copyIntMap(component.Read.Ranks),
 		}
 		if debug {
-			item["prompt"] = component.Read.Prompt
+			// A read after a thought is sent as token ids and has no text
+			// prompt; the Python client's `prompt` is None there and this port's
+			// field is the empty string, which must not reach the caller as an
+			// empty prompt.
+			if component.Read.Prompt == "" {
+				item["prompt"] = nil
+			} else {
+				item["prompt"] = component.Read.Prompt
+			}
 			item["top_logprobs"] = copyOptionalFloatMap(component.Read.TopLogprobs)
 		}
 		stages = append(stages, item)

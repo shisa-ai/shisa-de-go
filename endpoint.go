@@ -87,7 +87,11 @@ type completionUsage struct {
 }
 
 type completionChoice struct {
-	Text string `json:"text"`
+	// Text is a pointer so a response that omits `text`, or sends null, is
+	// distinguishable from one that sends the empty string. The Python client
+	// reads the same field with `.get("text")`, which is None in that case, and
+	// `Decision.Raw` carries the difference.
+	Text *string `json:"text"`
 	// TokenIDs is a pointer so a response that omits the field, or sends null,
 	// is distinguishable from one that sends an empty list. The thinking read
 	// needs the tokens themselves and errors on the former, but an empty list is

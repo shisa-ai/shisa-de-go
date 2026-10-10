@@ -18,17 +18,24 @@ no network is used by the test.
 
     SHISA_DE_API_KEY=... python scripts/gen_client_parity.py
 
+`SHISA_API_KEY` and a bare `API_KEY` are accepted too, in that order, which is
+the order the client itself reads them in.
+
 Needs `httpx`, the `shisa-de` Python repository next to this one, and a cached
-tokenizer for the pinned checkpoint. Output: testdata/client_parity.json and
+tokenizer for the checkpoint. The tokenizer revision is read from the cache and
+pinned in the recording, so a later run against a different snapshot fails rather
+than silently replacing the measurements. Output: testdata/client_parity.json and
 testdata/client_parity.meta.json.
 
-Every recorded number comes from the hosted endpoint and carries its fingerprint
-in the metadata. This is the only fixture in the repository whose numbers are a
+Every recorded number comes from the hosted endpoint. The metadata records the
+served `system_fingerprint` the responses carried, the date, and the tokenizer
+revision. This is the only fixture in the repository whose numbers are a
 measurement of a served checkpoint.
 """
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 import os
@@ -45,10 +52,60 @@ PY_REPO = pathlib.Path.home() / "data" / "dev" / "shisa" / "shisa-de"
 sys.path.insert(0, str(PY_REPO))
 
 from shisa_de import Choice, DecisionModel, Noul, Score  # noqa: E402
+from shisa_de.readout import READOUT_VERSIONS  # noqa: E402
 
 BASE_URL = "https://api.shisa.ai/openai"
 MODEL = "shisa-ai/shisa-de-2"
-ENDPOINT_FINGERPRINT = "shisa-hosted-2026-10-10"
+API_KEY_ENVS = ("SHISA_DE_API_KEY", "SHISA_API_KEY", "API_KEY")
+
+
+def api_key() -> str:
+    """The key, from the variables the client itself reads.
+
+    `API_KEY` is last: it is the one the recording environment happens to carry,
+    not one this package documents.
+    """
+    for name in API_KEY_ENVS:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    raise SystemExit(
+        "set one of " + ", ".join(API_KEY_ENVS) + " before recording")
+
+
+def tokenizer_revision() -> str:
+    """The revision of the checkpoint's cached tokenizer.
+
+    The client is given this revision explicitly, so the recording says which
+    tokenizer bytes produced its token counts instead of whatever the cache
+    happened to hold.
+    """
+    cache = pathlib.Path(os.environ.get(
+        "HF_HUB_CACHE", pathlib.Path.home() / ".cache" / "huggingface" / "hub"))
+    snapshots = cache / ("models--" + MODEL.replace("/", "--")) / "snapshots"
+    revisions = sorted(entry.name for entry in snapshots.iterdir() if entry.is_dir())
+    if len(revisions) != 1:
+        raise SystemExit(
+            f"expected exactly one cached snapshot of {MODEL}, found {revisions}; "
+            f"point HF_HUB_CACHE at the cache that holds it")
+    return revisions[0]
+
+
+def serving_fingerprint(recorded: list[dict]) -> str:
+    """The `system_fingerprint` the recorded responses carried.
+
+    It is the serving shape the numbers came from, which is what makes them
+    reproducible; an endpoint label is not.
+    """
+    seen = set()
+    for case in recorded:
+        for exchange in case["exchanges"]:
+            body = exchange.get("response") or {}
+            if body.get("system_fingerprint"):
+                seen.add(body["system_fingerprint"])
+    if len(seen) != 1:
+        raise SystemExit(f"the responses carried {len(seen)} system fingerprints: {sorted(seen)}")
+    return seen.pop()
 
 STATE = {"evidence": "The customer was charged twice for one order and asked for a refund."}
 STATE_URGENT = {"evidence": "The customer says the site is down and they cannot take orders."}
@@ -171,9 +228,11 @@ def python_options(spec: dict, kind: str) -> dict:
 def run_case(case: dict) -> dict:
     """Run one case against the real endpoint and record what came back."""
     recorder = Recorder()
+    revision = tokenizer_revision()
     model_options: dict = {"base_url": BASE_URL, "model": MODEL,
-                           "api_key": os.environ["API_KEY"],
-                           "tokenizer": MODEL, "local_files_only": True,
+                           "api_key": api_key(),
+                           "tokenizer": MODEL, "tokenizer_revision": revision,
+                           "local_files_only": True,
                            "transport": httpx.MockTransport(recorder.handler)}
     if case.get("declared_model"):
         # The readout still talks to the real checkpoint; the client's own model
@@ -183,8 +242,9 @@ def run_case(case: dict) -> dict:
         if case.get("declared_tokenizer"):
             model_options["tokenizer"] = case["declared_tokenizer"]
         model_options["readout"] = Readout(
-            base_url=BASE_URL, model=MODEL, tokenizer=MODEL, local_files_only=True,
-            api_key=os.environ["API_KEY"], transport=httpx.MockTransport(recorder.handler))
+            base_url=BASE_URL, model=MODEL, tokenizer=MODEL,
+            tokenizer_revision=revision, local_files_only=True,
+            api_key=api_key(), transport=httpx.MockTransport(recorder.handler))
     model = DecisionModel(**model_options)
     options = python_options(case["options"], case["kind"])
     if case["kind"] == "classify":
@@ -206,9 +266,12 @@ def run_case(case: dict) -> dict:
         "decision": {
             "values": json.loads(json.dumps(result)),
             # `to_dict` carries the value but not the level an ordered scale lands on,
-            # which `classify` returns as its label, so the level is added here.
-            "answers": {head: {**answer.to_dict(), "level": answer.level}
+            # which `classify` returns as its label, nor the legend beside it, so both
+            # are added here. Everything else is `to_dict`'s own shape.
+            "answers": {head: {**answer.to_dict(), "level": answer.level,
+                               "legend": answer.legend, "wire": answer.to_wire()}
                         for head, answer in result.answers.items()},
+            "wire": result.to_wire(),
             "raw": result.raw,
             "usage": result.usage,
             "meta": {key: value for key, value in result.meta.items()
@@ -282,6 +345,11 @@ def cases() -> list[dict]:
          "questions": [queue, urgent, levels], "options": {"policy": "repeat-think"}},
         {"name": "decide-debug", "kind": "decide", "state": STATE,
          "questions": [urgent], "options": {"debug": True}},
+        # A debug read that reaches the thought, so the recorded raw carries the
+        # id-form read: its `prompt` is null and its `sampled` is whatever the
+        # server sends for a token-id request.
+        {"name": "decide-debug-think", "kind": "decide", "state": vague_state,
+         "questions": [vague], "options": {"debug": True}},
         {"name": "classify-labels", "kind": "classify", "state": STATE,
          "heads": [choice("intent", "What does the customer want?",
                           [("refund", "A refund"), ("info", "Information"),
@@ -312,8 +380,10 @@ def cases() -> list[dict]:
 
 
 def main() -> None:
-    if not os.environ.get("API_KEY"):
-        raise SystemExit("set API_KEY (or SHISA_DE_API_KEY) before recording")
+    # Resolved before the first request, so a missing key fails without spending
+    # anything, and the revision is pinned before the client loads the tokenizer.
+    api_key()
+    revision = tokenizer_revision()
     recorded = []
     for case in cases():
         print(f"  {case['name']} ...", end="", flush=True)
@@ -328,10 +398,12 @@ def main() -> None:
     meta = {
         "endpoint": BASE_URL,
         "model": MODEL,
-        "serving_fingerprint": ENDPOINT_FINGERPRINT,
-        "recorded": "2026-10-10",
+        # The serving shape the responses came from, not an endpoint label.
+        "serving_fingerprint": serving_fingerprint(recorded),
+        "recorded": datetime.date.today().isoformat(),
         "python_repo": subprocess_revision(),
-        "readout_version": "de2-codebook-v1",
+        "readout_version": READOUT_VERSIONS["de2"],
+        "tokenizer_revision": revision,
         "cases": len(recorded),
         "exchanges": sum(len(case["exchanges"]) for case in recorded),
         "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),

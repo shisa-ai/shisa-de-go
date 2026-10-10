@@ -44,6 +44,10 @@ decision, err := model.Classify(ctx,
             {Key: "shipping", Description: "Delivery and tracking"},
         }},
     }, shisade.ClassifyOptions{})
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println(decision.Values["route"]) // billing
 ```
 
 Every answer records the read that produced it (`Strategy`, `Calibrated`,

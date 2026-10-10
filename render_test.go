@@ -328,7 +328,7 @@ func TestRenderRefusesWhatItCannotRender(t *testing.T) {
 	if _, err := Render(nil, blank, RenderOptions{}); err == nil {
 		t.Error("a blank question should not render")
 	}
-	wide := NewChoice("Which?", make([]Option, MaxOptions+1))
+	wide := NewChoice("Which?", keyedOptions(MaxOptions+1))
 	if _, err := Render(nil, wide, RenderOptions{OptionLimit: MaxOptions}); err == nil {
 		t.Error("a choice past the letter limit should not render")
 	}
@@ -349,11 +349,11 @@ func TestRenderRefusesWhatItCannotRender(t *testing.T) {
 func TestRenderDefaultOptionLimit(t *testing.T) {
 	// A zero limit means the letter limit, so a 26-option choice renders and a
 	// 27-option one does not.
-	at26 := NewChoice("Which?", make([]Option, MaxOptions))
+	at26 := NewChoice("Which?", keyedOptions(MaxOptions))
 	if _, err := Render(nil, at26, RenderOptions{}); err != nil {
 		t.Errorf("a 26-option choice with the default limit: %v", err)
 	}
-	at27 := NewChoice("Which?", make([]Option, MaxOptions+1))
+	at27 := NewChoice("Which?", keyedOptions(MaxOptions+1))
 	if _, err := Render(nil, at27, RenderOptions{}); err == nil {
 		t.Error("a 27-option choice with the default limit should not render")
 	}

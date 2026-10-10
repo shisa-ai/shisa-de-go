@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -249,7 +250,7 @@ func TestQuestionFromHeadShorthands(t *testing.T) {
 	}
 	// The label is substituted where the template names it, and appended where
 	// it does not.
-	if got := multi.(*multiLabelHead).noulFor("billing").Instructions(); got != "Is billing one of the topic?" {
+	if got := noulFor(t, multi, "billing").Instructions(); got != "Is billing one of the topic?" {
 		t.Errorf("the substituted question is %q", got)
 	}
 	plain, err := questionFromHead("topic", HeadSpec{Options: []Option{{Key: "a"}}, MultiLabel: true,
@@ -257,7 +258,7 @@ func TestQuestionFromHeadShorthands(t *testing.T) {
 	if err != nil {
 		t.Fatalf("questionFromHead: %v", err)
 	}
-	if got := plain.(*multiLabelHead).noulFor("billing").Instructions(); got != "Is it about billing" {
+	if got := noulFor(t, plain, "billing").Instructions(); got != "Is it about billing" {
 		t.Errorf("the appended question is %q", got)
 	}
 
@@ -267,12 +268,91 @@ func TestQuestionFromHeadShorthands(t *testing.T) {
 	}{
 		{"no options", HeadSpec{}},
 		{"an empty option list", HeadSpec{Options: []Option{}}},
+		// Python's `{"labels": {k: v}, "multi_label": True}` reads one choice
+		// over the described labels and ignores `multi_label`. This port refuses
+		// the combination rather than reading the same input a second way and
+		// dropping the descriptions.
+		{"multi-label with descriptions", HeadSpec{
+			Options:    []Option{{Key: "a", Description: "A"}, {Key: "b", Description: "B"}},
+			MultiLabel: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := questionFromHead("intent", tc.spec); err == nil {
 				t.Errorf("%s was accepted", tc.name)
 			}
 		})
+	}
+	// A multi-label head with no descriptions is the one it reads.
+	multiOnly, err := questionFromHead("topic", HeadSpec{
+		Options: []Option{{Key: "a"}, {Key: "b"}}, MultiLabel: true})
+	if err != nil {
+		t.Fatalf("a multi-label head with bare keys: %v", err)
+	}
+	if multiOnly.(*multiLabelHead).labels[0] != "a" {
+		t.Errorf("the labels are %v", multiOnly.(*multiLabelHead).labels)
+	}
+}
+
+// TestMultiLabelTemplateIsPythonFormat pins the template substitution against
+// Python's `str.format(label=...)`.
+//
+// The template is the prompt, and the prompt is the answer, so a template with
+// doubled braces or an unknown field must not render differently here than it
+// does in the Python client.
+func TestMultiLabelTemplateIsPythonFormat(t *testing.T) {
+	cases := []struct{ template, label, want string }{
+		{"Is {label} one of the topics?", "billing", "Is billing one of the topics?"},
+		{"Is {label} a {{thing}}?", "billing", "Is billing a {thing}?"},
+		{"Is {label} one of them? {label}", "billing", "Is billing one of them? billing"},
+	}
+	for _, tc := range cases {
+		got, err := formatLabel(tc.template, tc.label)
+		if err != nil {
+			t.Errorf("formatLabel(%q): %v", tc.template, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("formatLabel(%q, %q) = %q, want %q", tc.template, tc.label, got, tc.want)
+		}
+	}
+	// A field the template cannot fill is refused rather than passed through.
+	for _, template := range []string{"Is {other}?", "Is {label", "Is label}", "Is {label!r}?"} {
+		if _, err := formatLabel(template, "billing"); err == nil {
+			t.Errorf("formatLabel(%q) was accepted", template)
+		}
+	}
+}
+
+// TestNewDecisionModelForwardsTheDeclaredFamily pins that a declaration reaches
+// the readout, not only the client.
+//
+// The client resolves the family to decide whether it can read the checkpoint at
+// all; the readout resolves it again, and a declaration the readout never sees
+// leaves the two layers free to disagree. A DE-2 checkpoint served under a
+// neutral alias with a DE-1-named tokenizer is the case that tells them apart:
+// the client's own resolver accepts the declaration, and without forwarding it
+// the readout's resolver names DE-1 and refuses.
+func TestNewDecisionModelForwardsTheDeclaredFamily(t *testing.T) {
+	_, err := NewDecisionModel(DecisionModelConfig{
+		BaseURL: "http://stub.invalid", Model: "my-checkpoint",
+		Tokenizer: "shisa-ai/shisa-de-1", Family: FamilyDE2,
+		HTTPClient: http.DefaultClient,
+	})
+	if err != nil {
+		t.Fatalf("a declared DE-2 family with a DE-1 tokenizer was refused: %v", err)
+	}
+	// Without the declaration the tokenizer slug is what names the family, and
+	// this port cannot read it.
+	_, err = NewDecisionModel(DecisionModelConfig{
+		BaseURL: "http://stub.invalid", Model: "my-checkpoint",
+		Tokenizer: "shisa-ai/shisa-de-1", HTTPClient: http.DefaultClient,
+	})
+	if err == nil {
+		t.Fatal("a DE-1 tokenizer named the family and was still accepted")
+	}
+	var unsupported *UnsupportedFamilyError
+	if !errors.As(err, &unsupported) {
+		t.Errorf("the error is %v, want an UnsupportedFamilyError", err)
 	}
 }
 
@@ -804,6 +884,69 @@ func TestDecisionModelClose(t *testing.T) {
 	(&DecisionModel{}).Close()
 }
 
+// TestCallerVisibleMapsHoldValuesNotPointers pins the Go type in every map a
+// caller reads.
+//
+// The parity gate compares through JSON, and a *float64 marshals to the same
+// number as a float64, so it cannot see this. A caller can: a pointer prints as
+// an address, and `wire["confidence"].(float64)` panics while the identical
+// assertion succeeds for a choice, whose confidence was dereferenced.
+func TestCallerVisibleMapsHoldValuesNotPointers(t *testing.T) {
+	confidence := 0.75
+	answer := Answer{Type: "noul", Noul: floatPointer(0.6), Confidence: &confidence,
+		Probabilities: map[string]float64{"yes": 0.6, "no": 0.4}}
+	for name, value := range answer.ToWire() {
+		assertNotAPointer(t, "ToWire", name, value)
+	}
+	for name, value := range answer.ToDict() {
+		assertNotAPointer(t, "ToDict", name, value)
+	}
+	score := Answer{Type: "score", Score: floatPointer(1.5), Level: stringPointer("low"),
+		Confidence: &confidence, Legend: map[string]string{"0": "low"}}
+	for name, value := range score.ToWire() {
+		assertNotAPointer(t, "a score's ToWire", name, value)
+	}
+
+	// The classify views and the multi-label Raw block.
+	model, _ := newStubModel(t, 2, codeReadBody(map[string]float64{"A": -0.1, "B": -1.0}))
+	decision, err := model.Classify(context.Background(), map[string]any{"e": "x"},
+		map[string]HeadSpec{"route": {Options: []Option{{Key: "billing"}, {Key: "shipping"}}}},
+		ClassifyOptions{IncludeProbabilities: true})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	for name, value := range decision.Values["route"].(map[string]any) {
+		assertNotAPointer(t, "a classify view", name, value)
+	}
+
+	model, _ = newStubModel(t, 2,
+		codeReadBody(map[string]float64{"A": -0.1, "B": -1.0}),
+		codeReadBody(map[string]float64{"A": -3.0, "B": -0.1}))
+	decision, err = model.Classify(context.Background(), map[string]any{"e": "x"},
+		map[string]HeadSpec{"topic": {Options: []Option{{Key: "billing"}, {Key: "outage"}},
+			MultiLabel: true, Instructions: "Is it {label}?"}}, ClassifyOptions{})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	for name, value := range decision.Raw["topic:billing"] {
+		assertNotAPointer(t, "the multi-label raw block", name, value)
+	}
+}
+
+// assertNotAPointer fails when a map value a caller reads is a pointer to
+// something rather than the something.
+func assertNotAPointer(t *testing.T, where, name string, value any) {
+	t.Helper()
+	if value == nil {
+		return
+	}
+	reflected := reflect.ValueOf(value)
+	if reflected.Kind() == reflect.Pointer {
+		t.Errorf("%s[%q] is a %T; a caller would print an address and fail a type assertion",
+			where, name, value)
+	}
+}
+
 // TestPythonStr pins Python's `str()` for the values a level can hold.
 func TestPythonStr(t *testing.T) {
 	cases := []struct {
@@ -819,7 +962,16 @@ func TestPythonStr(t *testing.T) {
 		{3.0, "3.0"},
 		{1.5, "1.5"},
 		{float32(2.5), "2.5"},
-		{math.Inf(1), "Infinity"},
+		// Python's `repr` writes `inf` and `nan`; `json.dumps` writes
+		// `Infinity` and `NaN`. These are the `repr` spellings.
+		{math.Inf(1), "inf"},
+		{math.Inf(-1), "-inf"},
+		{math.NaN(), "nan"},
+		// A container is spelled with `repr` for its elements.
+		{[]any{"low", nil}, "['low', None]"},
+		{map[string]any{"a": 1}, "{'a': 1}"},
+		{[]any{true, 1.5}, "[True, 1.5]"},
+		{[]any{"it's"}, `["it's"]`},
 	}
 	for _, tc := range cases {
 		if got := pythonStr(tc.value); got != tc.want {
@@ -941,40 +1093,62 @@ func TestDecideHeadOrderIsDeterministic(t *testing.T) {
 
 // TestDecideUncalibratedWhenNoRecordCoversTheRead pins that a read with no fit
 // stays raw even when the record has one for another read.
+//
+// There are two ways that happens, and they are different rules. A record with
+// per-read fits may simply have none for the read in question; a record with no
+// per-read fits at all was fitted on a read before any thought, so every read
+// after one is outside it. The second is the `covered` rule, and a record that
+// carries a top-level temperature is the only kind that can tell whether the
+// rule is there: without it, that temperature would be applied to the
+// post-thought read and the answer would report itself as calibrated.
 func TestDecideUncalibratedWhenNoRecordCoversTheRead(t *testing.T) {
-	// A record whose only fit is for the direct read: an answer read after a
-	// thought is a read it does not describe.
-	directOnly := Calibration{
-		Temperatures:   map[string]float64{"choice": 2.0, "noul": 2.0},
-		Reads:          map[string]map[string]float64{"direct": {"choice": 2.0, "noul": 2.0}},
-		ReadoutVersion: ReadoutVersionFor(FamilyDE2),
-		Model:          "shisa-ai/shisa-de-2",
-		Family:         FamilyDE2,
+	cases := []struct {
+		name        string
+		calibration Calibration
+	}{
+		{"a per-read record with no fit for the read that followed the thought", Calibration{
+			Temperatures:   map[string]float64{"choice": 2.0, "noul": 2.0},
+			Reads:          map[string]map[string]float64{"direct": {"choice": 2.0, "noul": 2.0}},
+			ReadoutVersion: ReadoutVersionFor(FamilyDE2),
+			Model:          "shisa-ai/shisa-de-2",
+			Family:         FamilyDE2,
+		}},
+		{"a record with no per-read fits at all", Calibration{
+			Temperatures:   map[string]float64{"choice": 2.0, "noul": 2.0},
+			ReadoutVersion: ReadoutVersionFor(FamilyDE2),
+			Model:          "shisa-ai/shisa-de-2",
+			Family:         FamilyDE2,
+		}},
 	}
-	readout, _ := newPolicyReadout(t, 2,
-		codeReadBody(map[string]float64{"A": -0.9, "B": -1.0}),
-		thinkBody(500, 501),
-		codeReadBody(map[string]float64{"A": -1.2, "B": -0.5}))
-	model, err := NewDecisionModel(DecisionModelConfig{
-		BaseURL: "http://stub.invalid", Model: "shisa-ai/shisa-de-2",
-		Tokenizer: "shisa-ai/shisa-de-2", Calibration: &directOnly, Readout: readout,
-	})
-	if err != nil {
-		t.Fatalf("NewDecisionModel: %v", err)
-	}
-	decision, err := model.Decide(context.Background(), map[string]any{"e": "x"},
-		map[string]Question{"urgent": NewNoul("Is it urgent?")}, CallOptions{})
-	if err != nil {
-		t.Fatalf("Decide: %v", err)
-	}
-	answer := decision.Answers["urgent"]
-	if answer.Strategy != StrategyRepeatThink {
-		t.Fatalf("the read did not think: %q", answer.Strategy)
-	}
-	if answer.Calibrated || answer.Temperature != 1.0 {
-		t.Errorf("an answer read after a thought was tempered by a record that "+
-			"does not describe that read: calibrated=%v temperature=%v",
-			answer.Calibrated, answer.Temperature)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			calibration := tc.calibration
+			readout, _ := newPolicyReadout(t, 2,
+				codeReadBody(map[string]float64{"A": -0.9, "B": -1.0}),
+				thinkBody(500, 501),
+				codeReadBody(map[string]float64{"A": -1.2, "B": -0.5}))
+			model, err := NewDecisionModel(DecisionModelConfig{
+				BaseURL: "http://stub.invalid", Model: "shisa-ai/shisa-de-2",
+				Tokenizer: "shisa-ai/shisa-de-2", Calibration: &calibration, Readout: readout,
+			})
+			if err != nil {
+				t.Fatalf("NewDecisionModel: %v", err)
+			}
+			decision, err := model.Decide(context.Background(), map[string]any{"e": "x"},
+				map[string]Question{"urgent": NewNoul("Is it urgent?")}, CallOptions{})
+			if err != nil {
+				t.Fatalf("Decide: %v", err)
+			}
+			answer := decision.Answers["urgent"]
+			if answer.Strategy != StrategyRepeatThink {
+				t.Fatalf("the read did not think: %q", answer.Strategy)
+			}
+			if answer.Calibrated || answer.Temperature != 1.0 {
+				t.Errorf("an answer read after a thought was tempered by a record that "+
+					"does not describe that read: calibrated=%v temperature=%v",
+					answer.Calibrated, answer.Temperature)
+			}
+		})
 	}
 }
 
@@ -1060,6 +1234,20 @@ func TestDecisionModelZeroValueReadoutIsReported(t *testing.T) {
 }
 
 func floatPointer(value float64) *float64 { return &value }
+
+// noulFor is the multi-label template substitution, with the error surfaced.
+func noulFor(t *testing.T, question Question, label string) Noul {
+	t.Helper()
+	multi, ok := question.(*multiLabelHead)
+	if !ok {
+		t.Fatalf("the question is a %T, want a multi-label head", question)
+	}
+	noul, err := multi.noulFor(label)
+	if err != nil {
+		t.Fatalf("noulFor(%q): %v", label, err)
+	}
+	return noul
+}
 
 // hasWarning reports whether the client recorded a warning containing text.
 func hasWarning(model *DecisionModel, text string) bool {

@@ -256,6 +256,33 @@ for an assumed family and for a calibration record that is held but not applied.
 Go has no warning channel, so `DecisionModel.Warnings` collects them as strings.
 Nothing is printed.
 
+**A repeated option key is refused.** Python's choice criteria are a dict, so a
+repeated key cannot reach a read. This port takes a slice, because a Go map has
+no order and the order is what assigns the answer codes; two options with one key
+would be scored from two codes and then written into one probability, so the
+returned distribution would not sum to one. `Question.Validate` refuses the
+repeated key before any request goes out.
+
+**`HeadSpec.MultiLabel` with described options is refused.** Python's
+`{"labels": {"a": "A", "b": "B"}, "multi_label": True}` reaches its mapping
+branch, which reads a single `Choice` over the described labels and ignores
+`multi_label`. There is no way to read that input a second way here without
+dropping the descriptions, so this port refuses the combination and says so. A
+multi-label head takes bare keys.
+
+**The multi-label template is Python's `str.format`, within limits.** Python
+calls `template.format(label=label)` when the template contains `{label}`, and
+appends the label when it does not. This port does the same, including `{{` and
+`}}` as literal braces, and refuses a replacement field that names anything else
+rather than passing it through. Format specs (`{label!r}`, `{label:>10}`) are
+refused too, which Python would honour.
+
+**A score's level and legend are spelled the way Python spells them.** Both go
+through `str()`: `inf` and `nan`, not this package's JSON `Infinity` and `NaN`,
+and a container is spelled with `repr` for its elements (`['low', None]`). The
+one difference is a container's key order: Python keeps insertion order and a Go
+map has none, so `pythonStr` sorts the keys of a `map[string]any`.
+
 **`HeadSpec` replaces the duck-typed label spec, and the order is explicit.**
 Python's `classify` accepts a list of labels, a label-to-description mapping, a
 `{"levels": [...]}` mapping, a `{"labels": [...], "multi_label": True}`
@@ -274,6 +301,12 @@ one setting (`think_gate`/`reasoning_prob`, `think_budget`/`reasoning_len`,
 `overflow`/`compound`) are both fields, and passing both with different values is
 the same error it is in Python.
 
+**`Decide` takes typed questions, not label sets.** Python's `decide` accepts
+"a `Noul`, `Choice`, or `Score`, or the label-set shorthand `classify` accepts".
+This port keeps the two apart: `Decide` takes `map[string]Question`, and
+`QuestionFromHead` builds the question a `HeadSpec` describes for a caller who
+wants the shorthand. The difference is a compile error rather than a silent one.
+
 **`ReadPolicy` takes resolved `ReadOptions`.** Python's `read_policy` has
 defaults for `policy`, `think_gate` and `think_budget` in its signature; this
 port takes the `ReadOptions` the client already resolved, so the defaults live in
@@ -284,6 +317,21 @@ produces the same defaults for a caller that wants them.
 built by `NewDecisionModel` always has a readout; the zero value does not, and a
 nil `*Readout` would panic inside `net/http`. Every entry point that reads checks
 and reports.
+
+**`MaxWorkers: 0` means the default, not one worker.** Python's
+`max(1, int(max_workers))` has a default of 8, so an explicit `max_workers=0`
+means serial execution there. Go's zero value cannot express "explicitly zero",
+and `MaxWorkers: 0` is this port's default of 8; a negative value clamps to 1,
+which is what Python does with a negative too. A caller who wants one worker asks
+for one.
+
+**A calibration record needs its provenance.** `CalibrationFromJSON` requires
+`model`, `readout_version`, `serving_shape` and `fitted_on`, plus one of
+`temperatures` and `reads`, which is what the Python loader indexes. It also
+refuses a `null` temperature. Python's `float(None)` raises a `TypeError` for the
+same input; a `map[string]float64` would have read the null as zero, which
+`TemperDistribution` passes through, so the answer would have been a raw
+probability reported as calibrated.
 
 **`DecisionModel.Close` drops idle connections.** The Python client's `close`
 closes its httpx client. Go's `http.Client` is shared and reusable, so `Close`
@@ -299,8 +347,10 @@ hosted endpoint, and the results are checked in as fixtures. The Python client i
 
 The tokenizer, render, JSON and readout fixtures were produced with no served
 model, so they carry no serving fingerprint. The client fixture was recorded
-against the hosted endpoint and does: `shisa-hosted-2026-10-10`, on 2026-10-10.
-Where a number below is a measurement of a served checkpoint, it says so.
+against the hosted endpoint and does: the responses carried
+`system_fingerprint: vllm-0.30.0-tp2-ca69195e`, on 2026-10-10, with the tokenizer
+pinned to `8f21734b27b3462471c4662d5638e52195b005a3`. Where a number below is a
+measurement of a served checkpoint, it says so.
 
 This port has produced no measurements of its own against a served model.
 
@@ -389,34 +439,46 @@ This port has produced no measurements of its own against a served model.
   and `direct` spending one request where the default spends two. The calibration
   tests cover the two arithmetic helpers against hand-computed values, the
   shipped record's temperatures and provenance, the applicability levels for each
-  family and checkpoint, `CalibrationForRead` returning nothing for a read the
-  record does not describe, and `ResolveCalibration` choosing between a bundled
-  record, a named one and a caller's.
+  family and checkpoint, `Calibration.TemperatureFor` returning the default for a
+  read the record does not describe, and `ResolveCalibration` choosing between a
+  bundled record, a named one and a caller's. The rule that a record with no
+  per-read fits leaves an answer read after a thought raw is pinned by a record
+  that carries a top-level temperature and no `reads`, which is the only shape
+  that can tell whether the rule is there.
 - **Friendly layer.** `Classify` and `Decide` are tested against a stub server
   over the same readout the policy tests use, for the shapes the live fixture
   cannot force: a head that is refused before any request goes out, probability
-  with reasoning refused in the same way, the multi-label threshold and its
-  three views, the per-head provenance block, a call's overrides not leaking into
-  the model's defaults, three concurrent heads through a bounded pool, and a
-  `DecisionModel` with no readout reporting rather than panicking.
-- **Client.** 23 cases, 32 recorded exchanges, replayed request for request and
+  with reasoning refused in the same way, a repeated option key refused in the
+  same way, the multi-label threshold and its three views, the multi-label
+  template against Python's `str.format`, the per-head provenance block, a call's
+  overrides not leaking into the model's defaults, three concurrent heads through
+  a bounded pool, and a `DecisionModel` with no readout reporting rather than
+  panicking. A separate test pins the Go type in every map a caller reads,
+  because the parity gate compares through JSON and cannot see a `*float64` where
+  the Python client returns a number.
+- **Client.** 24 cases, 35 recorded exchanges, replayed request for request and
   answer for answer. The fixture was recorded live against the hosted endpoint
-  (`shisa-hosted-2026-10-10`, 2026-10-10) through a forwarding transport, so the
+  (`vllm-0.30.0-tp2-ca69195e`, 2026-10-10) through a forwarding transport, so the
   responses are the server's and the answers are the Python client's; the Go test
   replays the recorded responses and makes no request of its own. The cases
-  cover the gate from both sides (`decide-noul-sure` spends one request,
-  `decide-noul-near-gate` thinks), a choice, a three-way choice, an ordered
+  cover the gate from both sides (`decide-noul-sure` and
+  `decide-noul-near-gate` both stop at the repeated read, one well above the gate
+  and one close to it, and `decide-choice-think` and `decide-choice-3-think`
+  cross it), a choice, a three-way choice, an ordered
   score, a 27-option head above the think cap, `direct`, an explicit `repeat`,
   `probability`, a checkpoint the shipped record does not cover, an aliased
-  checkpoint, several heads in one call, the debug read, and `classify` with
-  label sets, levels, multi-label, the mapping and levels shorthands, the
-  probability view and mixed head types. Every request body the Go client sends
-  is matched against a recorded one -- a body the Python client never sent fails
-  the case -- and the answer, its probabilities, confidence, level, legend,
-  strategy and provenance are compared field for field.
-  `testdata/client_parity.meta.json` records the endpoint, the serving
-  fingerprint, the Python revision, the readout version, the counts and a sha256
-  of the fixture; the test fails if the fixture disagrees with it.
+  checkpoint, several heads in one call, the debug read, a debug read that
+  reaches the thought, and `classify` with label sets, levels, multi-label, the
+  mapping and levels shorthands, the probability view and mixed head types.
+  Every request body the Go client sends is matched against a recorded one -- a
+  body the Python client never sent fails the case, and every recorded exchange
+  must be used -- and each answer is compared whole, three times over: the
+  `Answer` fields, `to_dict`, and the TypeSafe `to_wire`, which carries the
+  legend. `Decision.ToWire` is compared whole too, and so are `Values`, `Raw`,
+  `Usage` and `Meta`. `testdata/client_parity.meta.json` records the endpoint,
+  the served `system_fingerprint`, the date, the Python revision, the readout
+  version, the tokenizer revision, the counts and a sha256 of the fixture; the
+  test fails if the fixture disagrees with it.
 - **Tokenizer identity.** The test checks the loaded tokenizer's vocab size
   (262,144) and `<channel|>` id (101) before running the vectors, so a fallback
   to a different revision fails loudly. Set `SHISA_DE_TOKENIZER_REQUIRE=1` to

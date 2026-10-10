@@ -192,8 +192,10 @@ type CodeRead struct {
 	MissingFromTop []string
 	// Ranks is the rank the fallback reported for a code, when it reported one.
 	Ranks map[string]int
-	// Sampled is the first request's `choices[0].text`.
-	Sampled string
+	// Sampled is the first request's `choices[0].text`, or nil when the server
+	// sent no `text`. The Python client's field is `str | None` for the same
+	// reason.
+	Sampled *string
 	// Prompt is the rendered text, only when the read was asked for debug
 	// detail. A read after a thought has no text prompt to keep.
 	Prompt string
@@ -215,8 +217,9 @@ type Thought struct {
 	Closed bool
 	// PromptTokens is the server's `usage.prompt_tokens` for the request.
 	PromptTokens int
-	// Text is the generated text, only with debug.
-	Text string
+	// Text is the generated text, only with debug, or nil when the server sent
+	// no `text`.
+	Text *string
 }
 
 // renderedPrompt is a rendered prompt in either of the two forms the code read

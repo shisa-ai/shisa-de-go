@@ -306,26 +306,58 @@ func LoadCalibrationFile(path string) (Calibration, error) {
 
 // CalibrationFromJSON builds a record from its JSON form, defaulting the family
 // from the model.
+//
+// The required keys are the Python loader's: `model`, `readout_version`,
+// `serving_shape` and `fitted_on`, plus one of `temperatures` and `reads`. A
+// missing provenance field is refused rather than defaulted, because the
+// provenance is what decides whether the record applies to a checkpoint.
 func CalibrationFromJSON(data []byte, origin string) (Calibration, error) {
 	var raw struct {
-		Temperatures   map[string]float64            `json:"temperatures"`
-		Reads          map[string]map[string]float64 `json:"reads"`
-		ReadoutVersion string                        `json:"readout_version"`
-		Model          string                        `json:"model"`
-		ServingShape   string                        `json:"serving_shape"`
-		FittedOn       string                        `json:"fitted_on"`
-		TestECE        map[string]any                `json:"test_ece"`
-		Source         string                        `json:"source"`
-		Family         string                        `json:"family"`
-		Note           string                        `json:"note"`
-		Withheld       map[string]any                `json:"withheld"`
+		// Pointers, because JSON null decodes into a float64 as 0. A null
+		// temperature would then read as "freeze this option" and, since
+		// TemperDistribution passes a non-positive temperature through, produce
+		// raw probabilities reported as calibrated.
+		Temperatures   map[string]*float64            `json:"temperatures"`
+		Reads          map[string]map[string]*float64 `json:"reads"`
+		ReadoutVersion string                         `json:"readout_version"`
+		Model          string                         `json:"model"`
+		ServingShape   string                         `json:"serving_shape"`
+		FittedOn       string                         `json:"fitted_on"`
+		TestECE        map[string]any                 `json:"test_ece"`
+		Source         string                         `json:"source"`
+		Family         string                         `json:"family"`
+		Note           string                         `json:"note"`
+		Withheld       map[string]any                 `json:"withheld"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return Calibration{}, fmt.Errorf("calibration record %s is not valid JSON: %w", origin, err)
 	}
-	if raw.Model == "" || raw.ReadoutVersion == "" {
+	for _, required := range []struct{ name, value string }{
+		{"model", raw.Model},
+		{"readout_version", raw.ReadoutVersion},
+		{"serving_shape", raw.ServingShape},
+		{"fitted_on", raw.FittedOn},
+	} {
+		if required.value == "" {
+			return Calibration{}, fmt.Errorf(
+				"calibration record %s has no %s", origin, required.name)
+		}
+	}
+	if raw.Temperatures == nil && raw.Reads == nil {
 		return Calibration{}, fmt.Errorf(
-			"calibration record %s has no model or no readout_version", origin)
+			"calibration record %s has neither temperatures nor reads", origin)
+	}
+	temperatures, err := flattenTemperatures(raw.Temperatures, origin)
+	if err != nil {
+		return Calibration{}, err
+	}
+	reads := make(map[string]map[string]float64, len(raw.Reads))
+	for name, values := range raw.Reads {
+		flattened, err := flattenTemperatures(values, origin+" read "+name)
+		if err != nil {
+			return Calibration{}, err
+		}
+		reads[name] = flattened
 	}
 	family := FamilyDE1
 	if raw.Family != "" {
@@ -338,8 +370,8 @@ func CalibrationFromJSON(data []byte, origin string) (Calibration, error) {
 		family = ModelFamily(raw.Model)
 	}
 	return Calibration{
-		Temperatures:   orEmptyFloatMap(raw.Temperatures),
-		Reads:          raw.Reads,
+		Temperatures:   orEmptyFloatMap(temperatures),
+		Reads:          reads,
 		ReadoutVersion: raw.ReadoutVersion,
 		Model:          raw.Model,
 		ServingShape:   raw.ServingShape,
@@ -350,6 +382,26 @@ func CalibrationFromJSON(data []byte, origin string) (Calibration, error) {
 		Note:           raw.Note,
 		Withheld:       orEmptyAnyMap(raw.Withheld),
 	}, nil
+}
+
+// flattenTemperatures turns a decoded temperature table into its values,
+// refusing a null. The Python loader converts each entry with `float()` and
+// raises on None rather than reading it as zero.
+func flattenTemperatures(values map[string]*float64, origin string) (map[string]float64, error) {
+	if values == nil {
+		return nil, nil
+	}
+	flattened := make(map[string]float64, len(values))
+	for name, value := range values {
+		if value == nil {
+			return nil, fmt.Errorf(
+				"calibration record %s has a null temperature for %q; a null is not a "+
+					"temperature, and reading it as zero would report raw probabilities as "+
+					"calibrated", origin, name)
+		}
+		flattened[name] = *value
+	}
+	return flattened, nil
 }
 
 // CalibrationFor is the shipped record for a family.

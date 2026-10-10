@@ -90,6 +90,7 @@ type decisionFixture struct {
 	Raw                map[string]json.RawMessage `json:"raw"`
 	Usage              map[string]json.RawMessage `json:"usage"`
 	Meta               map[string]json.RawMessage `json:"meta"`
+	Wire               map[string]any             `json:"wire"`
 	CalibrationLevel   string                     `json:"calibration_level"`
 	CalibrationApplied bool                       `json:"calibration_applied"`
 	FamilySource       string                     `json:"family_source"`
@@ -109,9 +110,13 @@ type answerFixture struct {
 	Stages         int                `json:"stages"`
 	LogicalReads   int                `json:"logical_reads"`
 	Level          *string            `json:"level"`
-	MissingFromTop []string           `json:"missing_from_top"`
-	ThoughtTokens  int                `json:"thought_tokens"`
-	ThoughtClosed  *bool              `json:"thought_closed"`
+	// Legend and Wire are recorded beside `to_dict`, which carries neither: the
+	// legend is the level text per position and `to_wire` is the TypeSafe shape.
+	Legend         map[string]string `json:"legend"`
+	Wire           map[string]any    `json:"wire"`
+	MissingFromTop []string          `json:"missing_from_top"`
+	ThoughtTokens  int               `json:"thought_tokens"`
+	ThoughtClosed  *bool             `json:"thought_closed"`
 }
 
 type clientMeta struct {
@@ -121,6 +126,7 @@ type clientMeta struct {
 	Recorded           string `json:"recorded"`
 	PythonRepo         string `json:"python_repo"`
 	ReadoutVersion     string `json:"readout_version"`
+	TokenizerRevision  string `json:"tokenizer_revision"`
 	Cases              int    `json:"cases"`
 	Exchanges          int    `json:"exchanges"`
 	SHA256             string `json:"sha256"`
@@ -165,8 +171,19 @@ func loadClientFixture(t *testing.T) (clientFixture, clientMeta) {
 	if total != meta.Exchanges {
 		t.Errorf("the fixture holds %d exchanges, the provenance records %d", total, meta.Exchanges)
 	}
-	if meta.ServingFingerprint == "" || meta.Recorded == "" {
-		t.Error("the provenance does not say when or against what the fixture was recorded")
+	if meta.ServingFingerprint == "" || meta.Recorded == "" || meta.TokenizerRevision == "" {
+		t.Error("the provenance does not say when, against what, or with which tokenizer " +
+			"the fixture was recorded")
+	}
+	// The fingerprint is the serving shape the responses came from, which is what
+	// makes the numbers reproducible; an endpoint label would not be.
+	if !strings.Contains(meta.ServingFingerprint, "/") &&
+		!strings.Contains(meta.ServingFingerprint, "-") {
+		t.Errorf("the recorded fingerprint %q is not a serving shape", meta.ServingFingerprint)
+	}
+	if meta.ReadoutVersion != ReadoutVersionFor(FamilyDE2) {
+		t.Errorf("the fixture was recorded against readout %q, this package reads %q",
+			meta.ReadoutVersion, ReadoutVersionFor(FamilyDE2))
 	}
 	return fixture, meta
 }
@@ -176,19 +193,23 @@ func loadClientFixture(t *testing.T) (clientFixture, clientMeta) {
 type parityTransport struct {
 	t         *testing.T
 	caseName  string
-	byBody    map[string]int
 	exchanges []clientExchange
 	// A call with several heads reads them concurrently, so the transport is
 	// reached from several goroutines at once.
-	mu        sync.Mutex
+	mu sync.Mutex
+	// byBody is a queue per request body, not a single index: two recorded
+	// exchanges may carry the same body, and collapsing them would leave one
+	// exchange unused, which fails the case for the wrong reason.
+	byBody    map[string][]int
 	used      map[int]bool
 	unmatched []string
 }
 
 func newParityTransport(t *testing.T, name string, exchanges []clientExchange) *parityTransport {
-	byBody := make(map[string]int, len(exchanges))
+	byBody := make(map[string][]int, len(exchanges))
 	for index, exchange := range exchanges {
-		byBody[canonicalJSON(t, exchange.Request)] = index
+		key := canonicalJSON(t, exchange.Request)
+		byBody[key] = append(byBody[key], index)
 	}
 	return &parityTransport{t: t, caseName: name, byBody: byBody, exchanges: exchanges,
 		used: map[int]bool{}}
@@ -201,13 +222,15 @@ func (p *parityTransport) RoundTrip(request *http.Request) (*http.Response, erro
 	}
 	key := canonicalJSON(p.t, body)
 	p.mu.Lock()
-	index, ok := p.byBody[key]
-	if !ok {
+	queue, ok := p.byBody[key]
+	if !ok || len(queue) == 0 {
 		p.unmatched = append(p.unmatched, key)
 		p.mu.Unlock()
 		return nil, fmt.Errorf("%s: the client sent a request the Python client never made: %s",
 			p.caseName, truncate(key))
 	}
+	index := queue[0]
+	p.byBody[key] = queue[1:]
 	p.used[index] = true
 	p.mu.Unlock()
 	exchange := p.exchanges[index]
@@ -454,13 +477,9 @@ func compareDecision(t *testing.T, want decisionFixture, got *Decision, model *D
 			model.Calibration.ID(), want.CalibrationID)
 	}
 
-	gotAnswers := map[string]any{}
-	for head, answer := range got.Answers {
-		gotAnswers[head] = jsonShape(t, answer.ToDict())
-	}
-	if len(gotAnswers) != len(want.Answers) {
+	if len(got.Answers) != len(want.Answers) {
 		t.Errorf("the answer heads are %v, the Python client's are %v",
-			sortedKeys(gotAnswers), sortedKeys2(want.Answers))
+			sortedKeysOf(got.Answers), sortedKeysOf(want.Answers))
 	}
 	for head, answer := range want.Answers {
 		actual, ok := got.Answers[head]
@@ -469,7 +488,16 @@ func compareDecision(t *testing.T, want decisionFixture, got *Decision, model *D
 			continue
 		}
 		compareAnswer(t, head, answer, actual)
+		// `to_dict` is compared whole, not field by field: it is the shape the
+		// Python client returns and the fixture records, so a key this port
+		// drops or a value it holds as a pointer shows up here.
+		compareMap(t, "answer "+head, jsonShapeMap(t, answerToMap(answer)),
+			jsonShapeMap(t, actual.ToDict()))
+		// The TypeSafe body, likewise whole.
+		compareMap(t, "answer "+head+" wire", jsonShapeMap(t, answer.Wire),
+			jsonShapeMap(t, actual.ToWire()))
 	}
+	compareMap(t, "wire", jsonShapeMap(t, want.Wire), jsonShapeMap(t, got.ToWire()))
 	compareMap(t, "values", rawToAny(t, want.Values), jsonShapeMap(t, got.Values))
 	compareMap(t, "raw", rawToAny(t, want.Raw), jsonShapeMap(t, nestedToAny(got.Raw)))
 	compareMap(t, "usage", rawToAny(t, want.Usage), jsonShapeMap(t, got.Usage))
@@ -527,6 +555,10 @@ func compareAnswer(t *testing.T, head string, want answerFixture, got Answer) {
 	if !sameOptionalString(got.Level, want.Level) {
 		t.Errorf("head %q: level is %v, the Python client's was %v",
 			head, formatOptionalString(got.Level), formatOptionalString(want.Level))
+	}
+	if want.Legend != nil && !sameStringMap(got.Legend, want.Legend) {
+		t.Errorf("head %q: legend is %v, the Python client's was %v",
+			head, got.Legend, want.Legend)
 	}
 	if !sameStrings(got.MissingFromTop, want.MissingFromTop) {
 		t.Errorf("head %q: missing from top is %v, the Python client's was %v",
@@ -693,7 +725,7 @@ func withoutKey(values map[string]any, key string) map[string]any {
 	return trimmed
 }
 
-func sortedKeys(values map[string]any) []string {
+func sortedKeysOf[M ~map[string]V, V any](values M) []string {
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -702,13 +734,34 @@ func sortedKeys(values map[string]any) []string {
 	return keys
 }
 
-func sortedKeys2(values map[string]answerFixture) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
+// answerToMap rebuilds the Python `Answer.to_dict()` the fixture recorded.
+//
+// The fixture's answer object is `to_dict()` plus the `level` the generator adds
+// beside it, because `to_dict` does not carry the level an ordered scale lands
+// on. Rebuilding it here is what lets the replay compare the whole map rather
+// than a chosen subset of fields.
+func answerToMap(answer answerFixture) map[string]any {
+	out := map[string]any{
+		"type":            answer.Type,
+		"value":           answer.Value,
+		"confidence":      answer.Confidence,
+		"probabilities":   answer.Probabilities,
+		"calibrated":      answer.Calibrated,
+		"temperature":     answer.Temperature,
+		"requests":        answer.Requests,
+		"strategy":        answer.Strategy,
+		"score_semantics": answer.ScoreSemantics,
+		"stages":          answer.Stages,
+		"logical_reads":   answer.LogicalReads,
 	}
-	sort.Strings(keys)
-	return keys
+	if len(answer.MissingFromTop) != 0 {
+		out["missing_from_top"] = answer.MissingFromTop
+	}
+	if answer.ThoughtClosed != nil {
+		out["thought_tokens"] = answer.ThoughtTokens
+		out["thought_closed"] = *answer.ThoughtClosed
+	}
+	return out
 }
 
 func sameOptionalFloat(got, want *float64) bool {
@@ -716,6 +769,64 @@ func sameOptionalFloat(got, want *float64) bool {
 		return got == nil && want == nil
 	}
 	return sameFloat(*got, *want)
+}
+
+// TestParityComparatorsCanFail pins that the replay's comparators reject a
+// changed value.
+//
+// The gate is only as strong as the comparisons it makes, and a comparator that
+// returns true for everything would let every recorded case pass. Each one here
+// is fed a difference the fixture actually carries.
+func TestParityComparatorsCanFail(t *testing.T) {
+	legend := map[string]string{"0": "none", "1": "low"}
+	if !sameStringMap(legend, map[string]string{"0": "none", "1": "low"}) {
+		t.Error("an equal legend was rejected")
+	}
+	if sameStringMap(legend, map[string]string{"0": "none", "1": "LOW"}) {
+		t.Error("a changed legend text was accepted")
+	}
+	if sameStringMap(legend, map[string]string{"0": "none"}) {
+		t.Error("a shortened legend was accepted")
+	}
+	// An absent legend and an empty one are the same, which is what a choice
+	// records.
+	if !sameStringMap(nil, map[string]string{}) {
+		t.Error("an absent legend was not equal to an empty one")
+	}
+	if !sameOptionalString(stringPointer("a"), stringPointer("a")) {
+		t.Error("equal optional strings were rejected")
+	}
+	if sameOptionalString(stringPointer("a"), stringPointer("b")) ||
+		sameOptionalString(stringPointer("a"), nil) {
+		t.Error("a changed optional string was accepted")
+	}
+	if !sameJSON(t, "test", float64(1.5), float64(1.5)) {
+		t.Error("equal numbers were rejected")
+	}
+	if sameJSON(t, "test", float64(1.5), float64(1.6)) {
+		t.Error("a changed number was accepted")
+	}
+	if sameJSON(t, "test", "", nil) {
+		t.Error("an empty string was accepted in place of null")
+	}
+	if !sameJSON(t, "test", map[string]any{"a": []any{float64(1)}},
+		map[string]any{"a": []any{float64(1)}}) {
+		t.Error("equal nested values were rejected")
+	}
+}
+
+// sameStringMap compares two string maps, treating an absent and an empty one as
+// the same, which is how the recorded side writes a legend a choice has none of.
+func sameStringMap(got, want map[string]string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for key, value := range want {
+		if got[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func sameOptionalString(got, want *string) bool {

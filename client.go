@@ -144,7 +144,7 @@ func (a Answer) ToWire() map[string]any {
 			"score":         a.Value(),
 			"legend":        a.Legend,
 			"probabilities": a.Probabilities,
-			"confidence":    a.Confidence,
+			"confidence":    numberOrNil(a.Confidence),
 		}
 	}
 	out := map[string]any{
@@ -163,12 +163,14 @@ func (a Answer) ToWire() map[string]any {
 	return out
 }
 
-// ToDict is everything, including the fields TypeSafe does not return.
+// ToDict is everything, including the fields TypeSafe does not return. Its keys
+// are the Python client's `Answer.to_dict()`, so the two can be compared
+// directly.
 func (a Answer) ToDict() map[string]any {
 	out := map[string]any{
 		"type":          a.Type,
 		"value":         a.Value(),
-		"confidence":    a.Confidence,
+		"confidence":    numberOrNil(a.Confidence),
 		"probabilities": a.Probabilities,
 		"calibrated":    a.Calibrated,
 		"temperature":   a.Temperature,
@@ -320,11 +322,62 @@ func (m *multiLabelHead) Validate(int) error {
 	return &QuestionError{Message: "a multi-label head has no single option list"}
 }
 
-func (m *multiLabelHead) noulFor(label string) Noul {
+func (m *multiLabelHead) noulFor(label string) (Noul, error) {
 	if strings.Contains(m.template, "{label}") {
-		return NewNoul(strings.ReplaceAll(m.template, "{label}", label))
+		instructions, err := formatLabel(m.template, label)
+		if err != nil {
+			return Noul{}, err
+		}
+		return NewNoul(instructions), nil
 	}
-	return NewNoul(m.template + " " + label)
+	return NewNoul(m.template + " " + label), nil
+}
+
+// formatLabel is Python's `str.format(label=...)` for the shapes a multi-label
+// template uses: `{label}` is replaced, `{{` and `}}` are literal braces, and a
+// replacement field naming anything else is refused.
+//
+// The template is the prompt, and the prompt is the answer, so this follows
+// `str.format` rather than doing a plain replacement: `"Is {label} a {{thing}}?"`
+// renders as `Is billing a {thing}?` in both clients. Format specs (`{label!r}`,
+// `{label:>10}`) are not supported and are refused rather than passed through.
+func formatLabel(template, label string) (string, error) {
+	var out strings.Builder
+	for index := 0; index < len(template); {
+		switch template[index] {
+		case '{':
+			if index+1 < len(template) && template[index+1] == '{' {
+				out.WriteByte('{')
+				index += 2
+				continue
+			}
+			end := strings.IndexByte(template[index:], '}')
+			if end < 0 {
+				return "", &QuestionError{Message: fmt.Sprintf(
+					"the multi-label template %q has an unclosed brace", template)}
+			}
+			field := template[index+1 : index+end]
+			if field != "label" {
+				return "", &QuestionError{Message: fmt.Sprintf(
+					"the multi-label template %q names %q; the only field it may name is "+
+						"{label}, which is the label being asked about", template, field)}
+			}
+			out.WriteString(label)
+			index += end + 1
+		case '}':
+			if index+1 < len(template) && template[index+1] == '}' {
+				out.WriteByte('}')
+				index += 2
+				continue
+			}
+			return "", &QuestionError{Message: fmt.Sprintf(
+				"the multi-label template %q has a lone closing brace", template)}
+		default:
+			out.WriteByte(template[index])
+			index++
+		}
+	}
+	return out.String(), nil
 }
 
 // headWork is one question to ask, and the head name it answers under.
@@ -333,7 +386,16 @@ type headWork struct {
 	question Question
 }
 
-// questionFromHead turns a head's label spec into a question.
+// QuestionFromHead turns a head's label spec into a question.
+//
+// `Classify` calls it for every head; it is exported so a caller can build the
+// same question for `Decide`, which takes typed questions rather than label
+// sets. A multi-label spec becomes one noul per label when the question is read,
+// and `Decide` returns the per-label answers under `head:label`.
+func QuestionFromHead(head string, spec HeadSpec) (Question, error) {
+	return questionFromHead(head, spec)
+}
+
 func questionFromHead(head string, spec HeadSpec) (Question, error) {
 	if spec.Question != nil {
 		return spec.Question, nil
@@ -345,17 +407,23 @@ func questionFromHead(head string, spec HeadSpec) (Question, error) {
 	if spec.Levels != nil {
 		return NewScore(instructions, spec.Levels), nil
 	}
-	if spec.Options == nil {
-		return nil, &QuestionError{Message: fmt.Sprintf(
-			"head %q: expected options or levels", head)}
-	}
 	if len(spec.Options) == 0 {
 		return nil, &QuestionError{Message: fmt.Sprintf(
 			"head %q: expected options or levels", head)}
 	}
 	if spec.MultiLabel {
+		// Python's `{"labels": {k: v}, "multi_label": True}` reaches its mapping
+		// branch, which reads a single choice over the described labels and
+		// ignores `multi_label`. There is no way to spell that intent here without
+		// silently dropping the descriptions, so it is refused.
 		labels := make([]string, 0, len(spec.Options))
 		for _, option := range spec.Options {
+			if !isNilDescription(option.Description) {
+				return nil, &QuestionError{Message: fmt.Sprintf(
+					"head %q: a multi-label head asks one yes/no question per label and has "+
+						"nowhere to show %q's description; drop the descriptions, or set "+
+						"MultiLabel to false to read one choice over them", head, option.Key)}
+			}
 			labels = append(labels, option.Key)
 		}
 		template := spec.Instructions
@@ -581,6 +649,7 @@ func NewDecisionModel(config DecisionModelConfig) (*DecisionModel, error) {
 		Tokenizer:         config.Tokenizer,
 		TokenizerRevision: config.TokenizerRevision,
 		LocalFilesOnly:    config.LocalFilesOnly,
+		Family:            string(config.Family),
 		Timeout:           config.Timeout,
 		MaxLogprobs:       maxLogprobs,
 		APIKey:            apiKey,
@@ -793,13 +862,14 @@ func (m *DecisionModel) Classify(ctx context.Context, state any, heads map[strin
 				delete(decision.Answers, key)
 				entry := map[string]any{
 					"label":         label,
-					"confidence":    answer.Confidence,
+					"confidence":    numberOrNil(answer.Confidence),
 					"probabilities": answer.Probabilities,
 				}
 				if answer.Noul != nil && *answer.Noul >= threshold {
 					entries = append(entries, entry)
 				}
-				decision.Raw[key] = map[string]any{"noul": answer.Noul, "requests": answer.Requests}
+				decision.Raw[key] = map[string]any{
+					"noul": numberOrNil(answer.Noul), "requests": answer.Requests}
 			}
 			switch {
 			case options.IncludeProbabilities:
@@ -825,7 +895,7 @@ func (m *DecisionModel) Classify(ctx context.Context, state any, heads map[strin
 		case options.IncludeProbabilities:
 			value := map[string]any{
 				"label":         answer.Label(),
-				"confidence":    answer.Confidence,
+				"confidence":    numberOrNil(answer.Confidence),
 				"probabilities": answer.Probabilities,
 			}
 			if answer.ScoreSemantics != "option-softmax" {
@@ -835,7 +905,7 @@ func (m *DecisionModel) Classify(ctx context.Context, state any, heads map[strin
 			}
 			decision.Values[head] = value
 		case options.IncludeConfidence:
-			value := map[string]any{"label": answer.Label(), "confidence": answer.Confidence}
+			value := map[string]any{"label": answer.Label(), "confidence": numberOrNil(answer.Confidence)}
 			if answer.ScoreSemantics != "option-softmax" {
 				value["strategy"] = answer.Strategy
 				value["score_semantics"] = answer.ScoreSemantics
@@ -849,10 +919,17 @@ func (m *DecisionModel) Classify(ctx context.Context, state any, heads map[strin
 	return decision, nil
 }
 
-// Decide asks typed questions and get typed answers.
+// Decide asks typed questions and gets typed answers.
 //
 // `questions` maps a question id to a Noul, Choice or Score. The Values map
-// returns each answer's primary value; Answers returns the full answer.
+// returns each answer's primary value; Answers returns the full answer. For a
+// Score, `Values` is the weighted position and `Answers[id].Label()` is the
+// level it landed on, which is what `Classify` returns instead.
+//
+// The Python client's `decide` also accepts the label-set shorthand `classify`
+// takes; this port keeps the two apart, and `QuestionFromHead` builds the
+// question a shorthand describes.
+//
 // Calibration is on by default. `Probability` requires one logical read per
 // question, so it skips the thinking read, and leaves calibration and the return
 // shape unchanged.
@@ -910,7 +987,11 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 		question := questions[head]
 		if multi, ok := question.(*multiLabelHead); ok {
 			for _, label := range multi.labels {
-				work = append(work, headWork{head: head + ":" + label, question: multi.noulFor(label)})
+				noul, err := multi.noulFor(label)
+				if err != nil {
+					return nil, err
+				}
+				work = append(work, headWork{head: head + ":" + label, question: noul})
 			}
 			continue
 		}
@@ -1191,12 +1272,36 @@ func indexOf(values []string, wanted string) int {
 
 func boolPointer(value bool) *bool { return &value }
 
-// pythonStr is Python's `str()` for the value kinds a level can hold.
-func pythonStr(value any) string {
+// numberOrNil is the value behind a pointer, or nil when there is none.
+//
+// The Python client returns a number or None where this port holds a *float64,
+// and a map[string]any holding a pointer prints as an address and type-asserts
+// to *float64 rather than float64. Every caller-visible map goes through this.
+func numberOrNil(value *float64) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
+// pythonStr is Python's `str()`.
+//
+// A score's level and its legend are rendered with it, and both are part of what
+// the caller reads, so it has to be Python's spelling: Python writes `inf` where
+// this package's JSON writer writes `Infinity`, and a container is spelled with
+// `repr` for its elements. `Answer.Level` and `Answer.Legend` carry the result.
+func pythonStr(value any) string { return pythonRepr(value, false) }
+
+// pythonRepr is `str()` at the top level and `repr()` for anything nested, which
+// is what `str()` applies to a container's contents.
+func pythonRepr(value any, nested bool) string {
 	switch typed := value.(type) {
 	case nil:
 		return "None"
 	case string:
+		if nested {
+			return pythonQuote(typed)
+		}
 		return typed
 	case bool:
 		if typed {
@@ -1207,20 +1312,87 @@ func pythonStr(value any) string {
 		return strconv.Itoa(typed)
 	case int64:
 		return strconv.FormatInt(typed, 10)
+	case int32:
+		return strconv.FormatInt(int64(typed), 10)
 	case float64:
-		if typed == math.Trunc(typed) && math.Abs(typed) < 1e16 {
-			return pythonFloatString(typed)
-		}
-		return pythonFloatString(typed)
+		return pythonReprFloat(typed)
 	case float32:
-		return pythonFloatString(float64(typed))
+		return pythonReprFloat(float64(typed))
+	case []any:
+		parts := make([]string, len(typed))
+		for index, item := range typed {
+			parts[index] = pythonRepr(item, true)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	case []string:
+		parts := make([]string, len(typed))
+		for index, item := range typed {
+			parts[index] = pythonQuote(item)
+		}
+		return "[" + strings.Join(parts, ", ") + "]"
+	case map[string]any:
+		// Python keeps insertion order and a Go map has none, so the keys are
+		// sorted. That is the one place this spelling is not Python's.
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			parts = append(parts, pythonQuote(key)+": "+pythonRepr(typed[key], true))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
 	case fmt.Stringer:
 		return typed.String()
-	default:
-		text, err := PythonJSON(value)
-		if err != nil {
-			return fmt.Sprint(value)
-		}
-		return text
 	}
+	// A type with no Python spelling: fall back to the JSON writer, which is
+	// right for the scalars it covers and deterministic for the rest.
+	text, err := PythonJSON(value)
+	if err != nil {
+		return fmt.Sprint(value)
+	}
+	return text
+}
+
+// pythonReprFloat is Python's `repr()` for a float. `json.dumps` writes `NaN`
+// and `Infinity`; `repr` writes `nan` and `inf`.
+func pythonReprFloat(value float64) string {
+	switch {
+	case math.IsNaN(value):
+		return "nan"
+	case math.IsInf(value, 1):
+		return "inf"
+	case math.IsInf(value, -1):
+		return "-inf"
+	}
+	return pythonFloatString(value)
+}
+
+// pythonQuote is Python's `repr()` for a string: single quotes, unless the
+// string holds a single quote and no double quote, in which case double.
+func pythonQuote(text string) string {
+	quote := byte('\'')
+	if strings.ContainsRune(text, '\'') && !strings.ContainsRune(text, '"') {
+		quote = '"'
+	}
+	var out strings.Builder
+	out.WriteByte(quote)
+	for _, r := range text {
+		switch {
+		case r == rune(quote) || r == '\\':
+			out.WriteByte('\\')
+			out.WriteRune(r)
+		case r == '\n':
+			out.WriteString("\\n")
+		case r == '\r':
+			out.WriteString("\\r")
+		case r == '\t':
+			out.WriteString("\\t")
+		default:
+			out.WriteRune(r)
+		}
+	}
+	out.WriteByte(quote)
+	return out.String()
 }

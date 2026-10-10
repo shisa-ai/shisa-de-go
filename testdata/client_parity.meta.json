@@ -1,12 +1,13 @@
 {
   "endpoint": "https://api.shisa.ai/openai",
   "model": "shisa-ai/shisa-de-2",
-  "serving_fingerprint": "shisa-hosted-2026-10-10",
+  "serving_fingerprint": "vllm-0.30.0-tp2-ca69195e",
   "recorded": "2026-10-10",
   "python_repo": "d172d4977d133fefb9b8c82ffcc0e3d007554551",
   "readout_version": "de2-codebook-v1",
-  "cases": 23,
-  "exchanges": 32,
-  "sha256": "cc98cb0e2a280abb854d13b38fd6a41f068818a4a00910fd514657cc9b31a7ac",
+  "tokenizer_revision": "8f21734b27b3462471c4662d5638e52195b005a3",
+  "cases": 24,
+  "exchanges": 35,
+  "sha256": "f0f96ec0ed3f17f42bd7010d22573a72e2761c0340a2f7d4422986eb052772d1",
   "note": "Live exchanges against the hosted endpoint, recorded through a forwarding transport. The responses are the server's; the answers are the Python client's. The Go test replays the recorded responses and compares its own answer, so it uses no network."
 }

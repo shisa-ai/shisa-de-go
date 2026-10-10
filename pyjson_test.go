@@ -253,7 +253,7 @@ func TestQuestionValidation(t *testing.T) {
 	if err := single.Validate(MaxOptions); !errors.As(err, &questionErr) {
 		t.Errorf("a one-option choice returned %v, want *QuestionError", err)
 	}
-	wide := NewChoice("Which?", make([]Option, MaxOptions+1))
+	wide := NewChoice("Which?", keyedOptions(MaxOptions+1))
 	if err := wide.Validate(MaxOptions); !errors.As(err, &questionErr) {
 		t.Errorf("a choice past the letter limit returned %v, want *QuestionError", err)
 	}
@@ -271,13 +271,13 @@ func TestQuestionValidation(t *testing.T) {
 	if err := NewNoul("Is it?").Validate(0); err != nil {
 		t.Errorf("Validate(0) returned %v, want the letter-limit default", err)
 	}
-	if err := NewChoice("Which?", make([]Option, MaxOptions)).Validate(0); err != nil {
+	if err := NewChoice("Which?", keyedOptions(MaxOptions)).Validate(0); err != nil {
 		t.Errorf("Validate(0) on a 26-option choice returned %v", err)
 	}
-	if err := NewChoice("Which?", make([]Option, MaxOptions+1)).Validate(0); err == nil {
+	if err := NewChoice("Which?", keyedOptions(MaxOptions+1)).Validate(0); err == nil {
 		t.Error("Validate(0) should still apply the letter limit to 27 options")
 	}
-	if err := NewChoice("Which?", make([]Option, MaxOptions+1)).Validate(-1); err == nil {
+	if err := NewChoice("Which?", keyedOptions(MaxOptions+1)).Validate(-1); err == nil {
 		t.Error("Validate(-1) should still apply the letter limit")
 	}
 }

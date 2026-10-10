@@ -273,8 +273,9 @@ func verifyRead(t *testing.T, step readoutStep, read CodeRead, err error) {
 	if !reflect.DeepEqual(read.Ranks, want.Ranks) {
 		t.Errorf("ranks = %v, want %v", read.Ranks, want.Ranks)
 	}
-	if read.Sampled != derefString(want.Sampled) {
-		t.Errorf("sampled = %q, want %q", read.Sampled, derefString(want.Sampled))
+	if !sameOptionalString(read.Sampled, want.Sampled) {
+		t.Errorf("sampled = %q, want %q", formatOptionalString(read.Sampled),
+			formatOptionalString(want.Sampled))
 	}
 	if read.Prompt != derefString(want.Prompt) {
 		t.Errorf("the debug prompt is %d bytes, want %d",
@@ -321,8 +322,9 @@ func verifyThink(t *testing.T, step readoutStep, readout *Readout, ctx context.C
 	if thought.PromptTokens != want.PromptTokens {
 		t.Errorf("prompt tokens = %d, want %d", thought.PromptTokens, want.PromptTokens)
 	}
-	if thought.Text != derefString(want.Text) {
-		t.Errorf("the debug thought text is %q, want %q", thought.Text, derefString(want.Text))
+	if !sameOptionalString(thought.Text, want.Text) {
+		t.Errorf("the debug thought text is %q, want %q", formatOptionalString(thought.Text),
+			formatOptionalString(want.Text))
 	}
 	return thought
 }

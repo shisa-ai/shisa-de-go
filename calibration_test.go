@@ -387,7 +387,8 @@ func TestResolveCalibration(t *testing.T) {
 func TestCalibrationFromJSON(t *testing.T) {
 	// The family is read from the model id when the record does not say.
 	record, err := CalibrationFromJSON([]byte(`{"model":"shisa-ai/shisa-de-2",
-	    "readout_version":"de2-codebook-v1","temperatures":{"choice":2.0}}`), "test")
+	    "readout_version":"de2-codebook-v1","serving_shape":"test","fitted_on":"now",
+	    "temperatures":{"choice":2.0}}`), "test")
 	if err != nil {
 		t.Fatalf("CalibrationFromJSON: %v", err)
 	}
@@ -400,7 +401,8 @@ func TestCalibrationFromJSON(t *testing.T) {
 	// An explicit family wins over the model id, which is how a record for a
 	// checkpoint whose name says nothing is read.
 	record, err = CalibrationFromJSON([]byte(`{"model":"my-checkpoint","family":"de2",
-	    "readout_version":"de2-codebook-v1","temperatures":{"choice":2.0}}`), "test")
+	    "readout_version":"de2-codebook-v1","serving_shape":"test","fitted_on":"now",
+	    "temperatures":{"choice":2.0}}`), "test")
 	if err != nil {
 		t.Fatalf("CalibrationFromJSON: %v", err)
 	}
@@ -408,17 +410,48 @@ func TestCalibrationFromJSON(t *testing.T) {
 		t.Errorf("the explicit family was ignored: %q", record.Family)
 	}
 
+	// The provenance fields are required, as the Python loader requires them: a
+	// record with no serving shape is a threshold whose provenance nobody can
+	// check, and this port refuses it rather than defaulting it.
 	for _, tc := range []struct{ name, body string }{
 		{"not JSON", `{`},
 		{"no model", `{"readout_version":"de2-codebook-v1"}`},
 		{"no readout version", `{"model":"shisa-ai/shisa-de-2"}`},
-		{"unknown family", `{"model":"x","readout_version":"de2-codebook-v1","family":"de3"}`},
+		{"no serving shape", `{"model":"shisa-ai/shisa-de-2","readout_version":"de2-codebook-v1",
+		    "fitted_on":"now","temperatures":{"choice":2.0}}`},
+		{"no fitted_on", `{"model":"shisa-ai/shisa-de-2","readout_version":"de2-codebook-v1",
+		    "serving_shape":"test","temperatures":{"choice":2.0}}`},
+		{"no temperature table", `{"model":"shisa-ai/shisa-de-2",
+		    "readout_version":"de2-codebook-v1","serving_shape":"test","fitted_on":"now"}`},
+		{"a null temperature", `{"model":"shisa-ai/shisa-de-2",
+		    "readout_version":"de2-codebook-v1","serving_shape":"test","fitted_on":"now",
+		    "temperatures":{"choice":null}}`},
+		{"a null per-read temperature", `{"model":"shisa-ai/shisa-de-2",
+		    "readout_version":"de2-codebook-v1","serving_shape":"test","fitted_on":"now",
+		    "reads":{"direct":{"choice":null}}}`},
+		{"unknown family", `{"model":"x","readout_version":"de2-codebook-v1",
+		    "serving_shape":"test","fitted_on":"now","temperatures":{"choice":2.0},
+		    "family":"de3"}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, err := CalibrationFromJSON([]byte(tc.body), "test"); err == nil {
 				t.Errorf("%s was accepted", tc.name)
 			}
 		})
+	}
+	// A record with only per-read fits and no top-level table is a record, not
+	// a missing one.
+	record, err = CalibrationFromJSON([]byte(`{"model":"shisa-ai/shisa-de-2",
+	    "readout_version":"de2-codebook-v1","serving_shape":"test","fitted_on":"now",
+	    "reads":{"direct":{"choice":2.0}}}`), "test")
+	if err != nil {
+		t.Fatalf("a per-read-only record was refused: %v", err)
+	}
+	if !record.Fitted() {
+		t.Error("a per-read-only record does not report itself as fitted")
+	}
+	if got := record.TemperatureFor("choice", "direct"); got != 2.0 {
+		t.Errorf("the per-read temperature is %v, want 2.0", got)
 	}
 }
 
