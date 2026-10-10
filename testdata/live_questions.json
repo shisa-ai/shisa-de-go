@@ -1227,6 +1227,47 @@
       }
     },
     {
+      "id": "choice-intent-direct",
+      "head": "intent",
+      "type": "choice",
+      "policy": "direct",
+      "instructions": "What does the sender want?",
+      "evidence": {
+        "sms": "WINNER!! You have won a $1000 gift card. Claim it now: bit.ly/xyz",
+        "sender": "+1-555-0199"
+      },
+      "options": [
+        {
+          "key": "card_details",
+          "description": "Payment card details"
+        },
+        {
+          "key": "callback",
+          "description": "A support callback"
+        },
+        {
+          "key": "nothing",
+          "description": "Nothing; it is routine"
+        }
+      ]
+    },
+    {
+      "id": "score-risk-probability",
+      "head": "risk",
+      "type": "score",
+      "probability": true,
+      "instructions": "How risky is acting on this message?",
+      "evidence": {
+        "sms": "WINNER!! You have won a $1000 gift card. Claim it now: bit.ly/xyz",
+        "sender": "+1-555-0199"
+      },
+      "levels": [
+        "Safe",
+        "Suspicious",
+        "Dangerous"
+      ]
+    },
+    {
       "id": "choice-think",
       "head": "sum",
       "type": "choice",

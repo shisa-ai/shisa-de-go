@@ -492,7 +492,9 @@ against the hosted endpoint and does: the responses carried
 pinned to `8f21734b27b3462471c4662d5638e52195b005a3`. Where a number below is a
 measurement of a served checkpoint, it says so.
 
-This port has produced no measurements of its own against a served model.
+The client and command-line fixtures below are the Python client's results,
+replayed. The live gate is this port's own measurement against a served
+checkpoint, and says so where it appears.
 
 - **Tokenizer.** 1,056 strings, 48,392 token ids: this package's ids equal
   `transformers`' ids on every one. The corpus covers all 24 added tokens and
@@ -656,13 +658,19 @@ This port has produced no measurements of its own against a served model.
   quoting of `doctor`'s note and calibration-reason lines.
 - **Live gate.** `TestLiveParityAgainstPython` runs the fixed set in
   `testdata/live_questions.json` -- a noul, a three-option choice, a choice with
-  unnamed options, an ordered score, a 27-option choice, a 256-option choice and
-  a choice whose gate is 1.0 so it thinks -- through both clients against the
-  same served checkpoint in one session, and requires the chosen value, the
-  label, the strategy, the request count, the level and the thought length to
-  match and every probability to agree within 1e-6. The measured deltas are
-  float-epsilon, 1e-16 to 1e-19, which is what a `temperature: 0` read against a
-  deterministic server should give.
+  unnamed options, an ordered score, a 27-option choice, a 256-option choice, the
+  same choice read under `direct`, the same score asked for the one-read
+  probability view, and a choice whose gate is 1.0 so it thinks -- through both
+  clients against the same served checkpoint in one session, and requires the
+  chosen value, the label, the strategy, the request count, the level, the
+  temperature, the confidence, the thought length and closure to match and every
+  probability to agree within 1e-9. The measured deltas are 1e-16 to 1e-19
+  (2.22e-16 worst, over nine questions) against `vllm-0.30.0-tp2-ca69195e` on
+  2026-10-10, which is what a `temperature: 0` read against a deterministic
+  server should give. The tolerance is three orders of magnitude above that and
+  not more; the temperature is compared exactly, because on a peaked answer two
+  fits can produce the same distribution and only the temperature says which one
+  was applied.
 
   The Python side is recorded by `scripts/live_parity.py` during the run rather
   than read from a checked-in file, and the reason is a measurement. The served
@@ -680,6 +688,13 @@ This port has produced no measurements of its own against a served model.
   as inconclusive rather than as a parity failure. `testdata/live_python.json` is
   a run artifact and is not checked in.
 
+  Both halves resolve `SHISA_DE_ENDPOINT` and `SHISA_DE_MODEL` the same way, and
+  the gate fails rather than logs when they disagree: two clients against two
+  servers would be the one comparison the design exists to prevent. The
+  recorder's own logic -- the endpoint and model resolution, the tokenizer pin,
+  the drift arithmetic over every consecutive pass -- is tested offline by
+  `scripts/test_live_parity.py`, which needs nothing but `python3`.
+
   The rest of the live suite is the DE-2 half of the Python `tests/test_live.py`:
   the endpoint report and its probe, an obvious classification, three heads in
   one call with the request accounting, a JSON round trip, the 27/128/256-option
@@ -687,14 +702,16 @@ This port has produced no measurements of its own against a served model.
   model card's 161-token example and the image case are absent because this port
   has no DE-1 read and no image path.
 
-  One Python assertion is stale and the port does not copy it.
-  `test_de2_thinks_when_the_repeated_read_is_unsure` ends with
+  The Python suite's `test_de2_thinks_when_the_repeated_read_is_unsure` ends with
   `assert answer.calibrated is False`, which was written before the DE-2 record
-  gained its `think` fit. The Python client returns `calibrated=True` and
-  `temperature=6.8` for that exact call today, which is what `shisa_de/data/
-  calibration-de2.json` ships, and what this port returns; the Go test asserts
-  the current behaviour and says why. The Python test is the one that should
-  change.
+  gained its `think` fit. Against the hosted `shisa-ai/shisa-de-2`, which is the
+  checkpoint that record was fitted on, the Python client returns
+  `calibrated=True` at 6.8 today and the assertion is stale. Against another
+  served checkpoint it is correct: the record does not apply, nothing is
+  tempered, and the answer is uncalibrated at 1.0. The Go test derives both
+  expectations from the model's own applicability rather than writing 6.8 down,
+  so it holds in either configuration, and the Python test is the one that should
+  be made conditional.
 - **Tokenizer identity.** The test checks the loaded tokenizer's vocab size
   (262,144) and `<channel|>` id (101) before running the vectors, so a fallback
   to a different revision fails loudly. Set `SHISA_DE_TOKENIZER_REQUIRE=1` to

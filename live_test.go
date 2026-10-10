@@ -3,7 +3,10 @@ package shisade
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -12,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -163,6 +167,18 @@ type liveQuestion struct {
 	// Gate overrides the think gate for this question, which is how the thinking
 	// read is exercised without sending every other question through a thought.
 	Gate *float64 `json:"gate"`
+	// Policy names a whole read for this question, and Probability asks for the
+	// one-read view, so the set covers more than the family's default read.
+	Policy      *string `json:"policy"`
+	Probability bool    `json:"probability"`
+}
+
+// call is the per-call settings this question asks for.
+func (q liveQuestion) call() CallOptions {
+	return CallOptions{
+		Probability: q.Probability,
+		Overrides:   OptionOverrides{Policy: q.Policy},
+	}
 }
 
 type liveOption struct {
@@ -224,12 +240,13 @@ type livePython struct {
 	SelfDelta float64                     `json:"self_delta"`
 }
 
-// liveDrift is how far the Python client's own two passes were apart.
+// liveDrift is how far the Python client's own passes were apart.
 type liveDrift struct {
-	MaxProbabilityDelta float64 `json:"max_probability_delta"`
-	SameValue           bool    `json:"same_value"`
-	SameStrategy        bool    `json:"same_strategy"`
-	SameRequests        bool    `json:"same_requests"`
+	MaxProbabilityDelta float64  `json:"max_probability_delta"`
+	ValueDelta          *float64 `json:"value_delta"`
+	SameValue           bool     `json:"same_value"`
+	SameStrategy        bool     `json:"same_strategy"`
+	SameRequests        bool     `json:"same_requests"`
 }
 
 type livePythonAnswer struct {
@@ -244,6 +261,7 @@ type livePythonAnswer struct {
 	Confidence     *float64           `json:"confidence"`
 	Level          *string            `json:"level"`
 	ThoughtTokens  int                `json:"thought_tokens"`
+	ThoughtClosed  *bool              `json:"thought_closed"`
 	MissingFromTop []string           `json:"missing_from_top"`
 }
 
@@ -293,15 +311,21 @@ func recordPythonAnswers(t *testing.T) (livePython, livePythonMeta) {
 	if repo == "" {
 		t.Skip("no Python repository to record from; set SHISA_DE_PYTHON_REPO")
 	}
-	script := filepath.Join(repo, "..", "shisa-de-go", "scripts", "live_parity.py")
-	if _, err := os.Stat(script); err != nil {
-		t.Skipf("the recorder is not at %s: %v", script, err)
-	}
 	if _, err := os.Stat(filepath.Join(repo, "shisa_de")); err != nil {
 		t.Skipf("no shisa_de package under %s: %v", repo, err)
 	}
 	if _, err := exec.LookPath("python3"); err != nil {
 		t.Skip("no python3 to record with")
+	}
+
+	// The recorder ships in this repository, so it is found from the package
+	// directory `go test` runs in. Deriving it from the Python checkout's
+	// neighbourhood would turn a differently-named or relocated Go checkout into
+	// a silent skip of the milestone's gate. Its absence is a broken checkout,
+	// and the operator asked for the live suite by name.
+	script := filepath.Join("scripts", "live_parity.py")
+	if _, err := os.Stat(script); err != nil {
+		t.Fatalf("the recorder is not at %s: %v", script, err)
 	}
 
 	dir := t.TempDir()
@@ -311,7 +335,13 @@ func recordPythonAnswers(t *testing.T) (livePython, livePythonMeta) {
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	if err := command.Run(); err != nil {
-		t.Fatalf("recording the Python answers: %v\n%s", err, stderr.String())
+		// Exit status 3 is the recorder saying "the output is written, but my own
+		// passes disagreed on the chosen value". That is a verdict about the
+		// server and it belongs to the reporting below, not to the exec layer,
+		// which is what the message at the top of the test describes.
+		if !liveRecorderExitIsUnstable(err) {
+			t.Fatalf("recording the Python answers: %v\n%s", err, stderr.String())
+		}
 	}
 
 	raw, err := os.ReadFile(out)
@@ -330,8 +360,16 @@ func recordPythonAnswers(t *testing.T) (livePython, livePythonMeta) {
 	if err := json.Unmarshal(metaRaw, &meta); err != nil {
 		t.Fatalf("parsing the recording's provenance: %v", err)
 	}
+	// The digest ties the answers to the provenance. Without it a stale
+	// `.meta.json` beside a fresh `.json` would be reported as one measurement.
+	if digest := sha256.Sum256(raw); hex.EncodeToString(digest[:]) != meta.SHA256 {
+		t.Fatalf("the recording is not the one its provenance describes: sha256 %x, meta says %s",
+			digest, meta.SHA256)
+	}
 	t.Logf("the Python client: %d passes, %d requests, fingerprint %s, self-delta %.3g",
 		meta.Passes, meta.Requests, meta.ServingFingerprint, meta.SelfDelta)
+	t.Logf("recorded %s from %s at %s, tokenizer %q",
+		meta.ReadoutVersion, meta.PythonRepo, meta.Recorded, meta.TokenizerRevision)
 	return recorded, meta
 }
 
@@ -339,9 +377,41 @@ func recordPythonAnswers(t *testing.T) (livePython, livePythonMeta) {
 //
 // The read is `temperature: 0` against a deterministic server, so the two
 // clients should agree exactly; the tolerance is for the float arithmetic on the
-// way to the softmax, not for the server changing its mind. A chosen value that
-// differs is reported as itself rather than hidden behind this.
-const liveTolerance = 1e-6
+// way to the softmax, not for the server changing its mind. The measured delta
+// is 1e-16 to 1e-19, so this leaves three orders of magnitude of room and no
+// more. It is also what a chosen numeric value is compared with, in
+// `liveSameValue`. A chosen value that differs is reported as itself rather than
+// hidden behind this.
+const liveTolerance = 1e-9
+
+// liveSumTolerance is how far a distribution may be from summing to one. It is a
+// different quantity from `liveTolerance`: summing 256 probabilities of a few
+// parts in 10^4 accumulates a relative error near 256*eps, and it is this
+// client's own arithmetic rather than a comparison against the recording.
+const liveSumTolerance = 1e-9
+
+// liveRecorderExitIsUnstable reports whether a recorder exit status means
+// "the recording is written, but the recorder's own passes disagreed on the
+// chosen value" rather than "there is no recording".
+//
+// The two are different verdicts: the first is a statement about the served
+// checkpoint, which the test reports as inconclusive; the second is a broken
+// harness. Treating the first as the second made the inconclusive reporting
+// unreachable, so the classification is its own function with its own test.
+func liveRecorderExitIsUnstable(err error) bool {
+	var exit *exec.ExitError
+	return errors.As(err, &exit) && exit.ExitCode() == 3
+}
+
+// liveSameEndpoint applies the client's own endpoint normalization to both
+// sides, so `http://host/v1/` and `http://host` are the same endpoint.
+func liveSameEndpoint(a, b string) bool {
+	normalize := func(value string) string {
+		value = strings.TrimRight(value, "/")
+		return strings.TrimSuffix(value, "/v1")
+	}
+	return normalize(a) == normalize(b)
+}
 
 // TestLiveParityAgainstPython is the M6 gate.
 //
@@ -368,6 +438,19 @@ func TestLiveParityAgainstPython(t *testing.T) {
 	if meta.Model != liveModelID() {
 		t.Fatalf("the recording is of %s and the suite is pointed at %s", meta.Model, liveModelID())
 	}
+	// The gate's whole premise is one endpoint for both halves. The recorder
+	// resolves `SHISA_DE_ENDPOINT` the way this side does, so a mismatch here
+	// means it stopped doing that -- two clients against two servers is the one
+	// comparison the design exists to prevent, and nothing below could then be a
+	// port difference.
+	wantEndpoint := os.Getenv(EndpointEnv)
+	if wantEndpoint == "" {
+		wantEndpoint = DefaultEndpoint
+	}
+	if !liveSameEndpoint(wantEndpoint, meta.Endpoint) {
+		t.Fatalf("the recording is of %s and this suite is talking to %s; the gate needs "+
+			"one endpoint for both clients", meta.Endpoint, wantEndpoint)
+	}
 	if meta.SelfDelta > liveTolerance {
 		t.Fatalf("the Python client's own passes differ by %.3g, beyond the %.0e tolerance: "+
 			"the served checkpoint is not repeatable right now, so this run cannot tell a "+
@@ -375,17 +458,21 @@ func TestLiveParityAgainstPython(t *testing.T) {
 			"offline with TestClientParity.", meta.SelfDelta, liveTolerance)
 	}
 	if len(meta.Unstable) != 0 {
-		t.Fatalf("the Python client's own passes disagree on the chosen value for %v",
-			meta.Unstable)
+		t.Fatalf("the Python client's own passes disagree on the chosen value for %v: "+
+			"the served checkpoint is not repeatable right now, so this run cannot tell a "+
+			"port difference from the server's. Re-run, or compare the recorded exchanges "+
+			"offline with TestClientParity.", meta.Unstable)
 	}
 
 	model, recorder := liveModel(t, OptionOverrides{})
 	if version := model.ReadoutVersion; version != meta.ReadoutVersion {
 		t.Fatalf("the readout is %s and the recording is %s", version, meta.ReadoutVersion)
 	}
-	if endpoint := os.Getenv(EndpointEnv); endpoint != "" && endpoint != meta.Endpoint {
-		t.Logf("comparing against %s, where the recording came from %s", endpoint, meta.Endpoint)
-	}
+
+	// Every response this test reads is checked against the recording's serving
+	// shape, including the ones a gate client makes: a shape that moved only on
+	// the thinking path would otherwise go unnoticed.
+	recorders := []*liveRecorder{recorder}
 
 	// The thinking question needs the recording's gate, which is a constructor
 	// setting, so a second client is built for it.
@@ -397,8 +484,9 @@ func TestLiveParityAgainstPython(t *testing.T) {
 		if _, ok := gates[*question.Gate]; !ok {
 			gate := *question.Gate
 			overrides := OptionOverrides{ReasoningProb: &gate}
-			eager, _ := liveModel(t, overrides)
+			eager, eagerRecorder := liveModel(t, overrides)
 			gates[gate] = eager
+			recorders = append(recorders, eagerRecorder)
 		}
 	}
 
@@ -421,7 +509,7 @@ func TestLiveParityAgainstPython(t *testing.T) {
 				t.Fatalf("the evidence is not JSON: %v", err)
 			}
 			decision, err := client.Decide(context.Background(), state,
-				map[string]Question{question.Head: asked}, CallOptions{})
+				map[string]Question{question.Head: asked}, question.call())
 			if err != nil {
 				t.Fatalf("Decide: %v", err)
 			}
@@ -435,9 +523,11 @@ func TestLiveParityAgainstPython(t *testing.T) {
 
 	// The serving shape is checked after the questions, so a parity failure is
 	// reported as one rather than as a moved endpoint.
-	if fingerprint := recorder.fingerprint(t); fingerprint != meta.ServingFingerprint {
-		t.Errorf("the endpoint is serving %s and the Python client saw %s in this same "+
-			"session; the shape moved mid-run", fingerprint, meta.ServingFingerprint)
+	for _, seen := range recorders {
+		if fingerprint := seen.fingerprint(t); fingerprint != meta.ServingFingerprint {
+			t.Errorf("the endpoint is serving %s and the Python client saw %s in this same "+
+				"session; the shape moved mid-run", fingerprint, meta.ServingFingerprint)
+		}
 	}
 }
 
@@ -460,11 +550,28 @@ func compareLiveAnswer(t *testing.T, got Answer, want livePythonAnswer) {
 	if got.Calibrated != want.Calibrated {
 		t.Errorf("calibrated is %v and the recording is %v", got.Calibrated, want.Calibrated)
 	}
+	// The temperature is the direct signal for "the same per-read fit was
+	// selected". It is not implied by the distribution: on a peaked answer two
+	// temperatures can produce the same probabilities, so a record-selection bug
+	// can hide inside the probability tolerance. The JSON round trip preserves
+	// the float, so this is compared exactly.
+	if got.Temperature != want.Temperature {
+		t.Errorf("the temperature is %v and the recording is %v", got.Temperature, want.Temperature)
+	}
+	if (got.Confidence == nil) != (want.Confidence == nil) ||
+		(got.Confidence != nil && math.Abs(*got.Confidence-*want.Confidence) > liveTolerance) {
+		t.Errorf("the confidence is %v and the recording is %v", got.Confidence, want.Confidence)
+	}
 	if got.Requests != want.Requests {
 		t.Errorf("the answer cost %d requests and the recording cost %d", got.Requests, want.Requests)
 	}
 	if got.ThoughtTokens != want.ThoughtTokens {
 		t.Errorf("the thought is %d tokens and the recording is %d", got.ThoughtTokens, want.ThoughtTokens)
+	}
+	if (got.ThoughtClosed == nil) != (want.ThoughtClosed == nil) ||
+		(got.ThoughtClosed != nil && *got.ThoughtClosed != *want.ThoughtClosed) {
+		t.Errorf("the thought closure is %v and the recording is %v",
+			got.ThoughtClosed, want.ThoughtClosed)
 	}
 	if level, wanted := got.Level, want.Level; (level == nil) != (wanted == nil) ||
 		(level != nil && *level != *wanted) {
@@ -515,7 +622,7 @@ func compareLiveAnswer(t *testing.T, got Answer, want livePythonAnswer) {
 	for _, probability := range got.Probabilities {
 		total += probability
 	}
-	if math.Abs(total-1) > 1e-6 {
+	if math.Abs(total-1) > liveSumTolerance {
 		t.Errorf("the distribution sums to %.10f, not 1", total)
 	}
 	if len(got.Probabilities) == 0 {
@@ -725,7 +832,7 @@ func TestLiveDE2ReadsAWideChoiceInOnePrompt(t *testing.T) {
 			for _, probability := range answer.Probabilities {
 				total += probability
 			}
-			if math.Abs(total-1) > 1e-6 {
+			if math.Abs(total-1) > liveSumTolerance {
 				t.Errorf("the distribution sums to %.10f", total)
 			}
 			if answer.Strategy != "repeat2" {
@@ -743,10 +850,17 @@ func TestLiveDE2ReadsAWideChoiceInOnePrompt(t *testing.T) {
 			if version, _ := result.Meta["readout_version"].(string); version != "de2-codebook-v1" {
 				t.Errorf("the readout version is %v", result.Meta["readout_version"])
 			}
-			// The wire shape of a choice answer is exactly these four keys.
+			// The wire shape of a choice answer is exactly these four keys, which is
+			// the set the Python case asserts. A count alone would pass an answer
+			// that dropped one and added another.
 			wire := answer.ToWire()
+			for _, key := range []string{"type", "choice", "probabilities", "confidence"} {
+				if _, ok := wire[key]; !ok {
+					t.Errorf("the wire answer has no %q: %v", key, wire)
+				}
+			}
 			if len(wire) != 4 {
-				t.Errorf("the wire answer is %v", wire)
+				t.Errorf("the wire answer is %v, want exactly the four choice keys", wire)
 			}
 		})
 	}
@@ -791,17 +905,25 @@ func TestLiveDE2ThinksWhenTheRepeatedReadIsUnsure(t *testing.T) {
 		t.Errorf("the usage reports %v thought tokens and the answer %d",
 			result.Usage["thought_tokens"], answer.ThoughtTokens)
 	}
-	// The record carries a fit for the thinking read (`think:choice=6.8`), so a
-	// `repeat2-think` answer is calibrated and carries that temperature.
-	//
-	// The Python suite asserts `answer.calibrated is False` here, which is stale:
-	// it was written before the DE-2 record gained the `think` fit. The Python
-	// client returns True and 6.8 for this exact call, which is what this checks.
-	if !answer.Calibrated {
-		t.Error("the answer is not calibrated, and the record covers the thinking read")
+	// The record carries a fit for the thinking read (`think:choice`), so a
+	// `repeat2-think` answer against a checkpoint the record covers is calibrated
+	// at that fit. The expectation is read from the record rather than written as
+	// a literal, because the suite can be pointed at another served checkpoint:
+	// one the shipped record does not cover answers uncalibrated at 1.0, which is
+	// what the Python suite's own `calibrated is False` asserts.
+	covered := len(model.Calibration.Reads) != 0
+	wantCalibrated := model.CalibrationApplied && covered
+	wantTemperature := 1.0
+	if wantCalibrated {
+		wantTemperature = model.Calibration.TemperatureFor("choice", "think")
 	}
-	if answer.Temperature != 6.8 {
-		t.Errorf("the temperature is %v, want the record's thinking fit 6.8", answer.Temperature)
+	if answer.Calibrated != wantCalibrated {
+		t.Errorf("calibrated is %v and this checkpoint's record gives %v",
+			answer.Calibrated, wantCalibrated)
+	}
+	if answer.Temperature != wantTemperature {
+		t.Errorf("the temperature is %v and the record's thinking fit is %v",
+			answer.Temperature, wantTemperature)
 	}
 	if answer.Confidence == nil {
 		t.Error("the answer carries no confidence")
@@ -821,4 +943,90 @@ func TestLiveModelIsTheRecordedCheckpoint(t *testing.T) {
 	t.Logf("model %s, family %s (%v), readout %v, serving %s, %d requests",
 		report["model"], report["model_family"], report["family_source"],
 		report["readout_version"], recorder.fingerprint(t), recorder.requests)
+}
+
+// -- the harness's own logic, offline -----------------------------------------
+//
+// These do not spend a request and do not need `SHISA_DE_LIVE=1`. They pin the
+// parts of the gate that decide whether a run means anything, which is where the
+// two ways the gate can quietly stop being a gate live: an exit status that
+// discards a recording, and two endpoints compared as if they were one.
+
+// TestLiveRecorderExitClassification is the branch that decides whether a
+// recorder run whose own passes disagreed is a usable recording or a failure.
+// It was unreachable when any non-zero exit was a plain error, which made the
+// "the server moved, so this run is inconclusive" reporting dead code.
+func TestLiveRecorderExitClassification(t *testing.T) {
+	for _, testCase := range []struct {
+		status   int
+		unstable bool
+	}{{0, false}, {1, false}, {2, false}, {3, true}} {
+		t.Run(fmt.Sprint(testCase.status), func(t *testing.T) {
+			command := exec.Command(os.Args[0], "-test.run=TestLiveRecorderExitHelper")
+			command.Env = append(os.Environ(), "SHISA_DE_RECORDER_EXIT="+fmt.Sprint(testCase.status))
+			err := command.Run()
+			if got := liveRecorderExitIsUnstable(err); got != testCase.unstable {
+				t.Errorf("exit %d is classified unstable=%v, want %v (err %v)",
+					testCase.status, got, testCase.unstable, err)
+			}
+		})
+	}
+}
+
+// TestLiveRecorderExitHelper exits with the status its parent asked for. It is
+// not a test of its own; the child's `-test.run` selects it by name.
+func TestLiveRecorderExitHelper(t *testing.T) {
+	status, err := strconv.Atoi(os.Getenv("SHISA_DE_RECORDER_EXIT"))
+	if err != nil {
+		return
+	}
+	os.Exit(status)
+}
+
+// TestLiveSameEndpoint checks the normalization the gate's endpoint comparison
+// uses, which is the client's own: a trailing slash and a `/v1` suffix are the
+// same endpoint, and a different host or port is not.
+func TestLiveSameEndpoint(t *testing.T) {
+	for _, testCase := range []struct {
+		left, right string
+		same        bool
+	}{
+		{"https://api.shisa.ai/openai", "https://api.shisa.ai/openai", true},
+		{"https://api.shisa.ai/openai/", "https://api.shisa.ai/openai", true},
+		{"https://api.shisa.ai/openai/v1", "https://api.shisa.ai/openai", true},
+		{"https://api.shisa.ai/openai/v1/", "https://api.shisa.ai/openai/", true},
+		{"http://127.0.0.1:8021", "https://api.shisa.ai/openai", false},
+		{"http://127.0.0.1:8021", "http://127.0.0.1:8022", false},
+		// Not the same endpoint just because the paths line up.
+		{"https://api.shisa.ai/openai", "https://api.shisa.ai/other", false},
+	} {
+		if got := liveSameEndpoint(testCase.left, testCase.right); got != testCase.same {
+			t.Errorf("liveSameEndpoint(%q, %q) is %v, want %v",
+				testCase.left, testCase.right, got, testCase.same)
+		}
+	}
+}
+
+// TestLiveRecorderRefusesASinglePass checks that the recorder will not report a
+// self-delta it never measured. One pass has no pair to compare, and the
+// script's whole contribution to the gate is that comparison.
+func TestLiveRecorderRefusesASinglePass(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("no python3 to run the recorder with")
+	}
+	if _, err := os.Stat(filepath.Join("scripts", "live_parity.py")); err != nil {
+		t.Fatalf("the recorder is not at scripts/live_parity.py: %v", err)
+	}
+	// No key and no network: the argument check runs before either is needed.
+	command := exec.Command("python3", filepath.Join("scripts", "live_parity.py"),
+		"--passes", "1", "--out", filepath.Join(t.TempDir(), "unused.json"))
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	err := command.Run()
+	if err == nil {
+		t.Fatal("the recorder accepted --passes 1, so its self-delta would be unmeasured")
+	}
+	if !strings.Contains(stderr.String(), "--passes must be at least 2") {
+		t.Errorf("the refusal does not say why: %q", stderr.String())
+	}
 }

@@ -12,8 +12,10 @@ tokenizer, the DE-2 prompt renderer, the question types, family resolution, the
 Python-compatible JSON writer and reader, the DE-2 readout itself -- the code
 read, the fallback for a server without `logprob_token_ids`, the bounded thought
 and the read after it -- the layers above it: the DE-2 policy, the calibration
-records, and `DecisionModel` with `Classify` and `Decide`; and the command line,
-`shisa-de doctor`, `ask` and `explain`. Live tests are still to come.
+records, and `DecisionModel` with `Classify` and `Decide`; the command line,
+`shisa-de doctor`, `ask` and `explain`; and the live suite behind
+`SHISA_DE_LIVE=1`, including the gate that runs the same questions through this
+client and the Python one in one session and compares the answers.
 
 The contract this port implements is
 [`docs/READOUT-DE2.md`](docs/READOUT-DE2.md), copied verbatim from the Python
@@ -90,14 +92,26 @@ The tokenizer is pure Go, so the build needs no cgo and no Python. The
 tokenizer parity tests compare against golden vectors derived from
 `transformers`; they skip when the vectors are absent.
 
-Live tests that spend real API requests are planned (M6):
+Live tests spend real API requests and are opt in:
 
 ```bash
-SHISA_DE_LIVE=1 SHISA_API_KEY=... go test ./... -run Live
+SHISA_DE_LIVE=1 SHISA_API_KEY=... go test . -run Live
 ```
 
-There is no such test in the tree yet, and `-run Live` currently matches
-nothing.
+`TestLiveParityAgainstPython` is the interesting one: it runs the fixed question
+set in `testdata/live_questions.json` through this client and through the Python
+one, against the same endpoint in the same session, and requires the chosen
+values and the distributions to agree. The Python half is recorded by
+`scripts/live_parity.py`, which needs a `shisa-de` checkout (`SHISA_DE_PYTHON_REPO`
+points at one elsewhere); without it the parity test skips and the rest of the
+live suite still runs. `SHISA_DE_MODEL`, `SHISA_DE_ENDPOINT` and
+`SHISA_DE_TOKENIZER` point the whole suite at another served checkpoint.
+
+The recorder's own logic has offline tests that need nothing but `python3`:
+
+```bash
+python3 -m unittest discover -s scripts -p 'test_*.py'
+```
 
 ## License
 

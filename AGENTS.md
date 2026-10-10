@@ -107,6 +107,7 @@ What must not change casually:
 | `scripts/gen_client_parity.py` | Records live Python `DecisionModel` exchanges against the hosted endpoint and writes the fixture the parity test replays |
 | `live_test.go` | The live suite behind `SHISA_DE_LIVE=1`, including the M6 gate: the fixed question set in `testdata/live_questions.json` through both clients in one session |
 | `scripts/live_parity.py` | Runs the fixed live question set through the Python client and records the answers the Go test compares against; invoked by the test, and by hand to inspect one |
+| `scripts/test_live_parity.py` | Offline tests for the recorder's endpoint and model resolution, its tokenizer pin and its drift arithmetic |
 | `scripts/gen_python_printable.py` | Generates `data/python-printable.json` and `testdata/python_repr.json` from the running interpreter |
 | `scripts/gen_pyjson_dumps.py` | Generates `testdata/pyjson_dumps.json`: `json.dumps` over `indent` and `ensure_ascii`, which is what the command line prints |
 | `questions_test.go` | The validation rules Python cannot reach: a repeated option key, and a repeated label in a multi-label head |
@@ -167,6 +168,7 @@ What must not change casually:
 | Client replay | `go test . -run TestClientParity` (replays recorded live Python `DecisionModel` exchanges through an `httptest` stub; offline) |
 | Race detector | `go test -race ./...` (the concurrency claim for `Readout` rests on this) |
 | Live suite, hosted DE-2 | `SHISA_DE_LIVE=1 go test . -run Live` (spends real requests; the parity gate also runs the Python client, so it needs the `shisa-de` checkout, `SHISA_DE_PYTHON_REPO` to point elsewhere) |
+| Recorder's own logic | `python3 -m unittest discover -s scripts -p 'test_*.py'` (offline; the endpoint and model resolution, the tokenizer pin and the drift arithmetic, with no network and no `shisa_de` checkout) |
 | Endpoint check | `go run ./cmd/shisa-de doctor --model shisa-ai/shisa-de-2`, and `--probe` to spend one question on the read |
 | Readout walkthrough | `go run ./cmd/shisa-de explain --model shisa-ai/shisa-de-2 --labels billing,shipping` |
 
@@ -182,7 +184,9 @@ client's answers in the same run rather than reading a checked-in file, and the
 recorder runs the set twice to measure the server's own repeatability. When those
 two passes disagree, the test reports the server rather than the port. Compare
 recorded exchanges offline with `TestClientParity` when the port is what is in
-question.
+question. Both halves resolve `SHISA_DE_ENDPOINT` and `SHISA_DE_MODEL`, and the
+gate fails rather than logs when they disagree: two clients against two servers
+is the one comparison the design exists to prevent.
 
 `doctor` and `explain` also spend real requests. They read the endpoint from
 `SHISA_DE_ENDPOINT` and the key from `SHISA_DE_API_KEY`, then `SHISA_API_KEY`.
@@ -241,14 +245,17 @@ version, and the test fails when the fixture disagrees with it.
   clients in one session and measures the server's own repeatability so it can
   say which one moved.
 - The port's own live measurements are the M6 gate: the fixed question set
-  through both clients in one session, agreeing to float epsilon. Anything else
-  measured here is the Python client's result replayed, and should be said that
-  way rather than restated as if this code had been measured against a server.
-- `tests/test_live.py` in the Python repository has one stale assertion:
-  `test_de2_thinks_when_the_repeated_read_is_unsure` expects
-  `calibrated is False`, which predates the DE-2 record's `think` fit. The Python
-  client returns `True` at 6.8 today. `docs/PORT.md` records it; do not copy the
-  assertion here.
+  through both clients in one session, agreeing to 1e-16 to 1e-19 (2.22e-16
+  worst) against `vllm-0.30.0-tp2-ca69195e` on 2026-10-10. Anything else measured
+  here is the Python client's result replayed, and should be said that way rather
+  than restated as if this code had been measured against a server.
+- The Python suite's `test_de2_thinks_when_the_repeated_read_is_unsure` expects
+  `calibrated is False`, which is stale against the hosted `shisa-ai/shisa-de-2`
+  -- the checkpoint the shipped record was fitted on, where the Python client
+  returns `True` at 6.8 today -- and correct against any other served checkpoint,
+  where the record does not apply. `docs/PORT.md` records both sides. The Go test
+  derives the expectation from the model's own applicability rather than writing
+  the temperature down; do not replace it with a literal.
 
 ## Git Discipline
 
