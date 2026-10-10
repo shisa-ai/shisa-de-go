@@ -417,6 +417,7 @@ func questionFromHead(head string, spec HeadSpec) (Question, error) {
 		// ignores `multi_label`. There is no way to spell that intent here without
 		// silently dropping the descriptions, so it is refused.
 		labels := make([]string, 0, len(spec.Options))
+		seen := make(map[string]bool, len(spec.Options))
 		for _, option := range spec.Options {
 			if !isNilDescription(option.Description) {
 				return nil, &QuestionError{Message: fmt.Sprintf(
@@ -424,6 +425,17 @@ func questionFromHead(head string, spec HeadSpec) (Question, error) {
 						"nowhere to show %q's description; drop the descriptions, or set "+
 						"MultiLabel to false to read one choice over them", head, option.Key)}
 			}
+			// A repeated label reads the same noul twice under one key, and the
+			// second answer overwrites the first. Python pops the key once and
+			// then raises a KeyError on the second; this port refuses it before
+			// anything is sent.
+			if seen[option.Key] {
+				return nil, &QuestionError{Message: fmt.Sprintf(
+					"head %q: the multi-label head repeats the label %q; each label is one "+
+						"yes/no question and the answers would overwrite each other",
+					head, option.Key)}
+			}
+			seen[option.Key] = true
 			labels = append(labels, option.Key)
 		}
 		template := spec.Instructions
@@ -1284,6 +1296,17 @@ func numberOrNil(value *float64) any {
 	return *value
 }
 
+// stringOrNil is the string behind a pointer, or nil when there is none.
+//
+// The same rule as numberOrNil, for the fields the Python client types as
+// `str | None`: a caller-visible map holds the string, never a pointer to it.
+func stringOrNil(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return *value
+}
+
 // pythonStr is Python's `str()`.
 //
 // A score's level and its legend are rendered with it, and both are part of what
@@ -1369,8 +1392,16 @@ func pythonReprFloat(value float64) string {
 	return pythonFloatString(value)
 }
 
-// pythonQuote is Python's `repr()` for a string: single quotes, unless the
-// string holds a single quote and no double quote, in which case double.
+// pythonQuote is Python's `repr()` for a string.
+//
+// The quote is single, unless the string holds a single quote and no double
+// quote, in which case it is double. Inside it, a backslash and the quote are
+// escaped, and so is everything Python's `str.isprintable()` calls unprintable:
+// the control characters, the format characters, the private-use and unassigned
+// code points, and every space separator but U+0020. The predicate is the
+// interpreter's own, from `data/python-printable.json`, because Go's
+// `strconv.IsPrint` is the same rule against a different Unicode version and
+// disagrees on the code points assigned since.
 func pythonQuote(text string) string {
 	quote := byte('\'')
 	if strings.ContainsRune(text, '\'') && !strings.ContainsRune(text, '"') {
@@ -1389,6 +1420,15 @@ func pythonQuote(text string) string {
 			out.WriteString("\\r")
 		case r == '\t':
 			out.WriteString("\\t")
+		case !isPythonPrintable(r):
+			switch {
+			case r < 0x100:
+				fmt.Fprintf(&out, "\\x%02x", r)
+			case r < 0x10000:
+				fmt.Fprintf(&out, "\\u%04x", r)
+			default:
+				fmt.Fprintf(&out, "\\U%08x", r)
+			}
 		default:
 			out.WriteRune(r)
 		}

@@ -2,11 +2,14 @@ package shisade
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -887,25 +890,21 @@ func TestDecisionModelClose(t *testing.T) {
 // TestCallerVisibleMapsHoldValuesNotPointers pins the Go type in every map a
 // caller reads.
 //
-// The parity gate compares through JSON, and a *float64 marshals to the same
-// number as a float64, so it cannot see this. A caller can: a pointer prints as
-// an address, and `wire["confidence"].(float64)` panics while the identical
-// assertion succeeds for a choice, whose confidence was dereferenced.
+// The parity gate compares through JSON, and a *float64 or *string marshals to
+// the same value as the float64 or string behind it, so it cannot see this. A
+// caller can: a pointer prints as an address, and
+// `wire["confidence"].(float64)` panics while the identical assertion succeeds
+// for a choice, whose confidence was dereferenced.
 func TestCallerVisibleMapsHoldValuesNotPointers(t *testing.T) {
 	confidence := 0.75
 	answer := Answer{Type: "noul", Noul: floatPointer(0.6), Confidence: &confidence,
 		Probabilities: map[string]float64{"yes": 0.6, "no": 0.4}}
-	for name, value := range answer.ToWire() {
-		assertNotAPointer(t, "ToWire", name, value)
-	}
-	for name, value := range answer.ToDict() {
-		assertNotAPointer(t, "ToDict", name, value)
-	}
+	assertNoPointers(t, "a noul's ToWire", answer.ToWire())
+	assertNoPointers(t, "a noul's ToDict", answer.ToDict())
 	score := Answer{Type: "score", Score: floatPointer(1.5), Level: stringPointer("low"),
 		Confidence: &confidence, Legend: map[string]string{"0": "low"}}
-	for name, value := range score.ToWire() {
-		assertNotAPointer(t, "a score's ToWire", name, value)
-	}
+	assertNoPointers(t, "a score's ToWire", score.ToWire())
+	assertNoPointers(t, "a score's ToDict", score.ToDict())
 
 	// The classify views and the multi-label Raw block.
 	model, _ := newStubModel(t, 2, codeReadBody(map[string]float64{"A": -0.1, "B": -1.0}))
@@ -915,9 +914,7 @@ func TestCallerVisibleMapsHoldValuesNotPointers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	for name, value := range decision.Values["route"].(map[string]any) {
-		assertNotAPointer(t, "a classify view", name, value)
-	}
+	assertNoPointers(t, "a classify view", decision.Values["route"])
 
 	model, _ = newStubModel(t, 2,
 		codeReadBody(map[string]float64{"A": -0.1, "B": -1.0}),
@@ -928,22 +925,64 @@ func TestCallerVisibleMapsHoldValuesNotPointers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	for name, value := range decision.Raw["topic:billing"] {
-		assertNotAPointer(t, "the multi-label raw block", name, value)
+	assertNoPointers(t, "the multi-label raw block", decision.Raw["topic:billing"])
+
+	// Decision.Raw for an ordinary head, without and with debug. The debug read
+	// is where `prompt`, `top_logprobs`, `sampled` and `thought` all appear, and
+	// the policy's raw block nests `components` under the head.
+	model, _ = newStubModel(t, 2, codeReadBody(map[string]float64{"A": -0.1, "B": -1.0}))
+	decision, err = model.Decide(context.Background(), map[string]any{"e": "x"},
+		map[string]Question{"urgent": NewNoul("Is it urgent?")}, CallOptions{})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
 	}
+	assertNoPointers(t, "a raw head", decision.Raw["urgent"])
+
+	readout, _ := newPolicyReadout(t, 2,
+		codeReadBody(map[string]float64{"A": -0.9, "B": -1.0}),
+		thinkBody(500, 501),
+		codeReadBody(map[string]float64{"A": -1.2, "B": -0.5}))
+	model, err = NewDecisionModel(DecisionModelConfig{
+		BaseURL: "http://stub.invalid", Model: "shisa-ai/shisa-de-2",
+		Tokenizer: "shisa-ai/shisa-de-2", Readout: readout,
+	})
+	if err != nil {
+		t.Fatalf("NewDecisionModel: %v", err)
+	}
+	decision, err = model.Decide(context.Background(), map[string]any{"e": "x"},
+		map[string]Question{"urgent": NewNoul("Is it urgent?")}, CallOptions{Debug: true})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	assertNoPointers(t, "a debug raw head", decision.Raw["urgent"])
 }
 
-// assertNotAPointer fails when a map value a caller reads is a pointer to
-// something rather than the something.
-func assertNotAPointer(t *testing.T, where, name string, value any) {
+// assertNoPointers fails on any pointer inside a caller-visible value, at any
+// depth.
+//
+// It walks maps and slices through reflection rather than switching on the types
+// this package happens to use, because a `map[string]*float64` is a map of
+// pointers and a walker that only looked at the map would miss it.
+func assertNoPointers(t *testing.T, where string, value any) {
 	t.Helper()
 	if value == nil {
 		return
 	}
 	reflected := reflect.ValueOf(value)
-	if reflected.Kind() == reflect.Pointer {
-		t.Errorf("%s[%q] is a %T; a caller would print an address and fail a type assertion",
-			where, name, value)
+	switch reflected.Kind() {
+	case reflect.Map:
+		for _, key := range reflected.MapKeys() {
+			item := reflected.MapIndex(key)
+			assertNoPointers(t, fmt.Sprintf("%s[%v]", where, key.Interface()), item.Interface())
+		}
+	case reflect.Slice, reflect.Array:
+		for index := 0; index < reflected.Len(); index++ {
+			assertNoPointers(t, fmt.Sprintf("%s[%d]", where, index),
+				reflected.Index(index).Interface())
+		}
+	case reflect.Pointer:
+		t.Errorf("%s is a %T; a caller would print an address and fail a type assertion",
+			where, value)
 	}
 }
 
@@ -977,6 +1016,111 @@ func TestPythonStr(t *testing.T) {
 		if got := pythonStr(tc.value); got != tc.want {
 			t.Errorf("pythonStr(%#v) = %q, want %q", tc.value, got, tc.want)
 		}
+	}
+}
+
+// TestPythonQuoteMatchesPythonRepr replays Python's `repr()` for every sampled
+// code point.
+//
+// `pythonQuote` is only reachable through a label: a level's text and a legend's
+// values are the option keys, spelled with `repr` when they sit inside a
+// container. The escaping rule is the interpreter's, so the expectations are
+// generated from an interpreter rather than written down, and the sampling
+// covers every printable range boundary plus all of the BMP's first three pages.
+func TestPythonQuoteMatchesPythonRepr(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "python_repr.json"))
+	if err != nil {
+		t.Fatalf("reading the expectations: %v", err)
+	}
+	var fixture struct {
+		Python        string            `json:"python"`
+		PythonUnicode string            `json:"python_unicode"`
+		Generated     string            `json:"generated"`
+		CodePoints    int               `json:"code_points"`
+		Reprs         map[string]string `json:"reprs"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("the expectations are not JSON: %v", err)
+	}
+	if fixture.PythonUnicode == "" || fixture.Generated == "" {
+		t.Fatal("the expectations do not say which interpreter produced them")
+	}
+	if len(fixture.Reprs) != fixture.CodePoints {
+		t.Errorf("the expectations hold %d reprs and claim %d code points",
+			len(fixture.Reprs), fixture.CodePoints)
+	}
+
+	// The table and the expectations have to come from the same interpreter, or
+	// a disagreement below is a Unicode version rather than a bug.
+	table, err := pythonPrintableTable()
+	if err != nil {
+		t.Fatalf("the printable table did not load: %v", err)
+	}
+	if table.PythonUnicode != fixture.PythonUnicode {
+		t.Errorf("the table is from Unicode %s and the expectations from %s",
+			table.PythonUnicode, fixture.PythonUnicode)
+	}
+
+	bad := 0
+	for character, want := range fixture.Reprs {
+		runes := []rune(character)
+		if len(runes) != 1 {
+			t.Fatalf("an expectation key is %d runes, want 1", len(runes))
+		}
+		if got := pythonQuote(character); got != want {
+			if bad < 20 {
+				t.Errorf("pythonQuote(%#U) = %s, Python says %s", runes[0], got, want)
+			}
+			bad++
+		}
+	}
+	if bad != 0 {
+		t.Errorf("%d of %d sampled code points disagree", bad, len(fixture.Reprs))
+	}
+}
+
+// TestPythonPrintableTableCoversPython pins the table's shape against the
+// predicate it stands for.
+//
+// The table is what makes `pythonQuote` the interpreter's spelling rather than
+// Go's near miss, and the one code point class the two languages cannot share is
+// the surrogate: Go decodes a lone one out of a string as U+FFFD, so the table
+// omits the range and the lookup must still answer for it.
+func TestPythonPrintableTableCoversPython(t *testing.T) {
+	table, err := pythonPrintableTable()
+	if err != nil {
+		t.Fatalf("the printable table did not load: %v", err)
+	}
+	if table.Python == "" || table.PythonUnicode == "" || table.Source == "" {
+		t.Errorf("the table does not carry its provenance: %+v", table)
+	}
+	// The table is searched as sorted and disjoint; `pythonPrintableTable`
+	// refuses anything else, so a load that succeeded is one that can be
+	// searched.
+	covered := 0
+	for _, pair := range table.Printable {
+		covered += pair[1] - pair[0] + 1
+	}
+	if covered < 0x10000 {
+		t.Errorf("the table covers %d code points, which is not most of Unicode", covered)
+	}
+	if !isPythonPrintable(' ') {
+		t.Error("the ASCII space is not printable; Python's isprintable() says it is")
+	}
+	for _, rune := range []rune{'a', 'é', '\u00a1', '\u4e2d', '\U0001f600'} {
+		if !isPythonPrintable(rune) {
+			t.Errorf("%#U is not printable", rune)
+		}
+	}
+	for _, rune := range []rune{0, '\t', '\n', 0x7f, 0x9f, 0x200b, 0x2028, 0x2029, 0x00a0, 0xe000, 0xfeff} {
+		if isPythonPrintable(rune) {
+			t.Errorf("%#U is printable", rune)
+		}
+	}
+	// U+FFFD is what Go decodes a lone surrogate to, and Python calls it
+	// printable, so the omission of the surrogate range costs nothing here.
+	if !isPythonPrintable('\ufffd') {
+		t.Error("U+FFFD is not printable; Python's isprintable() says it is")
 	}
 }
 

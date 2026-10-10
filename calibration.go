@@ -308,9 +308,11 @@ func LoadCalibrationFile(path string) (Calibration, error) {
 // from the model.
 //
 // The required keys are the Python loader's: `model`, `readout_version`,
-// `serving_shape` and `fitted_on`, plus one of `temperatures` and `reads`. A
-// missing provenance field is refused rather than defaulted, because the
-// provenance is what decides whether the record applies to a checkpoint.
+// `serving_shape`, `fitted_on` and `temperatures`. A missing provenance field is
+// refused rather than defaulted, because the provenance is what decides whether
+// the record applies to a checkpoint. A `null` temperature is refused too:
+// Python's `float(None)` raises, and reading the null as zero would produce raw
+// probabilities reported as calibrated.
 func CalibrationFromJSON(data []byte, origin string) (Calibration, error) {
 	var raw struct {
 		// Pointers, because JSON null decodes into a float64 as 0. A null
@@ -343,9 +345,10 @@ func CalibrationFromJSON(data []byte, origin string) (Calibration, error) {
 				"calibration record %s has no %s", origin, required.name)
 		}
 	}
-	if raw.Temperatures == nil && raw.Reads == nil {
+	if raw.Temperatures == nil {
 		return Calibration{}, fmt.Errorf(
-			"calibration record %s has neither temperatures nor reads", origin)
+			"calibration record %s has no temperatures; the Python loader indexes it "+
+				"unconditionally, and a record without one has no fit to apply", origin)
 	}
 	temperatures, err := flattenTemperatures(raw.Temperatures, origin)
 	if err != nil {
@@ -353,6 +356,11 @@ func CalibrationFromJSON(data []byte, origin string) (Calibration, error) {
 	}
 	reads := make(map[string]map[string]float64, len(raw.Reads))
 	for name, values := range raw.Reads {
+		if values == nil {
+			return Calibration{}, fmt.Errorf(
+				"calibration record %s has a null temperature table for the %q read",
+				origin, name)
+		}
 		flattened, err := flattenTemperatures(values, origin+" read "+name)
 		if err != nil {
 			return Calibration{}, err

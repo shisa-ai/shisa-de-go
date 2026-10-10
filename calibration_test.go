@@ -423,6 +423,15 @@ func TestCalibrationFromJSON(t *testing.T) {
 		    "serving_shape":"test","temperatures":{"choice":2.0}}`},
 		{"no temperature table", `{"model":"shisa-ai/shisa-de-2",
 		    "readout_version":"de2-codebook-v1","serving_shape":"test","fitted_on":"now"}`},
+		{"a null temperature table", `{"model":"shisa-ai/shisa-de-2",
+		    "readout_version":"de2-codebook-v1","serving_shape":"test","fitted_on":"now",
+		    "temperatures":null}`},
+		{"a null read table", `{"model":"shisa-ai/shisa-de-2",
+		    "readout_version":"de2-codebook-v1","serving_shape":"test","fitted_on":"now",
+		    "temperatures":{"choice":2.0},"reads":{"direct":null}}`},
+		{"per-read fits and no table", `{"model":"shisa-ai/shisa-de-2",
+		    "readout_version":"de2-codebook-v1","serving_shape":"test","fitted_on":"now",
+		    "reads":{"direct":{"choice":2.0}}}`},
 		{"a null temperature", `{"model":"shisa-ai/shisa-de-2",
 		    "readout_version":"de2-codebook-v1","serving_shape":"test","fitted_on":"now",
 		    "temperatures":{"choice":null}}`},
@@ -439,19 +448,21 @@ func TestCalibrationFromJSON(t *testing.T) {
 			}
 		})
 	}
-	// A record with only per-read fits and no top-level table is a record, not
-	// a missing one.
+	// The shipped record carries both tables. A per-read table is the whole of
+	// the record's applicability once it is there, as it is in the Python
+	// client: a read the per-read table does not name gets 1.0, and the
+	// top-level table is not consulted.
 	record, err = CalibrationFromJSON([]byte(`{"model":"shisa-ai/shisa-de-2",
 	    "readout_version":"de2-codebook-v1","serving_shape":"test","fitted_on":"now",
-	    "reads":{"direct":{"choice":2.0}}}`), "test")
+	    "temperatures":{"choice":1.89},"reads":{"direct":{"choice":2.0}}}`), "test")
 	if err != nil {
-		t.Fatalf("a per-read-only record was refused: %v", err)
-	}
-	if !record.Fitted() {
-		t.Error("a per-read-only record does not report itself as fitted")
+		t.Fatalf("a record with both tables was refused: %v", err)
 	}
 	if got := record.TemperatureFor("choice", "direct"); got != 2.0 {
 		t.Errorf("the per-read temperature is %v, want 2.0", got)
+	}
+	if got := record.TemperatureFor("choice", ""); got != 1.0 {
+		t.Errorf("a read the per-read table does not name is %v, want 1.0", got)
 	}
 }
 

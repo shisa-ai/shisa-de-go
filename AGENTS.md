@@ -91,11 +91,14 @@ What must not change casually:
 | `tokenizer/` | The pure-Go Hugging Face BPE tokenizer. No cgo. `LoadWith`/`ResolveWith` take a local-only policy |
 | `data/codebook-de2.json` | The 256 DE-2 answer codes, in order, with the audit they came from |
 | `data/calibration-de2.json` | The DE-2 record: temperatures per read with the fit's provenance, and one withheld earlier fit |
+| `data/python-printable.json` | Python's `str.isprintable()` over every code point, as 736 ranges, with the interpreter's Unicode version. `client.go`'s `pythonQuote` reads it instead of Go's `strconv.IsPrint`, which is the same rule against a different Unicode version |
+| `pythonprintable.go` | The embedded table, its validation, and the binary-search lookup |
 | `policy.go` | The DE-2 policy: repeated read, gate, thought, read after it; `ReadOptions` and the settings that select a read |
 | `calibration.go` | Temperature scaling, the confidence statistic, record selection, and `Calibration.Applicability` |
 | `client.go` | `DecisionModel.Classify`, `DecisionModel.Decide`, `SystemOne`, `Health`, `Decision`, `Answer`, `HeadSpec` |
 | `scripts/gen_client_parity.py` | Records live Python `DecisionModel` exchanges against the hosted endpoint and writes the fixture the parity test replays |
-| `questions_test.go` | The one validation rule Python cannot reach: a repeated option key |
+| `scripts/gen_python_printable.py` | Generates `data/python-printable.json` and `testdata/python_repr.json` from the running interpreter |
+| `questions_test.go` | The validation rules Python cannot reach: a repeated option key, and a repeated label in a multi-label head |
 | `cmd/shisa-de/` | Planned (M5): `shisa-de doctor`, `ask`, `explain` |
 
 ## Workflow Expectations

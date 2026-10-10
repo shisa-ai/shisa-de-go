@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // The friendly layer's parity gate.
@@ -110,6 +111,11 @@ type answerFixture struct {
 	Stages         int                `json:"stages"`
 	LogicalReads   int                `json:"logical_reads"`
 	Level          *string            `json:"level"`
+	// Recorded is the answer object as the generator wrote it: `to_dict` plus
+	// `level`, `legend` and `wire` beside it. Keeping it raw is what makes the
+	// `to_dict` comparison whole rather than relative to the fields this struct
+	// names.
+	Recorded json.RawMessage `json:"-"`
 	// Legend and Wire are recorded beside `to_dict`, which carries neither: the
 	// legend is the level text per position and `to_wire` is the TypeSafe shape.
 	Legend         map[string]string `json:"legend"`
@@ -117,6 +123,20 @@ type answerFixture struct {
 	MissingFromTop []string          `json:"missing_from_top"`
 	ThoughtTokens  int               `json:"thought_tokens"`
 	ThoughtClosed  *bool             `json:"thought_closed"`
+}
+
+// UnmarshalJSON fills the named fields and keeps the object as it was written,
+// so the `to_dict` comparison is against the recorded map rather than against a
+// map rebuilt from the fields this struct happens to name.
+func (a *answerFixture) UnmarshalJSON(data []byte) error {
+	type plain answerFixture
+	var fields plain
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*a = answerFixture(fields)
+	a.Recorded = append(json.RawMessage(nil), data...)
+	return nil
 }
 
 type clientMeta struct {
@@ -134,12 +154,18 @@ type clientMeta struct {
 
 func loadClientFixture(t *testing.T) (clientFixture, clientMeta) {
 	t.Helper()
-	path := filepath.Join("testdata", "client_parity.json")
+	return readClientFixture(t, filepath.Join("testdata", "client_parity.json"),
+		filepath.Join("testdata", "client_parity.meta.json"))
+}
+
+// readClientFixture loads a fixture and checks it against its provenance. The
+// paths are arguments so the integrity checks can be run against a mutated copy.
+func readClientFixture(t *testing.T, path, metaPath string) (clientFixture, clientMeta) {
+	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("reading %s: %v", path, err)
 	}
-	metaPath := filepath.Join("testdata", "client_parity.meta.json")
 	metaRaw, err := os.ReadFile(metaPath)
 	if err != nil {
 		t.Fatalf("reading %s: %v", metaPath, err)
@@ -148,20 +174,36 @@ func loadClientFixture(t *testing.T) (clientFixture, clientMeta) {
 	if err := json.Unmarshal(metaRaw, &meta); err != nil {
 		t.Fatalf("%s: %v", metaPath, err)
 	}
-	sum := sha256.Sum256(raw)
-	if got := hex.EncodeToString(sum[:]); got != meta.SHA256 {
-		t.Errorf("%s is %s, the provenance records %s", path, got, meta.SHA256)
-	}
 	var fixture clientFixture
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatalf("%s: %v", path, err)
 	}
+	for _, problem := range fixtureProblems(raw, fixture, meta) {
+		t.Error(problem)
+	}
+	return fixture, meta
+}
+
+// fixtureProblems is everything the provenance and the fixture disagree about.
+//
+// It returns the problems rather than reporting them so the checks can be run
+// against a mutated copy; a check that cannot be shown to fail is a check nobody
+// has made.
+func fixtureProblems(raw []byte, fixture clientFixture, meta clientMeta) []string {
+	var problems []string
+	report := func(format string, args ...any) {
+		problems = append(problems, fmt.Sprintf(format, args...))
+	}
+	sum := sha256.Sum256(raw)
+	if got := hex.EncodeToString(sum[:]); got != meta.SHA256 {
+		report("the fixture is %s, the provenance records %s", got, meta.SHA256)
+	}
 	if fixture.Endpoint != meta.Endpoint || fixture.Model != meta.Model {
-		t.Errorf("the fixture is for %s %s, the provenance records %s %s",
+		report("the fixture is for %s %s, the provenance records %s %s",
 			fixture.Endpoint, fixture.Model, meta.Endpoint, meta.Model)
 	}
 	if len(fixture.Cases) != meta.Cases {
-		t.Errorf("the fixture holds %d cases, the provenance records %d",
+		report("the fixture holds %d cases, the provenance records %d",
 			len(fixture.Cases), meta.Cases)
 	}
 	total := 0
@@ -169,23 +211,56 @@ func loadClientFixture(t *testing.T) (clientFixture, clientMeta) {
 		total += len(one.Exchanges)
 	}
 	if total != meta.Exchanges {
-		t.Errorf("the fixture holds %d exchanges, the provenance records %d", total, meta.Exchanges)
+		report("the fixture holds %d exchanges, the provenance records %d",
+			total, meta.Exchanges)
 	}
 	if meta.ServingFingerprint == "" || meta.Recorded == "" || meta.TokenizerRevision == "" {
-		t.Error("the provenance does not say when, against what, or with which tokenizer " +
+		report("the provenance does not say when, against what, or with which tokenizer " +
 			"the fixture was recorded")
 	}
-	// The fingerprint is the serving shape the responses came from, which is what
-	// makes the numbers reproducible; an endpoint label would not be.
-	if !strings.Contains(meta.ServingFingerprint, "/") &&
-		!strings.Contains(meta.ServingFingerprint, "-") {
-		t.Errorf("the recorded fingerprint %q is not a serving shape", meta.ServingFingerprint)
-	}
 	if meta.ReadoutVersion != ReadoutVersionFor(FamilyDE2) {
-		t.Errorf("the fixture was recorded against readout %q, this package reads %q",
+		report("the fixture was recorded against readout %q, this package reads %q",
 			meta.ReadoutVersion, ReadoutVersionFor(FamilyDE2))
 	}
-	return fixture, meta
+	// The fingerprint is the serving shape the responses came from, which is what
+	// makes the numbers reproducible. It is checked against the responses the
+	// fixture holds, not against its own shape: an endpoint label would pass a
+	// shape test and fail this one.
+	served := map[string]bool{}
+	created := map[string]bool{}
+	for _, one := range fixture.Cases {
+		for _, exchange := range one.Exchanges {
+			var body struct {
+				SystemFingerprint string `json:"system_fingerprint"`
+				Created           int64  `json:"created"`
+			}
+			if err := json.Unmarshal(exchange.Response, &body); err != nil {
+				report("a recorded response is not JSON: %v", err)
+				continue
+			}
+			if body.SystemFingerprint != "" {
+				served[body.SystemFingerprint] = true
+			}
+			if body.Created != 0 {
+				created[time.Unix(body.Created, 0).UTC().Format(time.DateOnly)] = true
+			}
+		}
+	}
+	switch {
+	case len(served) != 1:
+		report("the recorded responses carry %d system fingerprints: %v",
+			len(served), sortedKeysOf(served))
+	case sortedKeysOf(served)[0] != meta.ServingFingerprint:
+		report("the provenance records fingerprint %q, the responses carry %q",
+			meta.ServingFingerprint, sortedKeysOf(served)[0])
+	}
+	// The date is what the responses say, when they say anything: a fixture
+	// regenerated on a different day with a stale date would otherwise pass.
+	if len(created) != 0 && (len(created) != 1 || !created[meta.Recorded]) {
+		report("the provenance records %s, the responses were created on %v",
+			meta.Recorded, sortedKeysOf(created))
+	}
+	return problems
 }
 
 // parityTransport serves the recorded responses for the requests this client
@@ -491,8 +566,13 @@ func compareDecision(t *testing.T, want decisionFixture, got *Decision, model *D
 		// `to_dict` is compared whole, not field by field: it is the shape the
 		// Python client returns and the fixture records, so a key this port
 		// drops or a value it holds as a pointer shows up here.
-		compareMap(t, "answer "+head, jsonShapeMap(t, answerToMap(answer)),
-			jsonShapeMap(t, actual.ToDict()))
+		recorded, err := recordedToDict(answer)
+		if err != nil {
+			t.Errorf("head %q: %v", head, err)
+		} else {
+			compareMap(t, "answer "+head, jsonShapeMap(t, recorded),
+				jsonShapeMap(t, actual.ToDict()))
+		}
 		// The TypeSafe body, likewise whole.
 		compareMap(t, "answer "+head+" wire", jsonShapeMap(t, answer.Wire),
 			jsonShapeMap(t, actual.ToWire()))
@@ -734,34 +814,29 @@ func sortedKeysOf[M ~map[string]V, V any](values M) []string {
 	return keys
 }
 
-// answerToMap rebuilds the Python `Answer.to_dict()` the fixture recorded.
+// recordedToDict is the recorded `Answer.to_dict()`: the answer object as the
+// generator wrote it, minus the `level`, `legend` and `wire` it adds beside
+// `to_dict` because `to_dict` carries none of them.
 //
-// The fixture's answer object is `to_dict()` plus the `level` the generator adds
-// beside it, because `to_dict` does not carry the level an ordered scale lands
-// on. Rebuilding it here is what lets the replay compare the whole map rather
-// than a chosen subset of fields.
-func answerToMap(answer answerFixture) map[string]any {
-	out := map[string]any{
-		"type":            answer.Type,
-		"value":           answer.Value,
-		"confidence":      answer.Confidence,
-		"probabilities":   answer.Probabilities,
-		"calibrated":      answer.Calibrated,
-		"temperature":     answer.Temperature,
-		"requests":        answer.Requests,
-		"strategy":        answer.Strategy,
-		"score_semantics": answer.ScoreSemantics,
-		"stages":          answer.Stages,
-		"logical_reads":   answer.LogicalReads,
+// The map is the recorded one, not a rebuild, so a key the Python client grows
+// that this port does not return fails the comparison instead of being dropped
+// by a struct that does not name it.
+func recordedToDict(answer answerFixture) (map[string]any, error) {
+	if len(answer.Recorded) == 0 {
+		return nil, fmt.Errorf("the recorded answer object was not kept")
 	}
-	if len(answer.MissingFromTop) != 0 {
-		out["missing_from_top"] = answer.MissingFromTop
+	var recorded map[string]any
+	if err := json.Unmarshal(answer.Recorded, &recorded); err != nil {
+		return nil, fmt.Errorf("the recorded answer object is not JSON: %w", err)
 	}
-	if answer.ThoughtClosed != nil {
-		out["thought_tokens"] = answer.ThoughtTokens
-		out["thought_closed"] = *answer.ThoughtClosed
+	for _, added := range []string{"level", "legend", "wire"} {
+		if _, ok := recorded[added]; !ok {
+			return nil, fmt.Errorf("the recorded answer object has no %q; the generator "+
+				"records it beside to_dict", added)
+		}
+		delete(recorded, added)
 	}
-	return out
+	return recorded, nil
 }
 
 func sameOptionalFloat(got, want *float64) bool {
@@ -769,6 +844,141 @@ func sameOptionalFloat(got, want *float64) bool {
 		return got == nil && want == nil
 	}
 	return sameFloat(*got, *want)
+}
+
+// TestFixtureIntegrityChecksCanFail pins that the provenance checks reject a
+// fixture whose metadata disagrees with the responses it holds.
+//
+// A sha256 and a case count say the fixture has not changed since it was
+// digested; they say nothing about whether the date and fingerprint beside it
+// describe the responses inside it. These two do, and without them the
+// fingerprint field could hold an endpoint label and still pass.
+func TestFixtureIntegrityChecksCanFail(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("testdata", "client_parity.json"))
+	if err != nil {
+		t.Fatalf("reading the fixture: %v", err)
+	}
+	var meta map[string]any
+	metaRaw, err := os.ReadFile(filepath.Join("testdata", "client_parity.meta.json"))
+	if err != nil {
+		t.Fatalf("reading the provenance: %v", err)
+	}
+	if err := json.Unmarshal(metaRaw, &meta); err != nil {
+		t.Fatalf("the provenance is not JSON: %v", err)
+	}
+
+	var fixture clientFixture
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatalf("the fixture is not JSON: %v", err)
+	}
+	problems := func(mutate func(map[string]any)) []string {
+		t.Helper()
+		copied := map[string]any{}
+		for key, value := range meta {
+			copied[key] = value
+		}
+		// The digest is recomputed first, so a mutation is what the checks see
+		// rather than a stale hash, and a mutation of the digest itself still
+		// wins.
+		sum := sha256.Sum256(raw)
+		copied["sha256"] = hex.EncodeToString(sum[:])
+		mutate(copied)
+		encoded, err := json.Marshal(copied)
+		if err != nil {
+			t.Fatalf("encoding the provenance: %v", err)
+		}
+		var mutated clientMeta
+		if err := json.Unmarshal(encoded, &mutated); err != nil {
+			t.Fatalf("decoding the provenance: %v", err)
+		}
+		return fixtureProblems(raw, fixture, mutated)
+	}
+
+	// The unmutated provenance is accepted, so a problem below is the mutation.
+	if got := problems(func(map[string]any) {}); len(got) != 0 {
+		t.Fatalf("the checked-in fixture has problems: %v", got)
+	}
+	cases := []struct {
+		name   string
+		mutate func(map[string]any)
+		want   string
+	}{
+		{"an endpoint label in the fingerprint field", func(meta map[string]any) {
+			meta["serving_fingerprint"] = "shisa-hosted-2026-10-10"
+		}, "the responses carry"},
+		{"a date the responses do not fall on", func(meta map[string]any) {
+			meta["recorded"] = "2026-10-09"
+		}, "were created on"},
+		{"a readout version this package does not read", func(meta map[string]any) {
+			meta["readout_version"] = "de2-codebook-v0"
+		}, "this package reads"},
+		{"a case count that disagrees", func(meta map[string]any) {
+			meta["cases"] = float64(1)
+		}, "the provenance records"},
+		{"a digest that disagrees", func(meta map[string]any) {
+			meta["sha256"] = strings.Repeat("0", 64)
+		}, "the provenance records"},
+		{"no tokenizer revision", func(meta map[string]any) {
+			meta["tokenizer_revision"] = ""
+		}, "does not say when"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := problems(tc.mutate)
+			if len(got) == 0 {
+				t.Fatalf("%s was accepted", tc.name)
+			}
+			found := false
+			for _, problem := range got {
+				if strings.Contains(problem, tc.want) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("the problems are %v, none mentioning %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestRecordedToDictKeepsUnmodelledKeys pins that the whole-map `to_dict`
+// comparison is against the recorded object rather than a rebuild.
+func TestRecordedToDictKeepsUnmodelledKeys(t *testing.T) {
+	recorded := []byte(`{"type":"choice","value":"a","confidence":0.5,
+	    "probabilities":{"a":1},"calibrated":true,"temperature":1.89,"requests":1,
+	    "strategy":"repeat2","score_semantics":"option-softmax","stages":1,
+	    "logical_reads":1,"level":"a","legend":null,"wire":{"type":"choice"},
+	    "finalists":["a","b"]}`)
+	var answer answerFixture
+	if err := json.Unmarshal(recorded, &answer); err != nil {
+		t.Fatalf("decoding the recorded answer: %v", err)
+	}
+	got, err := recordedToDict(answer)
+	if err != nil {
+		t.Fatalf("recordedToDict: %v", err)
+	}
+	// `finalists` is not a field of answerFixture. A rebuild would drop it; the
+	// recorded map keeps it, which is what makes the comparison whole.
+	if _, ok := got["finalists"]; !ok {
+		t.Errorf("an unmodelled recorded key was dropped: %v", got)
+	}
+	for _, added := range []string{"level", "legend", "wire"} {
+		if _, ok := got[added]; ok {
+			t.Errorf("the recorded %q was not removed: %v", added, got)
+		}
+	}
+	if got["value"] != "a" || got["calibrated"] != true {
+		t.Errorf("the recorded map lost a modelled key: %v", got)
+	}
+	// A recorded object with no `level`/`legend`/`wire` is a generator that
+	// stopped writing them, and it is reported rather than silently compared.
+	var bare answerFixture
+	if err := json.Unmarshal([]byte(`{"type":"choice","value":"a"}`), &bare); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if _, err := recordedToDict(bare); err == nil {
+		t.Error("a recorded object with no level, legend or wire was accepted")
+	}
 }
 
 // TestParityComparatorsCanFail pins that the replay's comparators reject a

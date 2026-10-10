@@ -347,7 +347,7 @@ func (p PolicyRead) Raw(debug bool) map[string]any {
 			} else {
 				item["prompt"] = component.Read.Prompt
 			}
-			item["top_logprobs"] = copyOptionalFloatMap(component.Read.TopLogprobs)
+			item["top_logprobs"] = optionalFloatMap(component.Read.TopLogprobs)
 		}
 		stages = append(stages, item)
 	}
@@ -361,14 +361,20 @@ func (p PolicyRead) Raw(debug bool) map[string]any {
 		"logical_reads":    p.LogicalReads(),
 		"missing_from_top": append([]string{}, final.MissingFromTop...),
 		"ranks":            copyIntMap(final.Ranks),
-		"sampled":          final.Sampled,
-		"components":       stages,
+		// `Raw` is what `Decision.Raw` holds, so every value here is the value
+		// the Python client returns, never a pointer to it: `sampled` and
+		// `thought` are a string or nil, and `top_logprobs` is a map of numbers
+		// and nils. A pointer would print as an address and fail a caller's type
+		// assertion, and the parity gate cannot see the difference because JSON
+		// erases it.
+		"sampled":    stringOrNil(final.Sampled),
+		"components": stages,
 	}
 	if p.Thought != nil {
 		out["thought_tokens"] = p.ThoughtTokens()
 		out["thought_closed"] = p.Thought.Closed
 		if debug {
-			out["thought"] = p.Thought.Text
+			out["thought"] = stringOrNil(p.Thought.Text)
 		}
 	}
 	return out
@@ -515,10 +521,12 @@ func copyIntMap(values map[string]int) map[string]int {
 	return copied
 }
 
-func copyOptionalFloatMap(values map[string]*float64) map[string]*float64 {
-	copied := make(map[string]*float64, len(values))
+// optionalFloatMap is a top-k map as the plain data a caller reads: a number, or
+// nil where the server did not report the entry.
+func optionalFloatMap(values map[string]*float64) map[string]any {
+	copied := make(map[string]any, len(values))
 	for key, value := range values {
-		copied[key] = value
+		copied[key] = numberOrNil(value)
 	}
 	return copied
 }

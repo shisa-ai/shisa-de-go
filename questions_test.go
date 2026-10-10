@@ -71,3 +71,52 @@ func TestClassifyRefusesARepeatedKeyBeforeSending(t *testing.T) {
 		t.Errorf("a refused head spent %d requests", server.at)
 	}
 }
+
+// TestMultiLabelRefusesARepeatedLabel pins the same rule on the one path a
+// choice's validation does not cover.
+//
+// A multi-label head becomes one noul per label under the key `head:label`, so a
+// repeated label reads the same question twice under one key and the second
+// answer overwrites the first. Python pops the key once and then raises a
+// `KeyError`; this port refuses it before anything is sent. Without the refusal
+// the second read's answer is written, the first is dropped from the view, and
+// `Raw["head:label"]` is left as the zero answer, silently.
+func TestMultiLabelRefusesARepeatedLabel(t *testing.T) {
+	model, server := newStubModel(t, 2,
+		codeReadBody(map[string]float64{"A": -0.1, "B": -1.0}),
+		codeReadBody(map[string]float64{"A": -0.1, "B": -1.0}))
+	_, err := model.Classify(context.Background(), map[string]any{"e": "x"},
+		map[string]HeadSpec{"topic": {Options: []Option{
+			{Key: "billing"}, {Key: "billing"},
+		}, MultiLabel: true, Instructions: "Is it {label}?"}}, ClassifyOptions{})
+	if err == nil {
+		t.Fatal("a repeated multi-label label was accepted")
+	}
+	var questionErr *QuestionError
+	if !errors.As(err, &questionErr) {
+		t.Errorf("the error is %v, want a *QuestionError", err)
+	}
+	if !strings.Contains(err.Error(), "billing") {
+		t.Errorf("the error does not name the label: %v", err)
+	}
+	if server.at != 0 {
+		t.Errorf("a refused head spent %d requests", server.at)
+	}
+	// Distinct labels are the head this reads, and the two reads do not collide.
+	model, server = newStubModel(t, 2,
+		codeReadBody(map[string]float64{"A": -0.1, "B": -1.0}),
+		codeReadBody(map[string]float64{"A": -3.0, "B": -0.1}))
+	decision, err := model.Classify(context.Background(), map[string]any{"e": "x"},
+		map[string]HeadSpec{"topic": {Options: []Option{
+			{Key: "billing"}, {Key: "outage"},
+		}, MultiLabel: true, Instructions: "Is it {label}?"}}, ClassifyOptions{})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if len(decision.Raw) != 2 {
+		t.Errorf("two labels produced %d raw entries: %v", len(decision.Raw), decision.Raw)
+	}
+	if server.at != 2 {
+		t.Errorf("two labels spent %d requests, want 2", server.at)
+	}
+}
