@@ -62,6 +62,12 @@ pool.
 Checked on 2026-10-10 against `shisa-ai/shisa-de-2` on the hosted endpoint and
 the Python client at `shisa-de` `0.4.0`:
 
+- **Tokenizer.** 1,051 strings, 48,296 token ids: this package's ids equal
+  `transformers`' ids on every one. The corpus covers all 24 added tokens and
+  their prefix pairs, all 256 codes, the rendered scaffold, JSON payloads,
+  Japanese, emoji, combining marks, control characters, 60 KB of real text from
+  both repositories, and 400 random strings. Regenerate with
+  `scripts/gen_tokenizer_parity.py`.
 - The rendered DE-2 repeated prompt for the section 2 spam question is
   byte-identical to the Python render and to the page, 238 tokens.
 - All 256 code ids in `data/codebook-de2.json` match
@@ -69,6 +75,12 @@ the Python client at `shisa-de` `0.4.0`:
   token 101.
 - `shisa-ai/shisa-de-1` and `shisa-ai/shisa-de-2` share that tokenizer
   (vocab 262144), so code ids are not family-specific.
+- **Speed.** The 256-option repeated prompt (27,810 bytes, 8,580 ids) encodes
+  in 18 ms on an Intel Xeon E5-2690 v4, against 13 ms for `daulet/tokenizers`
+  (Hugging Face's Rust implementation through cgo) on the same machine. The
+  tokenizer normalizes a whole prompt into a single pre-token, so the merge
+  runs over tens of thousands of symbols in one call; that is why the merge is
+  heap-based rather than a repeated scan.
 
 Numbers measured with the Python client are the Python client's. This port has
-produced no measurements of its own.
+produced no measurements of its own against a served model.

@@ -5,6 +5,6 @@ shisa-de
 *.test
 *.out
 
-# Local tokenizer downloads and scratch output
+# A local tokenizer download: 32 MB, never checked in
 /tmp/
-/tokenizer.json
+tokenizer.json
