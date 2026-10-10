@@ -664,13 +664,14 @@ checkpoint, and says so where it appears.
   clients against the same served checkpoint in one session, and requires the
   chosen value, the label, the strategy, the request count, the level, the
   temperature, the confidence, the thought length and closure to match and every
-  probability to agree within 1e-9. The measured deltas are 1e-16 to 1e-19
-  (2.22e-16 worst, over nine questions) against `vllm-0.30.0-tp2-ca69195e` on
+  probability to agree within 1e-9. The measured deltas are 1e-19 to a few
+  multiples of 1e-16, over nine questions against `vllm-0.30.0-tp2-ca69195e` on
   2026-10-10, which is what a `temperature: 0` read against a deterministic
-  server should give. The tolerance is three orders of magnitude above that and
-  not more; the temperature is compared exactly, because on a peaked answer two
-  fits can produce the same distribution and only the temperature says which one
-  was applied.
+  server should give. (The worst key moves between runs -- 2.22e-16 and 5.55e-16
+  on two of them -- so the figure is the range and not one run's maximum.) The
+  tolerance is six orders of magnitude above that and not more; the temperature
+  is compared exactly, because on a peaked answer two fits can produce the same
+  distribution and only the temperature says which one was applied.
 
   The Python side is recorded by `scripts/live_parity.py` during the run rather
   than read from a checked-in file, and the reason is a measurement. The served

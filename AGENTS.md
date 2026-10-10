@@ -245,10 +245,11 @@ version, and the test fails when the fixture disagrees with it.
   clients in one session and measures the server's own repeatability so it can
   say which one moved.
 - The port's own live measurements are the M6 gate: the fixed question set
-  through both clients in one session, agreeing to 1e-16 to 1e-19 (2.22e-16
-  worst) against `vllm-0.30.0-tp2-ca69195e` on 2026-10-10. Anything else measured
-  here is the Python client's result replayed, and should be said that way rather
-  than restated as if this code had been measured against a server.
+  through both clients in one session, agreeing to 1e-19 up to a few multiples
+  of 1e-16, against `vllm-0.30.0-tp2-ca69195e` on 2026-10-10. The worst key moves
+  between runs, so quote the range rather than one run's maximum. Anything else
+  measured here is the Python client's result replayed, and should be said that
+  way rather than restated as if this code had been measured against a server.
 - The Python suite's `test_de2_thinks_when_the_repeated_read_is_unsure` expects
   `calibrated is False`, which is stale against the hosted `shisa-ai/shisa-de-2`
   -- the checkpoint the shipped record was fitted on, where the Python client
