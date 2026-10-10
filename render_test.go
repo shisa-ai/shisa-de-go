@@ -35,9 +35,12 @@ type renderCase struct {
 	Repeat       int               `json:"repeat"`
 	Thinking     bool              `json:"thinking"`
 	OptionLimit  int               `json:"option_limit"`
-	PayloadJSON  string            `json:"payload_json"`
-	Prompt       string            `json:"prompt"`
-	Tokens       []int             `json:"tokens"`
+	// SystemPrompt is the Python client's `Readout(system_prompt=...)`. Empty
+	// means the case used the default line.
+	SystemPrompt *string `json:"system_prompt"`
+	PayloadJSON  string  `json:"payload_json"`
+	Prompt       string  `json:"prompt"`
+	Tokens       []int   `json:"tokens"`
 }
 
 type criterion struct {
@@ -208,11 +211,15 @@ func TestRenderParity(t *testing.T) {
 			continue
 		}
 
-		prompt, err := Render(state, question, RenderOptions{
+		renderOptions := RenderOptions{
 			Repeat:      tc.Repeat,
 			Thinking:    tc.Thinking,
 			OptionLimit: tc.OptionLimit,
-		})
+		}
+		if tc.SystemPrompt != nil {
+			renderOptions.SystemPrompt = *tc.SystemPrompt
+		}
+		prompt, err := Render(state, question, renderOptions)
 		if err != nil {
 			t.Errorf("%s: Render: %v", tc.Name, err)
 			continue

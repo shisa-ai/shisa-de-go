@@ -82,11 +82,12 @@ def cases() -> list[dict]:
     out: list[dict] = []
 
     def add(name, kind, instructions, state, *, criteria=None, levels=None,
-            repeat=2, thinking=False, option_limit=MAX_OPTIONS):
+            repeat=2, thinking=False, option_limit=MAX_OPTIONS, system_prompt=None):
         out.append({
             "name": name, "kind": kind, "instructions": instructions,
             "criteria": criteria, "levels": levels, "state": state,
             "repeat": repeat, "thinking": thinking, "option_limit": option_limit,
+            "system_prompt": system_prompt,
         })
 
     # The two questions on the readout page, which fix the measured scaffold.
@@ -148,6 +149,15 @@ def cases() -> list[dict]:
         criteria=choice_criteria(*[(f"queue_{i}", f"Support queue {i}") for i in range(256)]),
         repeat=1, option_limit=MAX_CODES)
 
+    # A caller-supplied system line. `Readout(system_prompt=...)` is the
+    # Python client's own knob, so the port has to carry it too.
+    add("custom-system-prompt", "choice", "Is this message spam?", SPAM_STATE,
+        criteria=choice_criteria(*SPAM_CRITERIA.items()),
+        system_prompt="You are a careful spam classifier.")
+    add("custom-system-prompt-think", "choice", "Is this message spam?", SPAM_STATE,
+        criteria=choice_criteria(*SPAM_CRITERIA.items()), repeat=1, thinking=True,
+        system_prompt="You are a careful spam classifier.")
+
     # Long evidence, which is where the prompt-token count and the tokenizer's
     # single-pre-token merge both matter.
     add("long-evidence", "choice", "Is this message spam?",
@@ -173,8 +183,14 @@ def main() -> int:
         limit = case["option_limit"]
         payload, _ = readout._payload(case["state"], question, limit)
         payload_json = json.dumps(payload, ensure_ascii=False)
-        prompt = readout.render(case["state"], question, repeat=case["repeat"],
-                                thinking=case["thinking"], max_options=limit)
+        renderer = readout
+        if case["system_prompt"] is not None:
+            renderer = Readout(base_url="http://unused.invalid", model=MODEL,
+                               tokenizer_revision=REVISION,
+                               system_prompt=case["system_prompt"])
+            renderer._tokenizer = tokenizer
+        prompt = renderer.render(case["state"], question, repeat=case["repeat"],
+                                 thinking=case["thinking"], max_options=limit)
         tokens = tokenizer.encode(prompt, add_special_tokens=False)
         vectors.append({**case, "payload_json": payload_json, "prompt": prompt, "tokens": tokens})
 

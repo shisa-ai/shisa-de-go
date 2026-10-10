@@ -14,6 +14,10 @@ type RenderOptions struct {
 	// OptionLimit is the option limit of the contract in use. Zero means
 	// MaxOptions, the letter limit.
 	OptionLimit int
+	// SystemPrompt replaces the direct read's system line. Empty means
+	// DirectSystem. A thinking render always uses ThinkSystem, whatever this
+	// holds: the thought's system line is part of the read, not a preference.
+	SystemPrompt string
 }
 
 // The pinned chat template.
@@ -112,6 +116,8 @@ func Render(state any, question Question, options RenderOptions) (string, error)
 	if options.Thinking {
 		prompt.WriteString(templateThinkMark)
 		prompt.WriteString(ThinkSystem)
+	} else if options.SystemPrompt != "" {
+		prompt.WriteString(options.SystemPrompt)
 	} else {
 		prompt.WriteString(DirectSystem)
 	}
