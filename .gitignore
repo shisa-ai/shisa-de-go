@@ -11,6 +11,10 @@
 /tmp/
 tokenizer.json
 
+# Python bytecode from running the recorder or its offline tests
+__pycache__/
+*.pyc
+
 # The live parity recording. It is a measurement of the endpoint on one day, not
 # an oracle: the served checkpoint is deterministic within a session and not
 # across sessions, so the live test records its own and reads nothing from here.
