@@ -32,6 +32,17 @@ nine-question set, and all three found a gap in the doc-count check.
 | "the passes disagree on the chosen value" was also the message for a flipped `system_render` or a changed request count | ds4 L, glm L | both messages now say "disagree for %v" |
 | `TestPortDocFixtureCounts` guarded four counts; the tokenizer's strings/ids/decode outputs, the Python-JSON figure, the `repr` figure and the command line's were unguarded, and the render count is stated twice with only one read | ds4 L, glm L, astra L | a row per claim rather than per paragraph: the three tokenizer counts are read (commas dropped on both sides) and the second render statement is read. Both new rows shown to fail against a mutated `docs/PORT.md` |
 
+## Found after the round, not by it
+
+`live_test.go`'s ported-cases header still said the Python suite's image case was
+the gate's `image-color` question "rather than a test here", after
+`TestLiveImageReadUsesTheImage` became exactly that test and after the same
+sentence was corrected in `docs/PORT.md`. All three reviewers checked the page,
+`AGENTS.md`, `README.md` and `live_test.go`'s header for that class of claim and
+none reached this copy, so it survived a round that was specifically looking for
+it. Fixed in `e5bf66e`, along with `TestNoStaleImageCoverageClaims`, which scans
+the Go and Markdown sources for the phrasings and would have caught it.
+
 ## Not changed, with the reason
 
 - **Building the probe from the client's own machinery (glm's alternative).**
