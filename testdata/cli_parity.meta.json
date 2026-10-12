@@ -1,0 +1,11 @@
+{
+  "python_repo": "d172d4977d133fefb9b8c82ffcc0e3d007554551",
+  "stub_base_url": "http://cli-stub.invalid",
+  "stub_models": [
+    "shisa-ai/shisa-de-2",
+    "something-else"
+  ],
+  "cases": 11,
+  "requests": 14,
+  "sha256": "5f66e39967eba7e8a2d5fb21f40f534d8c0d9d85c8b805e75341869f9f82ab48"
+}

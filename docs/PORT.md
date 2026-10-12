@@ -792,10 +792,29 @@ checkpoint, and says so where it appears.
 - **Command line.** `explain`'s output, `doctor`'s text report and `doctor
   --json` were each compared line for line against the Python command line
   against the hosted endpoint, and are identical apart from the numbers a fresh
-  request changes and the one `chat system` line above. Those comparisons are
-  not fixtures and are not re-run at test time, so they pin the run that was
-  measured and not every reachable line; the offline test closes the gap where it
-  can. It drives `run` end to end over a stub endpoint and a stub tokenizer, which
+  request changes and the one `chat system` line above.
+
+  The image surface has a recording rather than only that live comparison.
+  `testdata/cli_parity.json` is the Python command line's own stdout for eleven
+  invocations -- `doctor` and `doctor --json`, both with and without `--probe`,
+  `ask` over text and over an image, `ask --image-top-logprobs`, an image
+  question with an explicit state, the probability view, and `ask --image ''` --
+  recorded by `scripts/gen_cli_parity.py` against a stub endpoint and a stub
+  tokenizer. Each case carries stdout, stderr, the exit status, and every request
+  in order, and `TestCLIParity` replays each through `run` and compares all four.
+  The tokenizer is the Go test's own, id for id, so the recorded request bodies
+  are replayed byte for byte rather than only structurally: a `top_logprobs`
+  that stopped reaching the request, or a message order that changed, fails the
+  case. The provenance holds a digest the test checks before anything is
+  replayed.
+
+  The one case whose stderr is not compared is `ask --image ''`: the Python
+  command line has no handler around the command body, so the `ImageError`
+  leaves as a traceback where this port prints `shisa-de ask: image is empty`.
+  The status is 1 either way, and only the status is compared.
+
+  The rest of the command line is covered offline. It drives `run` end to end
+  over a stub endpoint and a stub tokenizer, which
   is what makes `explain` testable at all: the real tokenizer is a download. It
   covers the flag-to-config mapping for every flag including the `--no-` forms,
   the exit statuses for a bad command, a bad flag and a report that is not ok,

@@ -1,0 +1,509 @@
+{
+  "cases": [
+    {
+      "name": "doctor",
+      "argv": [
+        "doctor",
+        "--model",
+        "shisa-ai/shisa-de-2",
+        "--base-url",
+        "http://cli-stub.invalid"
+      ],
+      "status": 0,
+      "ended": "returned",
+      "stdout": "endpoint        {{base_url}}\nmodel           shisa-ai/shisa-de-2\nfamily          de2 (model id)\nreadout         de2-codebook-v1, policy repeat-think\ncalibration     shisa-ai/shisa-de-2|de2-codebook-v1|vllm-0.30.0-merged-bf16-triton-tp1[direct:choice=1.81,noul=2.69;repeat2:choice=1.89,noul=2.76;think:choice=6.8,noul=6.8]\n  fitted on     shisa-ai/shisa-de-2 (de2-codebook-v1, vllm-0.30.0-merged-bf16-triton-tp1)\n  match         checkpoint\n  applied       yes\nmodels endpoint 200\nmodel listed    yes (of 2 served ids)\nboundary check  passed\nok              True\n",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/v1/models",
+          "body": null
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "name": "doctor-json",
+      "argv": [
+        "doctor",
+        "--model",
+        "shisa-ai/shisa-de-2",
+        "--base-url",
+        "http://cli-stub.invalid",
+        "--json"
+      ],
+      "status": 0,
+      "ended": "returned",
+      "stdout": "{\n  \"base_url\": \"{{base_url}}\",\n  \"model\": \"shisa-ai/shisa-de-2\",\n  \"model_family\": \"de2\",\n  \"family_source\": \"model id\",\n  \"family_explicit\": true,\n  \"readout_version\": \"de2-codebook-v1\",\n  \"policy\": \"repeat-think\",\n  \"reads\": \"double\",\n  \"reasoning\": true,\n  \"compound\": false,\n  \"calibration\": \"shisa-ai/shisa-de-2|de2-codebook-v1|vllm-0.30.0-merged-bf16-triton-tp1[direct:choice=1.81,noul=2.69;repeat2:choice=1.89,noul=2.76;think:choice=6.8,noul=6.8]\",\n  \"calibration_model\": \"shisa-ai/shisa-de-2\",\n  \"calibration_readout_version\": \"de2-codebook-v1\",\n  \"calibration_serving_shape\": \"vllm-0.30.0-merged-bf16-triton-tp1\",\n  \"calibration_level\": \"checkpoint\",\n  \"calibration_applied\": true,\n  \"ok\": true,\n  \"calibration_match\": true,\n  \"models_status\": 200,\n  \"served_models\": [\n    \"shisa-ai/shisa-de-2\",\n    \"something-else\"\n  ],\n  \"model_listed\": true,\n  \"slots\": {\n    \"count\": 256,\n    \"A\": 1000,\n    \"B\": 1001\n  },\n  \"boundary_check\": \"passed\"\n}\n",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/v1/models",
+          "body": null
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "name": "doctor-probe",
+      "argv": [
+        "doctor",
+        "--model",
+        "shisa-ai/shisa-de-2",
+        "--base-url",
+        "http://cli-stub.invalid",
+        "--probe"
+      ],
+      "status": 0,
+      "ended": "returned",
+      "stdout": "endpoint        {{base_url}}\nmodel           shisa-ai/shisa-de-2\nfamily          de2 (model id)\nreadout         de2-codebook-v1, policy repeat-think\ncalibration     shisa-ai/shisa-de-2|de2-codebook-v1|vllm-0.30.0-merged-bf16-triton-tp1[direct:choice=1.81,noul=2.69;repeat2:choice=1.89,noul=2.76;think:choice=6.8,noul=6.8]\n  fitted on     shisa-ai/shisa-de-2 (de2-codebook-v1, vllm-0.30.0-merged-bf16-triton-tp1)\n  match         checkpoint\n  applied       yes\nmodels endpoint 200\nmodel listed    yes (of 2 served ids)\nboundary check  passed\nread probe      passed (repeat2, 1 requests)\nchat system     string\nok              True\n",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/v1/models",
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/v1/completions",
+          "body": {
+            "model": "shisa-ai/shisa-de-2",
+            "prompt": "<bos><|turn>system\nApply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning.<turn|>\n<|turn>user\n{\"evidence\": {\"health\": \"check\"}, \"criterion\": \"Is this a health check?\", \"options\": [{\"letter\": \"A\", \"description\": \"Yes\"}, {\"letter\": \"B\", \"description\": \"No\"}]}\n\nRead the same input again before answering:\n{\"evidence\": {\"health\": \"check\"}, \"criterion\": \"Is this a health check?\", \"options\": [{\"letter\": \"A\", \"description\": \"Yes\"}, {\"letter\": \"B\", \"description\": \"No\"}]}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+            "max_tokens": 1,
+            "temperature": 0,
+            "logprobs": 20,
+            "return_tokens_as_token_ids": true,
+            "logprob_token_ids": [
+              1000,
+              1001
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "body": {
+            "model": "shisa-ai/shisa-de-2",
+            "messages": [
+              {
+                "role": "system",
+                "content": "Apply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning."
+              },
+              {
+                "role": "user",
+                "content": "{\"evidence\": {\"health\": \"check\"}, \"criterion\": \"Is this a health check?\", \"options\": [{\"letter\": \"A\", \"description\": \"Yes\"}, {\"letter\": \"B\", \"description\": \"No\"}]}"
+              }
+            ],
+            "max_tokens": 1,
+            "temperature": 0,
+            "prompt_logprobs": 0,
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            }
+          }
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "name": "doctor-probe-json",
+      "argv": [
+        "doctor",
+        "--model",
+        "shisa-ai/shisa-de-2",
+        "--base-url",
+        "http://cli-stub.invalid",
+        "--probe",
+        "--json"
+      ],
+      "status": 0,
+      "ended": "returned",
+      "stdout": "{\n  \"base_url\": \"{{base_url}}\",\n  \"model\": \"shisa-ai/shisa-de-2\",\n  \"model_family\": \"de2\",\n  \"family_source\": \"model id\",\n  \"family_explicit\": true,\n  \"readout_version\": \"de2-codebook-v1\",\n  \"policy\": \"repeat-think\",\n  \"reads\": \"double\",\n  \"reasoning\": true,\n  \"compound\": false,\n  \"calibration\": \"shisa-ai/shisa-de-2|de2-codebook-v1|vllm-0.30.0-merged-bf16-triton-tp1[direct:choice=1.81,noul=2.69;repeat2:choice=1.89,noul=2.76;think:choice=6.8,noul=6.8]\",\n  \"calibration_model\": \"shisa-ai/shisa-de-2\",\n  \"calibration_readout_version\": \"de2-codebook-v1\",\n  \"calibration_serving_shape\": \"vllm-0.30.0-merged-bf16-triton-tp1\",\n  \"calibration_level\": \"checkpoint\",\n  \"calibration_applied\": true,\n  \"ok\": true,\n  \"calibration_match\": true,\n  \"models_status\": 200,\n  \"served_models\": [\n    \"shisa-ai/shisa-de-2\",\n    \"something-else\"\n  ],\n  \"model_listed\": true,\n  \"slots\": {\n    \"count\": 256,\n    \"A\": 1000,\n    \"B\": 1001\n  },\n  \"boundary_check\": \"passed\",\n  \"read_probe\": \"passed (repeat2, 1 requests)\",\n  \"chat_system_render\": \"string\"\n}\n",
+      "requests": [
+        {
+          "method": "GET",
+          "path": "/v1/models",
+          "body": null
+        },
+        {
+          "method": "POST",
+          "path": "/v1/completions",
+          "body": {
+            "model": "shisa-ai/shisa-de-2",
+            "prompt": "<bos><|turn>system\nApply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning.<turn|>\n<|turn>user\n{\"evidence\": {\"health\": \"check\"}, \"criterion\": \"Is this a health check?\", \"options\": [{\"letter\": \"A\", \"description\": \"Yes\"}, {\"letter\": \"B\", \"description\": \"No\"}]}\n\nRead the same input again before answering:\n{\"evidence\": {\"health\": \"check\"}, \"criterion\": \"Is this a health check?\", \"options\": [{\"letter\": \"A\", \"description\": \"Yes\"}, {\"letter\": \"B\", \"description\": \"No\"}]}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+            "max_tokens": 1,
+            "temperature": 0,
+            "logprobs": 20,
+            "return_tokens_as_token_ids": true,
+            "logprob_token_ids": [
+              1000,
+              1001
+            ]
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "body": {
+            "model": "shisa-ai/shisa-de-2",
+            "messages": [
+              {
+                "role": "system",
+                "content": "Apply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning."
+              },
+              {
+                "role": "user",
+                "content": "{\"evidence\": {\"health\": \"check\"}, \"criterion\": \"Is this a health check?\", \"options\": [{\"letter\": \"A\", \"description\": \"Yes\"}, {\"letter\": \"B\", \"description\": \"No\"}]}"
+              }
+            ],
+            "max_tokens": 1,
+            "temperature": 0,
+            "prompt_logprobs": 0,
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            }
+          }
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "name": "ask-text",
+      "argv": [
+        "ask",
+        "--model",
+        "shisa-ai/shisa-de-2",
+        "--base-url",
+        "http://cli-stub.invalid",
+        "--labels",
+        "billing,outage"
+      ],
+      "status": 0,
+      "ended": "returned",
+      "stdout": "{\n  \"intent\": \"billing\"\n}\n",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/completions",
+          "body": {
+            "model": "shisa-ai/shisa-de-2",
+            "prompt": "<bos><|turn>system\nApply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning.<turn|>\n<|turn>user\n{\"evidence\": {\"ticket\": \"Order 4812 was marked delivered on Monday. The customer says the parcel never arrived and tracking has not updated since Friday.\", \"account\": \"customer since 2021, no prior claims\"}, \"criterion\": \"What is the intent?\", \"options\": [{\"letter\": \"A\", \"description\": \"billing\"}, {\"letter\": \"B\", \"description\": \"outage\"}]}\n\nRead the same input again before answering:\n{\"evidence\": {\"ticket\": \"Order 4812 was marked delivered on Monday. The customer says the parcel never arrived and tracking has not updated since Friday.\", \"account\": \"customer since 2021, no prior claims\"}, \"criterion\": \"What is the intent?\", \"options\": [{\"letter\": \"A\", \"description\": \"billing\"}, {\"letter\": \"B\", \"description\": \"outage\"}]}<turn|>\n<|turn>model\n<|channel>thought\n<channel|>",
+            "max_tokens": 1,
+            "temperature": 0,
+            "logprobs": 20,
+            "return_tokens_as_token_ids": true,
+            "logprob_token_ids": [
+              1000,
+              1001
+            ]
+          }
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "name": "ask-image",
+      "argv": [
+        "ask",
+        "--model",
+        "shisa-ai/shisa-de-2",
+        "--base-url",
+        "http://cli-stub.invalid",
+        "--image",
+        "data:image/png;base64,iVBORw0KGgo=",
+        "--labels",
+        "billing,outage"
+      ],
+      "status": 0,
+      "ended": "returned",
+      "stdout": "{\n  \"intent\": \"billing\"\n}\n",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "body": {
+            "model": "shisa-ai/shisa-de-2",
+            "messages": [
+              {
+                "role": "system",
+                "content": "Apply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning."
+              },
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "image_url",
+                    "image_url": {
+                      "url": "data:image/png;base64,iVBORw0KGgo="
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "{\"evidence\": {}, \"criterion\": \"What is the intent?\", \"options\": [{\"letter\": \"A\", \"description\": \"billing\"}, {\"letter\": \"B\", \"description\": \"outage\"}]}"
+                  }
+                ]
+              }
+            ],
+            "max_tokens": 1,
+            "temperature": 0,
+            "logprobs": true,
+            "top_logprobs": 20,
+            "prompt_logprobs": 0,
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            }
+          }
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "name": "ask-image-top-logprobs",
+      "argv": [
+        "ask",
+        "--model",
+        "shisa-ai/shisa-de-2",
+        "--base-url",
+        "http://cli-stub.invalid",
+        "--image",
+        "data:image/png;base64,iVBORw0KGgo=",
+        "--image-top-logprobs",
+        "30",
+        "--labels",
+        "billing,outage"
+      ],
+      "status": 0,
+      "ended": "returned",
+      "stdout": "{\n  \"intent\": \"billing\"\n}\n",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "body": {
+            "model": "shisa-ai/shisa-de-2",
+            "messages": [
+              {
+                "role": "system",
+                "content": "Apply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning."
+              },
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "image_url",
+                    "image_url": {
+                      "url": "data:image/png;base64,iVBORw0KGgo="
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "{\"evidence\": {}, \"criterion\": \"What is the intent?\", \"options\": [{\"letter\": \"A\", \"description\": \"billing\"}, {\"letter\": \"B\", \"description\": \"outage\"}]}"
+                  }
+                ]
+              }
+            ],
+            "max_tokens": 1,
+            "temperature": 0,
+            "logprobs": true,
+            "top_logprobs": 30,
+            "prompt_logprobs": 0,
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            }
+          }
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "name": "ask-image-explicit-state",
+      "argv": [
+        "ask",
+        "--model",
+        "shisa-ai/shisa-de-2",
+        "--base-url",
+        "http://cli-stub.invalid",
+        "--image",
+        "data:image/png;base64,iVBORw0KGgo=",
+        "--state",
+        "{\"note\": \"one image\"}",
+        "--labels",
+        "billing,outage"
+      ],
+      "status": 0,
+      "ended": "returned",
+      "stdout": "{\n  \"intent\": \"billing\"\n}\n",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "body": {
+            "model": "shisa-ai/shisa-de-2",
+            "messages": [
+              {
+                "role": "system",
+                "content": "Apply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning."
+              },
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "image_url",
+                    "image_url": {
+                      "url": "data:image/png;base64,iVBORw0KGgo="
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "{\"evidence\": {\"note\": \"one image\"}, \"criterion\": \"What is the intent?\", \"options\": [{\"letter\": \"A\", \"description\": \"billing\"}, {\"letter\": \"B\", \"description\": \"outage\"}]}"
+                  }
+                ]
+              }
+            ],
+            "max_tokens": 1,
+            "temperature": 0,
+            "logprobs": true,
+            "top_logprobs": 20,
+            "prompt_logprobs": 0,
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            }
+          }
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "name": "ask-image-probabilities",
+      "argv": [
+        "ask",
+        "--model",
+        "shisa-ai/shisa-de-2",
+        "--base-url",
+        "http://cli-stub.invalid",
+        "--image",
+        "data:image/png;base64,iVBORw0KGgo=",
+        "--labels",
+        "billing,outage",
+        "--probabilities",
+        "--confidence"
+      ],
+      "status": 0,
+      "ended": "returned",
+      "stdout": "{\n  \"intent\": {\n    \"label\": \"billing\",\n    \"confidence\": 0.9997272593458408,\n    \"probabilities\": {\n      \"billing\": 0.9998636296729204,\n      \"outage\": 0.00013637032707949703\n    }\n  }\n}\n",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "body": {
+            "model": "shisa-ai/shisa-de-2",
+            "messages": [
+              {
+                "role": "system",
+                "content": "Apply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning."
+              },
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "image_url",
+                    "image_url": {
+                      "url": "data:image/png;base64,iVBORw0KGgo="
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "{\"evidence\": {}, \"criterion\": \"What is the intent?\", \"options\": [{\"letter\": \"A\", \"description\": \"billing\"}, {\"letter\": \"B\", \"description\": \"outage\"}]}"
+                  }
+                ]
+              }
+            ],
+            "max_tokens": 1,
+            "temperature": 0,
+            "logprobs": true,
+            "top_logprobs": 20,
+            "prompt_logprobs": 0,
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            }
+          }
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "name": "ask-image-probabilities-unsorted",
+      "argv": [
+        "ask",
+        "--model",
+        "shisa-ai/shisa-de-2",
+        "--base-url",
+        "http://cli-stub.invalid",
+        "--image",
+        "data:image/png;base64,iVBORw0KGgo=",
+        "--labels",
+        "outage,billing",
+        "--probabilities"
+      ],
+      "status": 0,
+      "ended": "returned",
+      "stdout": "{\n  \"intent\": {\n    \"label\": \"outage\",\n    \"confidence\": 0.9997272593458408,\n    \"probabilities\": {\n      \"outage\": 0.9998636296729204,\n      \"billing\": 0.00013637032707949703\n    }\n  }\n}\n",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "body": {
+            "model": "shisa-ai/shisa-de-2",
+            "messages": [
+              {
+                "role": "system",
+                "content": "Apply the supplied criterion to the supplied evidence. Choose exactly one listed option. Respond with only its uppercase letter, with no explanation or reasoning."
+              },
+              {
+                "role": "user",
+                "content": [
+                  {
+                    "type": "image_url",
+                    "image_url": {
+                      "url": "data:image/png;base64,iVBORw0KGgo="
+                    }
+                  },
+                  {
+                    "type": "text",
+                    "text": "{\"evidence\": {}, \"criterion\": \"What is the intent?\", \"options\": [{\"letter\": \"A\", \"description\": \"outage\"}, {\"letter\": \"B\", \"description\": \"billing\"}]}"
+                  }
+                ]
+              }
+            ],
+            "max_tokens": 1,
+            "temperature": 0,
+            "logprobs": true,
+            "top_logprobs": 20,
+            "prompt_logprobs": 0,
+            "chat_template_kwargs": {
+              "enable_thinking": false
+            }
+          }
+        }
+      ],
+      "stderr": ""
+    },
+    {
+      "name": "ask-image-empty",
+      "argv": [
+        "ask",
+        "--model",
+        "shisa-ai/shisa-de-2",
+        "--base-url",
+        "http://cli-stub.invalid",
+        "--image",
+        "",
+        "--labels",
+        "billing,outage"
+      ],
+      "status": 1,
+      "ended": "uncaught",
+      "stdout": "",
+      "requests": []
+    }
+  ]
+}

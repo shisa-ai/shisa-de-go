@@ -109,6 +109,10 @@ type cliServer struct {
 	// endpoint's requests from the completions ones. It is kept beside the body
 	// rather than inside it: the body is what the client sent.
 	paths []string
+	// methods[i] is the method requests[i] used, for the replay below, which
+	// compares the requests a recorded Python run made against the ones this
+	// command line makes.
+	methods []string
 	// models is the id list `/v1/models` returns.
 	models []string
 	// completionStatus, when non-zero, is the status every completion answers
@@ -129,6 +133,7 @@ func newCLIServer(t *testing.T, models ...string) *cliServer {
 		stub.mu.Lock()
 		stub.requests = append(stub.requests, body)
 		stub.paths = append(stub.paths, r.URL.Path)
+		stub.methods = append(stub.methods, r.Method)
 		stub.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if !strings.HasSuffix(r.URL.Path, "/models") && stub.completionStatus != 0 {

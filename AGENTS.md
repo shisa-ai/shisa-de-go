@@ -112,6 +112,7 @@ What must not change casually:
 | `calibration.go` | Temperature scaling, the confidence statistic, record selection, and `Calibration.Applicability` |
 | `client.go` | `DecisionModel.Classify`, `DecisionModel.Decide`, `SystemOne`, `Health`, `Decision`, `Answer`, `HeadSpec` |
 | `scripts/gen_images_parity.py` | Records the Python client's verdict for every image reference this port accepts, and the Go test replays it |
+| `scripts/gen_cli_parity.py` | Records the Python command line's stdout, stderr, exit status and requests for a fixed set of invocations, which `TestCLIParity` replays |
 | `scripts/gen_client_parity.py` | Records live Python `DecisionModel` exchanges against the hosted endpoint and writes the fixture the parity test replays |
 | `example_test.go` | The README's snippets as `Example*` functions `go test` runs, against a stub endpoint, so a signature or behaviour change breaks them |
 | `readme_test.go` | The documentation rot check: every `shisade.X` in `README.md` and `docs/PORT.md` is an exported identifier, the Go blocks parse, and the README's sections are present |
@@ -140,6 +141,14 @@ What must not change casually:
 - One logical unit per commit. A readout change and its doc update are one unit.
 - New behavior gets a test against the stub tokenizer and a stub server, and a
   live test only when the behavior depends on the served model.
+- Anything the command line prints is byte-compared against a recording. If you
+  change what `doctor`, `ask` or `explain` writes, or the order it writes it in,
+  regenerate `testdata/cli_parity.json` with `scripts/gen_cli_parity.py` in the
+  same commit. A Go map writes its keys sorted where Python's `dict` writes them
+  in insertion order, so a caller-visible object whose order matters is a
+  `shisade.Object` and not a `map[string]any`; see `docs/PORT.md`'s paragraph on
+  it. `Object.Get` reads one key, and `json.Marshal` on an `Object` writes an
+  array of members, so render it with `PythonJSONWith`.
 - Keep the package importable without network access. The tokenizer is loaded
   lazily, on the first read, and nothing downloads at package init.
 - Go style: `gofmt`, exported identifiers documented, errors wrapped with `%w`
@@ -190,6 +199,7 @@ What must not change casually:
 | Readout replay | `go test . -run TestReadout` (replays recorded Python request/response pairs, text and image, through an `httptest` stub; offline) |
 | Image reference replay | `go test . -run TestImagesParity` (replays recorded Python `prepare_image`/`validate_image_url` verdicts and error text; offline) |
 | Client replay | `go test . -run TestClientParity` (replays recorded live Python `DecisionModel` exchanges through an `httptest` stub; offline) |
+| Command-line replay | `go test ./cmd/shisa-de/ -run TestCLIParity` (replays recorded Python command-line stdout, stderr, exit status and requests; offline) |
 | Race detector | `go test -race ./...` (the concurrency claim for `Readout` rests on this) |
 | Live suite, hosted DE-2 | `SHISA_DE_LIVE=1 go test . -run Live` (spends real requests; the parity gate also runs the Python client, so it needs the `shisa-de` checkout, `SHISA_DE_PYTHON_REPO` to point elsewhere) |
 | Recorder's own logic | `python3 -m unittest discover -s scripts -p 'test_*.py'` (offline; the endpoint and model resolution, the tokenizer pin and the drift arithmetic, with no network and no `shisa_de` checkout) |
