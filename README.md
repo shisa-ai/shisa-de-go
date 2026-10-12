@@ -615,8 +615,16 @@ SHISA_DE_LIVE=1 SHISA_API_KEY=... go test . -run Live
 `TestLiveParityAgainstPython` is the interesting one: it runs the fixed question
 set in `testdata/live_questions.json` through this client and through the Python
 one, against the same endpoint in the same session, and requires the chosen
-values and the distributions to agree. The Python half is recorded by
-`scripts/live_parity.py`, which needs a `shisa-de` checkout
+values and the distributions to agree. The set ends with an image question, so
+the comparison covers the one read that uses `/v1/chat/completions` and a
+different request shape; the recorder measures whether the endpoint will serve an
+image at all and skips that one case with the server's own refusal when it will
+not, while any other probe failure stops the recording rather than being
+recorded as a deployment fact. `TestLiveImageReadUsesTheImage` is the companion
+that the parity comparison cannot be: it asks a red and a blue image the same
+question and requires the answer to follow, so a server that accepted the image
+and ignored it fails rather than agreeing with itself. The Python half is
+recorded by `scripts/live_parity.py`, which needs a `shisa-de` checkout
 (`SHISA_DE_PYTHON_REPO` points at one elsewhere); without it the parity test
 skips and the rest of the live suite still runs. `SHISA_DE_MODEL`,
 `SHISA_DE_ENDPOINT` and `SHISA_DE_TOKENIZER` point the whole suite at another

@@ -319,38 +319,40 @@ func TestReadmeSectionsArePresent(t *testing.T) {
 // hand, and regenerating the client fixture for the image cases moved its counts
 // too. A number a test does not read is a number that drifts.
 //
-// The command line's count is spelled out ("eleven invocations") rather than
-// written as a digit, so it is not in this table.
+// One claim per row rather than one paragraph per row, so a paragraph whose two
+// numbers sit in different sentences is covered the same way. Commas are dropped
+// from both sides, because the tokenizer's prose writes 1,056 and the metadata
+// stores 1056. The command line's count is spelled out ("eleven invocations")
+// rather than written as a digit, and the Python-JSON figure has no meta file,
+// so those two stay hand-maintained and are named here so the gap is visible.
 var portFixtureCounts = []struct {
 	name    string
 	meta    string
-	fields  []string
+	field   string
 	pattern string
 }{
-	{
-		name:    "readout",
-		meta:    "readout_parity.meta.json",
-		fields:  []string{"scenarios", "exchanges"},
-		pattern: `\*\*Readout\.\*\* (\d+) scenarios, (\d+) recorded exchanges`,
-	},
-	{
-		name:    "client",
-		meta:    "client_parity.meta.json",
-		fields:  []string{"cases", "exchanges"},
-		pattern: `\*\*Client\.\*\* (\d+) cases, (\d+) recorded exchanges`,
-	},
-	{
-		name:    "images",
-		meta:    "images_parity.meta.json",
-		fields:  []string{"cases"},
-		pattern: "`testdata/images_parity.json` replays (\\d+) references",
-	},
-	{
-		name:    "render",
-		meta:    "render_parity.meta.json",
-		fields:  []string{"renders"},
-		pattern: "compares (\\d+) rendered prompts",
-	},
+	{"readout scenarios", "readout_parity.meta.json", "scenarios",
+		`\*\*Readout\.\*\* (\d+) scenarios,`},
+	{"readout exchanges", "readout_parity.meta.json", "exchanges",
+		`\*\*Readout\.\*\* \d+ scenarios, (\d+) recorded exchanges`},
+	{"client cases", "client_parity.meta.json", "cases",
+		`\*\*Client\.\*\* (\d+) cases,`},
+	{"client exchanges", "client_parity.meta.json", "exchanges",
+		`\*\*Client\.\*\* \d+ cases, (\d+) recorded exchanges`},
+	{"image references", "images_parity.meta.json", "cases",
+		"`testdata/images_parity.json` replays (\\d+) references"},
+	{"render prompts", "render_parity.meta.json", "renders",
+		"compares (\\d+) rendered prompts"},
+	// The same count is stated twice: once in the renderer discussion and once
+	// under Verified parity. A regeneration can update one and not the other.
+	{"render fixture renders", "render_parity.meta.json", "renders",
+		`\*\*Render\.\*\* All (\d+) fixture renders`},
+	{"tokenizer strings", "tokenizer_parity.meta.json", "strings",
+		`\*\*Tokenizer\.\*\* ([\d,]+) strings,`},
+	{"tokenizer ids", "tokenizer_parity.meta.json", "ids",
+		`\*\*Tokenizer\.\*\* [\d,]+ strings, ([\d,]+) token ids`},
+	{"tokenizer decode outputs", "tokenizer_parity.meta.json", "decode_cases",
+		"replays (\\d+) `tokenizer.decode` outputs"},
 }
 
 // TestPortDocFixtureCounts checks the sizes `docs/PORT.md` states against the
@@ -374,18 +376,18 @@ func TestPortDocFixtureCounts(t *testing.T) {
 			}
 			match := regexp.MustCompile(tc.pattern).FindStringSubmatch(text)
 			if match == nil {
-				t.Fatalf("docs/PORT.md does not state the %s fixture's counts in the form "+
-					"%q any more, so this check reads nothing", tc.name, tc.pattern)
+				t.Fatalf("docs/PORT.md does not state the %s in the form %q any more, "+
+					"so this check reads nothing", tc.name, tc.pattern)
 			}
-			for index, field := range tc.fields {
-				want, ok := meta[field].(float64)
-				if !ok {
-					t.Fatalf("%s records no numeric %q", tc.meta, field)
-				}
-				if got := match[index+1]; got != strconv.Itoa(int(want)) {
-					t.Errorf("docs/PORT.md says the %s fixture has %s %s, and %s records %d",
-						tc.name, got, field, tc.meta, int(want))
-				}
+			want, ok := meta[tc.field].(float64)
+			if !ok {
+				t.Fatalf("%s records no numeric %q", tc.meta, tc.field)
+			}
+			// The prose writes the tokenizer's counts with thousands separators
+			// and the metadata stores them without, so both sides drop commas.
+			if got := strings.ReplaceAll(match[1], ",", ""); got != strconv.Itoa(int(want)) {
+				t.Errorf("docs/PORT.md says %s is %s, and %s records %s=%d",
+					tc.name, match[1], tc.meta, tc.field, int(want))
 			}
 		})
 	}

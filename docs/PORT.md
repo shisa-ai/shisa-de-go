@@ -852,18 +852,40 @@ checkpoint, and says so where it appears.
   `testdata/live_questions.json` -- a noul, a three-option choice, a choice with
   unnamed options, an ordered score, a 27-option choice, a 256-option choice, the
   same choice read under `direct`, the same score asked for the one-read
-  probability view, and a choice whose gate is 1.0 so it thinks -- through both
-  clients against the same served checkpoint in one session, and requires the
-  chosen value, the label, the strategy, the request count, the level, the
+  probability view, a choice whose gate is 1.0 so it thinks, and an image
+  question whose answer is a 32x32 solid PNG carried as a data URL -- through
+  both clients against the same served checkpoint in one session, and requires
+  the chosen value, the label, the strategy, the request count, the level, the
   temperature, the confidence, the thought length and closure to match and every
-  probability to agree within 1e-9. The measured deltas are 1e-19 to a few
-  multiples of 1e-16, over nine questions against `vllm-0.30.0-tp2-ca69195e` on
-  2026-10-10, which is what a `temperature: 0` read against a deterministic
-  server should give. (The worst key moves between runs -- 2.22e-16 and 5.55e-16
-  on two of them -- so the figure is the range and not one run's maximum.) The
-  tolerance is six orders of magnitude above that and not more; the temperature
-  is compared exactly, because on a peaked answer two fits can produce the same
-  distribution and only the temperature says which one was applied.
+  probability to agree within 1e-9. The image answer additionally has to carry
+  the same `system_render` verdict on both sides, which is the judgement that
+  read makes and the one field a text answer has no counterpart for. The measured
+  deltas are 2.2e-19 to 5.6e-16, over ten questions against
+  `vllm-0.30.0-tp2-ca69195e` on 2026-10-12, which is what a `temperature: 0` read
+  against a deterministic server should give. The same nine-question set measured
+  1e-19 to a few multiples of 1e-16 against the same fingerprint on 2026-10-10;
+  the image question is the tenth and the range is the two sessions' together.
+  (The worst key moves between runs -- 2.22e-16 and 5.55e-16 on two of them -- so
+  the figure is the range and not one run's maximum.) The tolerance is six orders
+  of magnitude above that and not more; the temperature is compared exactly,
+  because on a peaked answer two fits can produce the same distribution and only
+  the temperature says which one was applied.
+
+  The image question needs `/v1/chat/completions` with vision enabled, so the
+  recorder probes for that before it records rather than the gate assuming it:
+  `probe_images()` sends one image request and classifies the answer. A server
+  that refuses with an error naming images is a capability, and the meta's
+  `images: false` plus the server's own words in `images_reason` make the gate
+  skip that one case. A transport error, a 401/403/429, a 5xx, or an error that
+  says nothing about images is **not** a capability: the recorder writes nothing
+  and exits 4, so an unmeasured endpoint fails the run instead of dropping the
+  gate's image coverage behind a message that reads as a deployment fact.
+
+  `TestLiveImageReadUsesTheImage` is the check the parity gate cannot make. The
+  gate compares two clients on one image request, so a server that accepted the
+  content part and ignored it would produce agreement about nothing. That test
+  asks the same question of a red and a blue image and requires the answer to
+  follow, which is the Python suite's `test_image_classification_reads_pixels_not_filenames`.
 
   The Python side is recorded by `scripts/live_parity.py` during the run rather
   than read from a checked-in file, and the reason is a measurement. The served
@@ -893,9 +915,11 @@ checkpoint, and says so where it appears.
   one call with the request accounting, a JSON round trip, the 27/128/256-option
   read at one request and two, and the thinking read. The DE-1 overflow case and
   the model card's 161-token example are absent because this port has no DE-1
-  read. The Python suite's image case is the gate's `image-color` question rather
-  than a test of its own, so that the two clients are compared on it rather than
-  each being checked alone.
+  read. The Python suite's image case is ported twice: the gate's `image-color`
+  question compares the two clients on the same image request, and
+  `TestLiveImageReadUsesTheImage` checks the answer against the image on its own.
+  The second is what makes the first mean something, because agreement on an
+  answer about nothing is still agreement.
 
   The Python suite's `test_de2_thinks_when_the_repeated_read_is_unsure` ends with
   `assert answer.calibrated is False`, which was written before the DE-2 record

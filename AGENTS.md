@@ -182,7 +182,10 @@ What must not change casually:
   `testdata/*.meta.json`, and `TestPortDocFixtureCounts` fails when they disagree,
   so a regenerated fixture and its paragraph move together. The check reads the
   count out of the prose, so rewording a paragraph past its pattern fails as
-  "this check reads nothing" rather than passing quietly.
+  "this check reads nothing" rather than passing quietly. It covers the readout,
+  client, image, render and tokenizer paragraphs and both render counts; the
+  command-line and Python-JSON figures are not in a meta file and stay
+  hand-maintained, which the table's comment says.
 - A field named in the docs' prose is checked against the package by
   `TestReadmeProseNamesRealFields`, which resolves a backticked `Type.Field`
   whenever `Type` is an exported type here. The Go-block check cannot see prose,
