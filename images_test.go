@@ -350,6 +350,44 @@ func TestPythonPathMatchesPathlib(t *testing.T) {
 	}
 }
 
+// TestPythonPathExpandsUserOnlyForARelativePath pins pathlib's guard: `~` is
+// expanded only when the path has neither a drive nor a root.
+//
+// `Path.expanduser` is `not (self.drive or self.root) and self._tail[0][:1] ==
+// '~'`, so `/~/x.png` keeps its literal component. Expanding it here would build
+// a `//home/...` path, which is a distinct POSIX root, and the OS then collapses
+// the slashes and finds the file the Python client reports as missing.
+func TestPythonPathExpandsUserOnlyForARelativePath(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home directory to expand against")
+	}
+	for _, tc := range []struct {
+		path string
+		want string
+	}{
+		{"~/a.png", home + "/a.png"},
+		{"~", home},
+		// The cleaning happens before the guard, so a `~` that only looks rooted
+		// is still expanded.
+		{"./~/a.png", home + "/a.png"},
+		{"/~/a.png", "/~/a.png"},
+		{"//~/a.png", "//~/a.png"},
+		{"///~/a.png", "/~/a.png"},
+		// A `~` that is not the first component is never expanded.
+		{"a/~/b.png", "a/~/b.png"},
+	} {
+		got, err := pythonPath(tc.path)
+		if err != nil {
+			t.Errorf("pythonPath(%q): %v", tc.path, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("pythonPath(%q) = %q, want %q", tc.path, got, tc.want)
+		}
+	}
+}
+
 // TestValidateImageURLEdgeCases covers the boundaries the fixture cannot state
 // as data: the host check is a length comparison, and the payload check is a
 // comma search.

@@ -35,9 +35,10 @@ import (
 // Two things live here. `TestLiveParityAgainstPython` is the M6 gate: the fixed
 // question set in `testdata/live_questions.json`, asked of the same endpoint by
 // both clients, has to produce the same chosen value and the same distribution.
-// The rest are the DE-2 half of the Python `tests/test_live.py`; the DE-1 and
-// image cases are absent because this port has neither read, which
-// `docs/PORT.md` records.
+// The rest are the DE-2 half of the Python `tests/test_live.py`; the DE-1 case
+// is absent because this port has no DE-1 read, and the image case because it
+// needs an image file and a server with vision enabled. `docs/PORT.md` records
+// both.
 //
 // These tests spend real requests and are not deterministic in the way an
 // offline test is: a server that changes its mind between two runs makes them
@@ -660,9 +661,10 @@ func liveNumber(value any) (float64, bool) {
 
 // -- the ported live cases ----------------------------------------------------
 //
-// The DE-2 half of the Python `tests/test_live.py`. The DE-1 overflow case, the
-// model card's 161-token example and the image case are absent: this port has no
-// DE-1 read and no image path, which `docs/PORT.md` records.
+// The DE-2 half of the Python `tests/test_live.py`. The DE-1 overflow case and
+// the model card's 161-token example are absent because this port has no DE-1
+// read, and the image case because it needs an image file and a server with
+// vision enabled; `docs/PORT.md` records both.
 
 // liveSpam is the Python suite's obvious case.
 var liveSpam = map[string]any{
@@ -689,9 +691,7 @@ func TestLiveHealthReportsTheEndpointAndPassesTheBoundaryCheck(t *testing.T) {
 	}
 }
 
-// TestLiveHealthProbeServesARead is `test_health_probe_serves_a_read`, minus the
-// `chat_system_render` assertion: this port has no chat-render probe, so
-// `Health` has no such entry.
+// TestLiveHealthProbeServesARead is `test_health_probe_serves_a_read`.
 func TestLiveHealthProbeServesARead(t *testing.T) {
 	model, _ := liveModel(t, OptionOverrides{})
 	report := model.Health(context.Background(), true)
@@ -699,8 +699,18 @@ func TestLiveHealthProbeServesARead(t *testing.T) {
 	if !strings.HasPrefix(probe, "passed") {
 		t.Errorf("the probe is %q: %v", probe, report)
 	}
-	if _, ok := report["chat_system_render"]; ok {
-		t.Error("the report carries the image path's chat render probe")
+	// The chat probe runs whenever `--probe` does, and it reports how the server
+	// renders the system turn: `string` when the server's prompt tokens match the
+	// local render through the system line, `differs` when they do not.
+	// `unverified` is a failure here, as it is in the Python suite's
+	// `test_health_probe_serves_a_read`, which accepts the same two values: the
+	// probe asks a text question, so a server that returns fewer prompt positions
+	// than the local render needs is reporting something the text path cannot use
+	// either.
+	switch report["chat_system_render"] {
+	case ChatSystemString, ChatSystemDiffers:
+	default:
+		t.Errorf("the chat probe reports %v: %v", report["chat_system_render"], report)
 	}
 	if report["ok"] != true {
 		t.Errorf("the report is not ok: %v", report)

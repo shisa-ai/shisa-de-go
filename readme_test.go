@@ -140,6 +140,45 @@ func receiverName(decl *ast.FuncDecl) string {
 // shisadeReference matches `shisade.Something` and `shisade.Something.Field`.
 var shisadeReference = regexp.MustCompile(`\bshisade\.([A-Z][A-Za-z0-9_]*(?:\.[A-Z][A-Za-z0-9_]*)?)`)
 
+// proseFieldReference matches a backticked `Type.Field` in the docs' prose.
+//
+// The Go-block check cannot see these, and a field named in prose is exactly
+// where a rename goes unnoticed: `Answer.SystemRender` was documented in two
+// files while `Answer` had no such field. A reference is only checked when the
+// head is an exported type of this package, so `json.dumps`, `pathlib.Path` and
+// the Python client's own classes are left alone.
+var proseFieldReference = regexp.MustCompile("`([A-Z][A-Za-z0-9_]*)\\.([A-Z][A-Za-z0-9_]*)`")
+
+// TestReadmeProseNamesRealFields is the rot check for a field named in prose.
+func TestReadmeProseNamesRealFields(t *testing.T) {
+	names := exportedNames(t)
+	checked := 0
+	for _, path := range readmeDocs {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("reading %s: %v", path, err)
+		}
+		for _, match := range proseFieldReference.FindAllStringSubmatch(string(raw), -1) {
+			typeName, field := match[1], match[2]
+			if !names[typeName] {
+				// Not a type of this package: the Python client's, or a package
+				// from the standard library.
+				continue
+			}
+			checked++
+			if !names[typeName+"."+field] && !names[field] {
+				t.Errorf("%s names %s.%s, and %s has no such exported field or method",
+					path, typeName, field, typeName)
+			}
+		}
+	}
+	if checked < 10 {
+		t.Fatalf("only %d prose field references were checked, so this is not reading the docs",
+			checked)
+	}
+	t.Logf("checked %d prose field references in %v", checked, readmeDocs)
+}
+
 // TestReadmeGoBlocksNameRealIdentifiers is the rot check.
 func TestReadmeGoBlocksNameRealIdentifiers(t *testing.T) {
 	names := exportedNames(t)

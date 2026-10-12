@@ -124,7 +124,12 @@ type readoutMeta struct {
 	AnswerTokenID  int    `json:"answer_token_id"`
 	Scenarios      int    `json:"scenarios"`
 	Exchanges      int    `json:"exchanges"`
-	Sha256         string `json:"sha256"`
+	// Operations and Errors pin the fixture's mix, not just its size: a
+	// regeneration that dropped the image read's refusals would shrink these
+	// rather than only reordering the totals.
+	Operations map[string]int `json:"operations"`
+	Errors     int            `json:"errors"`
+	Sha256     string         `json:"sha256"`
 }
 
 // loadReadoutFixture returns the recorded scenarios and the provenance the
@@ -199,6 +204,38 @@ func TestReadoutFixtureProvenance(t *testing.T) {
 	}
 	if total != meta.Exchanges {
 		t.Errorf("the fixture holds %d exchanges, the provenance records %d", total, meta.Exchanges)
+	}
+	operations := map[string]int{}
+	errors := 0
+	for _, scenario := range fixture.Scenarios {
+		for _, step := range scenario.Steps {
+			operations[step.Op]++
+			if step.Error != nil {
+				errors++
+			}
+		}
+	}
+	if len(meta.Operations) == 0 {
+		t.Error("the provenance records no per-operation counts")
+	}
+	for op, want := range meta.Operations {
+		if operations[op] != want {
+			t.Errorf("the fixture has %d %s steps, the provenance records %d",
+				operations[op], op, want)
+		}
+	}
+	for op, got := range operations {
+		if _, recorded := meta.Operations[op]; !recorded {
+			t.Errorf("the fixture has %d %s steps the provenance does not record", got, op)
+		}
+	}
+	if errors != meta.Errors {
+		t.Errorf("the fixture records %d refusals, the provenance records %d", errors, meta.Errors)
+	}
+	// The image read is the reason this fixture grew, so a fixture without it is
+	// not the one that was recorded.
+	if meta.Operations["read-image"] == 0 {
+		t.Error("the provenance records no image reads")
 	}
 }
 
@@ -1578,6 +1615,31 @@ func TestReadImageRejectsABadTopLogprobs(t *testing.T) {
 	}
 }
 
+// TestReadImageRefusesAResponseWithNoChoices pins the one chat-response refusal
+// that has no fixture behind it.
+//
+// The message is the Python client's `_first_choice` verbatim, which is why the
+// read does not name itself in it: both chat reads send the same request shape,
+// and Python does not distinguish them here either.
+func TestReadImageRefusesAResponseWithNoChoices(t *testing.T) {
+	readout, _ := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"choices":[]}`)
+	})
+	_, err := readout.ReadImage(context.Background(), map[string]any{"a": 1},
+		imageQuestion(2), imageTestURL, ImageReadOptions{})
+	if err == nil {
+		t.Fatal("a chat response with no choices was read")
+	}
+	const want = "the chat response carries no choices"
+	var readoutError *ReadoutError
+	if !errors.As(err, &readoutError) {
+		t.Fatalf("got a %T, want a *ReadoutError", err)
+	}
+	if readoutError.Message != want {
+		t.Errorf("the message is\n  %s\nwant it to be exactly\n  %s", readoutError.Message, want)
+	}
+}
+
 // TestReadImageHasNoFallback pins the difference from ReadCodes: a code outside
 // the returned top-k ends the read after one request instead of buying a second.
 func TestReadImageHasNoFallback(t *testing.T) {
@@ -1635,6 +1697,22 @@ func TestReadImageBoundaryRefusals(t *testing.T) {
 				`"prompt_logprobs":[null,{"101":{"logprob":-1,"decoded_token":"oops"}}]}`,
 			want: "the last prompt token is 'oops' (id 101), not '<channel|>' (id 101)",
 		},
+		{
+			// The Python client reads this with `.get`, so an entry that omits
+			// the field is None there and must not be an empty string here.
+			name: "no decoded_token",
+			body: `{"choices":[{"logprobs":{"content":[{"top_logprobs":[]}]}}],` +
+				`"prompt_logprobs":[null,{"7":{"logprob":-1}}]}`,
+			want: "the last prompt token is None (id 7), not '<channel|>' (id 101)",
+		},
+		{
+			// A key that is not a token id is reported as itself. Printing an id
+			// it does not have would name a token that is not in the response.
+			name: "a key that is not a token id",
+			body: `{"choices":[{"logprobs":{"content":[{"top_logprobs":[]}]}}],` +
+				`"prompt_logprobs":[null,{"oops":{"logprob":-1,"decoded_token":"x"}}]}`,
+			want: "the last prompt token is 'x' (id oops), not '<channel|>' (id 101)",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			readout, _ := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
@@ -1660,31 +1738,36 @@ func TestReadImageBoundaryRefusals(t *testing.T) {
 // taking "the first key" would report a different token each run.
 func TestBoundaryEntryIsDeterministic(t *testing.T) {
 	entries := map[string]*chatPromptEntry{
-		"7":   {DecodedToken: "x"},
-		"101": {DecodedToken: AnswerPrefix},
-		"3":   {DecodedToken: "y"},
+		"7":   {DecodedToken: stringPointer("x")},
+		"101": {DecodedToken: stringPointer(AnswerPrefix)},
+		"3":   {DecodedToken: stringPointer("y")},
 	}
 	// The terminator is preferred by id wherever it sits.
 	for range 20 {
-		id, entry := boundaryEntry(entries, 101)
-		if id != 101 || entry.DecodedToken != AnswerPrefix {
-			t.Fatalf("boundaryEntry chose %d (%q), want the terminator", id, entry.DecodedToken)
+		key, entry := boundaryEntry(entries, 101)
+		if key != "101" || *entry.DecodedToken != AnswerPrefix {
+			t.Fatalf("boundaryEntry chose %q (%q), want the terminator", key, *entry.DecodedToken)
 		}
 	}
 	// Without it, the lowest id is reported, so the message is the same twice.
-	without := map[string]*chatPromptEntry{"7": {DecodedToken: "x"}, "3": {DecodedToken: "y"}}
+	without := map[string]*chatPromptEntry{
+		"7": {DecodedToken: stringPointer("x")},
+		"3": {DecodedToken: stringPointer("y")},
+	}
 	for range 20 {
-		id, _ := boundaryEntry(without, 101)
-		if id != 3 {
-			t.Fatalf("boundaryEntry chose %d, want the lowest id", id)
+		key, _ := boundaryEntry(without, 101)
+		if key != "3" {
+			t.Fatalf("boundaryEntry chose %q, want the lowest id", key)
 		}
 	}
 	// A key that is not a token id cannot be the boundary, but it is what the
-	// server sent, so it is still reported.
-	id, entry := boundaryEntry(map[string]*chatPromptEntry{"oops": {DecodedToken: "z"}}, 101)
-	if id != 0 || entry.DecodedToken != "z" {
-		t.Errorf("boundaryEntry chose %d (%q), want the unparsable key reported",
-			id, entry.DecodedToken)
+	// server sent, so it is reported as itself rather than as an id it does not
+	// have.
+	key, entry := boundaryEntry(map[string]*chatPromptEntry{
+		"oops": {DecodedToken: stringPointer("z")}}, 101)
+	if key != "oops" || *entry.DecodedToken != "z" {
+		t.Errorf("boundaryEntry chose %q (%q), want the unparsable key reported",
+			key, *entry.DecodedToken)
 	}
 }
 
@@ -2014,5 +2097,102 @@ func TestReadImageSendsTheImagePartFirst(t *testing.T) {
 	}
 	if second["text"] != want {
 		t.Errorf("the text part is\n  %v\nwant the rendered payload\n  %s", second["text"], want)
+	}
+}
+
+// TestCodeSlotsForDoesNotCacheAcrossATokenizerSwap is the image read's half of
+// the stale-generation rule.
+//
+// ReadImage resolves its slots, its terminator and its system-render comparison
+// from one snapshot, so a SetTokenizer that lands mid-read must not leave the
+// cache holding ids from the tokenizer the read started with.
+func TestCodeSlotsForDoesNotCacheAcrossATokenizerSwap(t *testing.T) {
+	readout := stubReadout(t, `{"choices":[{"text":"A"}]}`)
+	tok, generation, err := readout.tokenizerSnapshot()
+	if err != nil {
+		t.Fatalf("tokenizerSnapshot: %v", err)
+	}
+
+	// The swap the read lost the race against.
+	readout.SetTokenizer(newFixtureTokenizer(map[string]int{
+		AnswerPrefix: 101, "A": 65, "B": 66}))
+
+	slots, err := readout.codeSlotsFor(tok, generation, 2)
+	if err != nil {
+		t.Fatalf("codeSlotsFor: %v", err)
+	}
+	if len(slots) != 2 || slots[0].Text != "A" || slots[1].Text != "B" {
+		t.Fatalf("the stale read resolved %v", slots)
+	}
+	if len(readout.slots) != 0 {
+		t.Fatalf("a read that lost the tokenizer race cached %v", readout.slots)
+	}
+	// The current generation still caches, or the guard would be a permanent
+	// cache miss rather than a generation check.
+	fresh, err := readout.CodeSlots(2)
+	if err != nil {
+		t.Fatalf("CodeSlots: %v", err)
+	}
+	if len(fresh) != 2 || len(readout.slots) != 2 {
+		t.Fatalf("the current generation cached %v", readout.slots)
+	}
+}
+
+// TestReadImageKeepsOneTokenizerAcrossASwap pins the whole read, not just the
+// slot helper: the tokenizer is swapped from inside the HTTP handler, which is
+// between the snapshot the read takes and the system-render comparison it makes
+// afterwards.
+//
+// Resolving those two against different tokenizers would let the read confirm
+// the answer boundary with one and report the server's rendering with another.
+// The response carries exactly the local render's tokens, so the verdict is
+// `string` under the tokenizer the read started with and cannot be under the
+// replacement, whose word list tokenizes the same text differently.
+func TestReadImageKeepsOneTokenizerAcrossASwap(t *testing.T) {
+	var readout *Readout
+	readout, _ = chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {})
+	state := map[string]any{"note": "one image"}
+	question := imageQuestion(2)
+	local, err := readout.Render(state, question, RenderOptions{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	tok, err := readout.EnsureTokenizer()
+	if err != nil {
+		t.Fatalf("EnsureTokenizer: %v", err)
+	}
+	localIDs := tok.Encode(local)
+	entries := make([]string, 0, len(localIDs))
+	for _, id := range localIDs {
+		decoded, err := json.Marshal(tok.Decode([]int{id}))
+		if err != nil {
+			t.Fatalf("encoding the decoded token: %v", err)
+		}
+		entries = append(entries, fmt.Sprintf(`{"%d":{"logprob":-0.01,"rank":1,`+
+			`"decoded_token":%s}}`, id, decoded))
+	}
+	response := `{"choices":[{"logprobs":{"content":[{"top_logprobs":[` +
+		`{"token":"A","logprob":-0.1},{"token":"B","logprob":-0.9}]}]}}],` +
+		`"prompt_logprobs":[null,` + strings.Join(entries[1:], ",") + `]}`
+
+	// The swap happens between the read's snapshot and its system-render
+	// comparison. The replacement resolves the terminator to nothing at all, so
+	// a read that resolved its boundary there would fail rather than answer.
+	readout, _ = chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		readout.SetTokenizer(newFixtureTokenizer(map[string]int{
+			AnswerPrefix + "x": 101, "A": 65, "B": 66}))
+		fmt.Fprint(w, response)
+	})
+	read, err := readout.ReadImage(context.Background(), state, question, imageTestURL,
+		ImageReadOptions{})
+	if err != nil {
+		t.Fatalf("the read used the replacement tokenizer part way through: %v", err)
+	}
+	if read.SystemRender != ChatSystemString {
+		t.Errorf("system render = %q, want %q: the server echoed the render the read "+
+			"started with", read.SystemRender, ChatSystemString)
+	}
+	if len(read.Probabilities) != 2 {
+		t.Errorf("the read returned %v", read.Probabilities)
 	}
 }

@@ -519,9 +519,10 @@ func TestDoctorText(t *testing.T) {
 			t.Errorf("the report has no %q line:\n%s", line, stdout)
 		}
 	}
-	// The one line the Python command line prints that this one cannot.
+	// The chat-system line is the probe's answer, so a report with no `--probe`
+	// has none: the Python command line prints it only under `--probe` too.
 	if strings.Contains(stdout, "chat system") {
-		t.Errorf("the report has a chat-system line, and this port has no chat probe:\n%s", stdout)
+		t.Errorf("the report has a chat-system line without --probe:\n%s", stdout)
 	}
 	// A checkpoint the record does not cover is reported and is not fatal: the
 	// level is `family`, not `mismatch`, so the endpoint is still declared ok
@@ -1425,4 +1426,34 @@ func (s *cliServer) bodiesFor(t *testing.T, path string) []map[string]any {
 		}
 	}
 	return bodies
+}
+
+// TestAskRefusesAnEmptyImage pins the difference `CallOptions.Image` cannot
+// express: an absent `--image` is a text read, and `--image ""` is an unusable
+// reference, which the Python command line reports rather than answering the
+// text question.
+func TestAskRefusesAnEmptyImage(t *testing.T) {
+	server := newCLIServer(t, "shisa-ai/shisa-de-2")
+	installCLIModel(t, server)
+
+	status, stdout, stderr := invoke(t, "ask", "--model", "shisa-ai/shisa-de-2",
+		"--image", "", "--labels", "billing,outage")
+	if status != 1 {
+		t.Errorf("ask --image '' exited %d, want 1", status)
+	}
+	if stdout != "" {
+		t.Errorf("a refused image wrote to stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "image is empty") {
+		t.Errorf("the error is %q", stderr)
+	}
+	if got := server.requestCount(); got != 0 {
+		t.Errorf("the command sent %d requests for an empty reference", got)
+	}
+	// An absent --image is still a text read.
+	status, _, stderr = invoke(t, "ask", "--model", "shisa-ai/shisa-de-2",
+		"--labels", "billing,outage")
+	if status != 0 {
+		t.Fatalf("ask with no --image exited %d: %s", status, stderr)
+	}
 }

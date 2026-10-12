@@ -999,6 +999,24 @@ func TestCallerVisibleMapsHoldValuesNotPointers(t *testing.T) {
 		t.Fatalf("Decide: %v", err)
 	}
 	assertNoPointers(t, "a debug raw head", decision.Raw["urgent"])
+
+	// The image read's raw block, which is built by its own function rather than
+	// by the policy's, and whose debug form is the one place `prompt` is nil and
+	// `top_logprobs` is a map of numbers. A debug image decision is the only
+	// thing that reaches both.
+	model, _ = newStubModel(t, MaxCodes, chatBody(
+		`{"token":"A","logprob":-0.1},{"token":"B","logprob":-1.0}`))
+	decision, err = model.Classify(context.Background(), map[string]any{},
+		map[string]HeadSpec{"intent": {Options: []Option{{Key: "spam"}, {Key: "ham"}}}},
+		ClassifyOptions{CallOptions: CallOptions{Image: imageTestURL, Debug: true}})
+	if err != nil {
+		t.Fatalf("Classify with an image: %v", err)
+	}
+	assertNoPointers(t, "a debug image raw head", decision.Raw["intent"])
+	if prompt, present := decision.Raw["intent"]["prompt"]; !present || prompt != nil {
+		t.Errorf("an image read's debug prompt is %#v, want nil: the server rendered the "+
+			"prompt, so there is no local one", prompt)
+	}
 }
 
 // assertNoPointers fails on any pointer inside a caller-visible value, at any
