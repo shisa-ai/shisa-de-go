@@ -1376,6 +1376,14 @@ func pythonRepr(value any, nested bool) string {
 			parts[index] = pythonQuote(item)
 		}
 		return "[" + strings.Join(parts, ", ") + "]"
+	case Object:
+		// The ordered dict: `repr()` keeps an insertion order, and this type is
+		// what carries one. A Go map has none, so the case below sorts.
+		parts := make([]string, 0, len(typed))
+		for _, member := range typed {
+			parts = append(parts, pythonQuote(member.Key)+": "+pythonRepr(member.Value, true))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
 	case map[string]any:
 		// Python keeps insertion order and a Go map has none, so the keys are
 		// sorted. That is the one place this spelling is not Python's.

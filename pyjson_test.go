@@ -541,3 +541,68 @@ func TestPythonJSONIndentIsNotGoIndent(t *testing.T) {
 			"would not catch a swap")
 	}
 }
+
+// TestObjectMarshalsAsAJSONObject pins the encoding/json shape of Object.
+//
+// Object is a []Member, so without MarshalJSON `encoding/json` writes a JSON
+// array of {"Key":...,"Value":...} objects. The chat request bodies carry their
+// messages and content parts as Objects so the keys come out in the order the
+// Python client writes them, and a shape no Python dict has would be a request
+// the server cannot read.
+func TestObjectMarshalsAsAJSONObject(t *testing.T) {
+	object := Object{
+		{Key: "role", Value: "system"},
+		{Key: "content", Value: "hello"},
+		{Key: "parts", Value: []any{
+			Object{{Key: "type", Value: "text"}, {Key: "text", Value: "hi"}},
+		}},
+	}
+	encoded, err := json.Marshal(object)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	want := `{"role":"system","content":"hello","parts":[{"type":"text","text":"hi"}]}`
+	if string(encoded) != want {
+		t.Errorf("got %s\nwant %s", encoded, want)
+	}
+	// The keys are in the order they were built, not sorted: `content` before
+	// `parts` and `role` first is what a caller wrote, and a Python dict would
+	// keep it.
+	if strings.Index(string(encoded), `"role"`) > strings.Index(string(encoded), `"content"`) {
+		t.Errorf("the key order changed: %s", encoded)
+	}
+	// An empty object is `{}` rather than `null`, which is what a Python dict is.
+	empty, err := json.Marshal(Object{})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if string(empty) != "{}" {
+		t.Errorf("an empty Object marshals as %s, want {}", empty)
+	}
+}
+
+// TestPythonReprOfObjectKeepsOrder pins `repr()` for the ordered dict.
+//
+// `pythonRepr` reached Object through its fallback, which writes JSON: a caller
+// reading an error that quotes a value would see `{"token": "A"}` where Python
+// prints `{'token': 'A'}`.
+func TestPythonReprOfObjectKeepsOrder(t *testing.T) {
+	object := Object{
+		{Key: "token", Value: "A"},
+		{Key: "logprob", Value: json.Number("-1")},
+		{Key: "nested", Value: Object{{Key: "b", Value: 2}, {Key: "a", Value: 1}}},
+		{Key: "missing", Value: nil},
+		{Key: "list", Value: []any{json.Number("3"), "x"}},
+	}
+	want := "{'token': 'A', 'logprob': -1, 'nested': {'b': 2, 'a': 1}, " +
+		"'missing': None, 'list': [3, 'x']}"
+	if got := PythonRepr(object); got != want {
+		t.Errorf("PythonRepr got\n  %s\nwant\n  %s", got, want)
+	}
+	// A Go map has no order, so that case is the sorted one, and the difference
+	// is the point of having both.
+	sorted := PythonRepr(map[string]any{"b": 2, "a": 1})
+	if sorted != "{'a': 1, 'b': 2}" {
+		t.Errorf("a map reprs as %s, want the sorted spelling", sorted)
+	}
+}

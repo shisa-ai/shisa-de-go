@@ -5,7 +5,7 @@
   "max_options": 26,
   "answer_token_id": 101,
   "think_system": "Apply the supplied criterion to the supplied evidence. Choose exactly one listed option. Reason through the question step by step before you answer. When your reasoning is complete, respond with only its uppercase letter.",
-  "scenarios": 22,
-  "exchanges": 62,
-  "sha256": "2bbd532416a358e8820177723254b8a4b5a71eb31649bb84dc392635f21c076e"
+  "scenarios": 35,
+  "exchanges": 74,
+  "sha256": "61daafbf50ff53a0db7ede000ca7e2ae2b327f1fde9a9c6e89011ee1e8200358"
 }

@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"unicode/utf8"
 
@@ -62,6 +63,15 @@ type readoutStep struct {
 	Result    *readResult      `json:"result"`
 	Thought   *thoughtResult   `json:"thought"`
 	Error     *replayStepError `json:"error"`
+
+	// The image read and the chat probe. `State` is the evidence the question is
+	// asked about, which those two reads need because the client renders the
+	// local comparison prompt from it rather than sending it.
+	State               json.RawMessage `json:"state"`
+	ImageURL            string          `json:"image_url"`
+	TopLogprobs         int             `json:"top_logprobs"`
+	RequireStringSystem bool            `json:"require_string_system"`
+	SystemRender        *string         `json:"system_render"`
 }
 
 type replayPair struct {
@@ -89,6 +99,12 @@ type readResult struct {
 	Sampled        *string             `json:"sampled"`
 	Prompt         *string             `json:"prompt"`
 	TopLogprobs    map[string]*float64 `json:"top_logprobs"`
+	// Messages is the image read's request messages, as JSON: the fixture holds a
+	// Python list of dicts and the client holds Objects, so the two are compared
+	// as JSON values rather than as Go ones.
+	Messages json.RawMessage `json:"messages"`
+	// SystemRender is image reads only.
+	SystemRender *string `json:"system_render"`
 }
 
 type thoughtResult struct {
@@ -236,6 +252,33 @@ func TestReadoutReplay(t *testing.T) {
 					}
 					read, err := readout.ReadCodesAfterThought(ctx, ids, slots, step.Debug)
 					verifyRead(t, step, read, err)
+				case "read-image":
+					slots, err := readout.CodeSlots(step.Codes)
+					if err != nil {
+						t.Fatalf("CodeSlots(%d): %v", step.Codes, err)
+					}
+					state, err := DecodeJSON(step.State)
+					if err != nil {
+						t.Fatalf("decoding the step's state: %v", err)
+					}
+					question := imageQuestion(step.Codes)
+					// The client resolves the codes itself; the fixture's slots are only
+					// used to check that the option set is the one the Python client used.
+					_ = slots
+					read, err := readout.ReadImage(ctx, state, question, step.ImageURL,
+						ImageReadOptions{TopLogprobs: step.TopLogprobs, Debug: step.Debug,
+							RequireStringSystem: step.RequireStringSystem})
+					verifyRead(t, step, read, err)
+				case "probe-chat-render":
+					state, err := DecodeJSON(step.State)
+					if err != nil {
+						t.Fatalf("decoding the step's state: %v", err)
+					}
+					verdict := readout.ProbeChatRender(ctx, state, NewNoul("Is this a health check?"))
+					if step.SystemRender == nil || verdict != *step.SystemRender {
+						t.Errorf("the chat probe reported %q, and the Python client reported %s",
+							verdict, formatOptionalString(step.SystemRender))
+					}
 				default:
 					t.Fatalf("unknown step op %q", step.Op)
 				}
@@ -293,6 +336,20 @@ func verifyRead(t *testing.T, step readoutStep, read CodeRead, err error) {
 	if !reflect.DeepEqual(read.TopLogprobs, want.TopLogprobs) {
 		t.Errorf("the debug top logprobs differ:\n got %v\nwant %v",
 			read.TopLogprobs, want.TopLogprobs)
+	}
+	// The messages are compared as JSON, because the fixture holds a Python list
+	// of dicts and the client holds ordered Objects: the value is what has to
+	// agree, not the Go type that carries it.
+	gotMessages, err := json.Marshal(read.Messages)
+	if err != nil {
+		t.Errorf("encoding the sent messages: %v", err)
+	}
+	if !sameRawJSON(t, gotMessages, want.Messages) {
+		t.Errorf("the debug messages differ:\n got %s\nwant %s", gotMessages, want.Messages)
+	}
+	if read.SystemRender != derefString(want.SystemRender) {
+		t.Errorf("system render = %q, want %s", read.SystemRender,
+			formatOptionalString(want.SystemRender))
 	}
 }
 
@@ -552,6 +609,41 @@ func derefString(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+// imageQuestion is the question the image scenarios ask, spelled the same way the
+// generator spells it: the same instructions and the same option keys, because
+// both reach the prompt the server renders.
+func imageQuestion(count int) Choice {
+	if count < 2 {
+		count = 2
+	}
+	criteria := make([]Option, count)
+	for index := range criteria {
+		criteria[index] = Option{Key: fmt.Sprintf("k%d", index),
+			Description: fmt.Sprintf("Option %d", index)}
+	}
+	return NewChoice("What colour is this?", criteria)
+}
+
+// sameRawJSON compares two encoded JSON values, so a fixture's Python list of
+// dicts and a client's ordered Objects are compared by what they say rather than
+// by the Go type carrying it.
+func sameRawJSON(t *testing.T, got, want []byte) bool {
+	t.Helper()
+	if len(want) == 0 {
+		want = []byte("null")
+	}
+	var gotValue, wantValue any
+	if err := json.Unmarshal(got, &gotValue); err != nil {
+		t.Errorf("the client's value is not JSON: %v", err)
+		return false
+	}
+	if err := json.Unmarshal(want, &wantValue); err != nil {
+		t.Errorf("the fixture's value is not JSON: %v", err)
+		return false
+	}
+	return sameJSON(t, "value", gotValue, wantValue)
 }
 
 // TestReadoutRejectsAnAmbiguousFallback pins the one place this port is stricter
@@ -1372,5 +1464,555 @@ func TestFallbackMessageQuotesLikePython(t *testing.T) {
 		"prompt_logprobs fallback returned nothing for it"
 	if err.Error() != want {
 		t.Errorf("the fallback message is\n  %s\nwant\n  %s", err, want)
+	}
+}
+
+// -- the image read -----------------------------------------------------------
+
+// The chat endpoint's own tests.
+//
+// scripts/gen_readout_parity.py records the Python client's request bodies,
+// responses and results for this read, and TestReadoutReplay requires the Go
+// client to reproduce them. What follows is what a recorded exchange cannot
+// state: the shapes the fixture does not carry, the readouts that cannot send at
+// all, and the choices this port makes where the Python client's answer depends
+// on its dict's insertion order.
+
+// chatStubReadout is a readout whose transport answers from one handler, with a
+// count of the requests it received. The tokenizer resolves the pinned template's
+// fragments as single tokens, so a rendered prompt has a stable token count.
+func chatStubReadout(t *testing.T, handler http.HandlerFunc) (*Readout, *int32) {
+	t.Helper()
+	var calls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		handler(w, r)
+	}))
+	t.Cleanup(server.Close)
+	readout, err := NewReadout(ReadoutConfig{BaseURL: server.URL, Model: "de2-test",
+		HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatalf("NewReadout: %v", err)
+	}
+	readout.SetTokenizer(newFixtureTokenizer(map[string]int{
+		AnswerPrefix: 101, "AA": 1114113, "AB": 1114114, "A": 65, "B": 66,
+		"<bos>": 200, "<|turn>": 201, "<turn|>": 202, "system\n": 203, "user\n": 204,
+		"model\n": 205, "<|channel>thought\n": 206}))
+	return readout, &calls
+}
+
+// chatBody is a chat response carrying one answer position with the given top-k
+// and one prompt-logprob entry, which is the terminator the boundary check needs.
+func chatBody(top string) string {
+	return `{"choices":[{"message":{"role":"assistant","content":"A"},` +
+		`"logprobs":{"content":[{"token":"A","logprob":-0.1,"top_logprobs":[` + top + `]}]}}],` +
+		`"prompt_logprobs":[null,{"101":{"logprob":-0.01,"rank":1,` +
+		`"decoded_token":"<channel|>"}}],"usage":{"prompt_tokens":9}}`
+}
+
+const imageTestURL = "data:image/png;base64,iVBORw0KGgo="
+
+// TestReadImageRefusesALocalPath is the one thing ReadImage must never forward:
+// the request carries the URL itself, so a file name would be sent as the image.
+func TestReadImageRefusesALocalPath(t *testing.T) {
+	readout, calls := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, chatBody(`{"token":"A","logprob":-0.1}`))
+	})
+	_, err := readout.ReadImage(context.Background(), map[string]any{"a": 1},
+		imageQuestion(2), "cat.png", ImageReadOptions{})
+	if err == nil {
+		t.Fatal("ReadImage accepted a local file name")
+	}
+	var imageError *ImageError
+	if !errors.As(err, &imageError) {
+		t.Fatalf("got a %T, want an *ImageError", err)
+	}
+	if !strings.Contains(imageError.Message, "prepare_image()") {
+		t.Errorf("the message does not say what to call instead: %v", err)
+	}
+	if *calls != 0 {
+		t.Errorf("the readout sent %d requests for a rejected reference", *calls)
+	}
+}
+
+// TestReadImageRefusesMoreOptionsThanTopLogprobs is the arithmetic that stops a
+// read the server cannot satisfy: with no fallback, an option outside the top-k
+// is an error, so asking is pointless.
+func TestReadImageRefusesMoreOptionsThanTopLogprobs(t *testing.T) {
+	readout, calls := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, chatBody(`{"token":"A","logprob":-0.1}`))
+	})
+	_, err := readout.ReadImage(context.Background(), map[string]any{"a": 1},
+		imageQuestion(4), imageTestURL, ImageReadOptions{TopLogprobs: 3})
+	if err == nil {
+		t.Fatal("a 4-option read from a top-3 distribution was attempted")
+	}
+	want := "shisade: 4 options cannot be read from a top-3 distribution: the server returns " +
+		"at most 3 tokens, so at least 1 option letters would be missing and the image readout " +
+		"has no letter fallback; pass top_logprobs=4 or higher and serve the model with " +
+		"--max-logprobs 4 or higher"
+	if err.Error() != want {
+		t.Errorf("the message is\n  %s\nwant\n  %s", err, want)
+	}
+	if *calls != 0 {
+		t.Errorf("the readout sent %d requests for an impossible read", *calls)
+	}
+}
+
+// TestReadImageRejectsABadTopLogprobs pins the guard before the arithmetic, so a
+// zero or negative limit is named as what it is rather than as a shortfall.
+func TestReadImageRejectsABadTopLogprobs(t *testing.T) {
+	readout, calls := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, chatBody(`{"token":"A","logprob":-0.1}`))
+	})
+	for _, limit := range []int{-1, -100} {
+		_, err := readout.ReadImage(context.Background(), map[string]any{"a": 1},
+			imageQuestion(2), imageTestURL, ImageReadOptions{TopLogprobs: limit})
+		if err == nil || !strings.Contains(err.Error(), "top_logprobs must be a positive integer") {
+			t.Errorf("top_logprobs=%d gave %v, want the positive-integer error", limit, err)
+		}
+	}
+	if *calls != 0 {
+		t.Errorf("the readout sent %d requests for a rejected limit", *calls)
+	}
+}
+
+// TestReadImageHasNoFallback pins the difference from ReadCodes: a code outside
+// the returned top-k ends the read after one request instead of buying a second.
+func TestReadImageHasNoFallback(t *testing.T) {
+	readout, calls := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, chatBody(`{"token":"A","logprob":-0.1}`))
+	})
+	_, err := readout.ReadImage(context.Background(), map[string]any{"a": 1},
+		imageQuestion(2), imageTestURL, ImageReadOptions{})
+	if err == nil {
+		t.Fatal("a read with a code outside the top-k was answered anyway")
+	}
+	want := "shisade: option letters B are missing from the returned top 20 logprobs and the " +
+		"image readout has no letter fallback; raise the server's --max-logprobs above 20 or " +
+		"pass a higher top_logprobs"
+	if err.Error() != want {
+		t.Errorf("the message is\n  %s\nwant\n  %s", err, want)
+	}
+	// One request, and no fallback: this is the whole difference from ReadCodes,
+	// which would have sent a second.
+	if *calls != 1 {
+		t.Errorf("the readout sent %d requests, want exactly 1", *calls)
+	}
+}
+
+// TestReadImageBoundaryRefusals pins the substitute for the text path's local
+// boundary check. The image readout has no prompt to tokenize, so the server's
+// last prompt token is the evidence, and a missing or wrong one is an error
+// rather than permission to read another position.
+func TestReadImageBoundaryRefusals(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "no prompt_logprobs at all",
+			body: `{"choices":[{"logprobs":{"content":[{"top_logprobs":[]}]}}]}`,
+			want: "carries no root-level prompt_logprobs",
+		},
+		{
+			name: "empty entry at the boundary",
+			body: `{"choices":[{"logprobs":{"content":[{"top_logprobs":[]}]}}],` +
+				`"prompt_logprobs":[null,{}]}`,
+			want: "carries no token at the answer boundary",
+		},
+		{
+			name: "the wrong token",
+			body: `{"choices":[{"logprobs":{"content":[{"top_logprobs":[]}]}}],` +
+				`"prompt_logprobs":[null,{"7":{"logprob":-1,"decoded_token":"x"}}]}`,
+			want: "the last prompt token is 'x' (id 7), not '<channel|>' (id 101)",
+		},
+		{
+			name: "the right id, the wrong decoding",
+			body: `{"choices":[{"logprobs":{"content":[{"top_logprobs":[]}]}}],` +
+				`"prompt_logprobs":[null,{"101":{"logprob":-1,"decoded_token":"oops"}}]}`,
+			want: "the last prompt token is 'oops' (id 101), not '<channel|>' (id 101)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			readout, _ := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, tc.body)
+			})
+			_, err := readout.ReadImage(context.Background(), map[string]any{"a": 1},
+				imageQuestion(2), imageTestURL, ImageReadOptions{})
+			if err == nil {
+				t.Fatal("the read was answered without boundary evidence")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the error is\n  %v\nwant it to contain\n  %s", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestBoundaryEntryIsDeterministic pins the one place this port chooses where the
+// Python client depends on its dict's insertion order.
+//
+// `prompt_logprobs: 0` returns one token per position, so several at the
+// boundary is an ambiguous response. Go's map iteration is randomised, so
+// taking "the first key" would report a different token each run.
+func TestBoundaryEntryIsDeterministic(t *testing.T) {
+	entries := map[string]*chatPromptEntry{
+		"7":   {DecodedToken: "x"},
+		"101": {DecodedToken: AnswerPrefix},
+		"3":   {DecodedToken: "y"},
+	}
+	// The terminator is preferred by id wherever it sits.
+	for range 20 {
+		id, entry := boundaryEntry(entries, 101)
+		if id != 101 || entry.DecodedToken != AnswerPrefix {
+			t.Fatalf("boundaryEntry chose %d (%q), want the terminator", id, entry.DecodedToken)
+		}
+	}
+	// Without it, the lowest id is reported, so the message is the same twice.
+	without := map[string]*chatPromptEntry{"7": {DecodedToken: "x"}, "3": {DecodedToken: "y"}}
+	for range 20 {
+		id, _ := boundaryEntry(without, 101)
+		if id != 3 {
+			t.Fatalf("boundaryEntry chose %d, want the lowest id", id)
+		}
+	}
+	// A key that is not a token id cannot be the boundary, but it is what the
+	// server sent, so it is still reported.
+	id, entry := boundaryEntry(map[string]*chatPromptEntry{"oops": {DecodedToken: "z"}}, 101)
+	if id != 0 || entry.DecodedToken != "z" {
+		t.Errorf("boundaryEntry chose %d (%q), want the unparsable key reported",
+			id, entry.DecodedToken)
+	}
+}
+
+// TestContentTopLogprobsShapes pins the per-entry validation, which is what makes
+// a malformed response name the entry rather than the whole body.
+func TestContentTopLogprobsShapes(t *testing.T) {
+	withTop := func(entries string) chatChoice {
+		var choice chatChoice
+		body := `{"logprobs":{"content":[{"top_logprobs":[` + entries + `]}]}}`
+		if err := json.Unmarshal([]byte(body), &choice); err != nil {
+			t.Fatalf("the test body is not valid JSON: %v", err)
+		}
+		return choice
+	}
+	for _, tc := range []struct {
+		name    string
+		entries string
+		want    string
+	}{
+		{"a logprob as a string", `{"token":"A","logprob":"nope"}`,
+			"malformed top_logprobs entry: {'token': 'A', 'logprob': 'nope'}"},
+		{"a token as a number", `{"token":5,"logprob":-1}`,
+			"malformed top_logprobs entry: {'token': 5, 'logprob': -1}"},
+		{"a boolean logprob", `{"token":"A","logprob":true}`,
+			"malformed top_logprobs entry"},
+		{"a missing logprob", `{"token":"A"}`,
+			"malformed top_logprobs entry: {'token': 'A'}"},
+		{"a null entry", `null`, "malformed top_logprobs entry: None"},
+		{"a bare string", `"A"`, "malformed top_logprobs entry: 'A'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := contentTopLogprobs(withTop(tc.entries))
+			if err == nil {
+				t.Fatal("a malformed entry was accepted")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("the error is\n  %v\nwant it to contain\n  %s", err, tc.want)
+			}
+		})
+	}
+
+	t.Run("first occurrence wins", func(t *testing.T) {
+		// A repeated token cannot carry two logprobs, so the first is the one
+		// that was read at that position.
+		top, err := contentTopLogprobs(withTop(
+			`{"token":"A","logprob":-0.1},{"token":"A","logprob":-9.9}`))
+		if err != nil {
+			t.Fatalf("contentTopLogprobs: %v", err)
+		}
+		if top["A"] != -0.1 {
+			t.Errorf("A scored %v, want the first occurrence", top["A"])
+		}
+	})
+
+	t.Run("no content", func(t *testing.T) {
+		_, err := contentTopLogprobs(chatChoice{})
+		if err == nil || !strings.Contains(err.Error(), "no logprobs.content") {
+			t.Errorf("an empty choice gave %v, want the missing-content error", err)
+		}
+	})
+
+	t.Run("content without top_logprobs", func(t *testing.T) {
+		var choice chatChoice
+		if err := json.Unmarshal([]byte(`{"logprobs":{"content":[{}]}}`), &choice); err != nil {
+			t.Fatalf("the test body is not valid JSON: %v", err)
+		}
+		_, err := contentTopLogprobs(choice)
+		if err == nil || !strings.Contains(err.Error(), "carries no top_logprobs") {
+			t.Errorf("an empty position gave %v, want the missing-top_logprobs error", err)
+		}
+	})
+}
+
+// TestSystemRenderNeedsEnoughPromptTokens pins the "unverified" verdict: a
+// response that does not carry the tokens after the system line cannot say
+// whether the server rendered it the way the text scaffold does.
+func TestSystemRenderNeedsEnoughPromptTokens(t *testing.T) {
+	// Two entries is enough for the boundary check and far too few to compare,
+	// because the local render is dozens of tokens long.
+	readout, _ := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, chatBody(`{"token":"A","logprob":-0.1},{"token":"B","logprob":-0.9}`))
+	})
+	read, err := readout.ReadImage(context.Background(), map[string]any{"a": 1},
+		imageQuestion(2), imageTestURL, ImageReadOptions{})
+	if err != nil {
+		t.Fatalf("ReadImage: %v", err)
+	}
+	if read.SystemRender != ChatSystemUnverified {
+		t.Errorf("system render = %q, want %q", read.SystemRender, ChatSystemUnverified)
+	}
+	// And the strict form refuses it, because anything but `string` is a
+	// rendering the client cannot vouch for.
+	_, err = readout.ReadImage(context.Background(), map[string]any{"a": 1},
+		imageQuestion(2), imageTestURL, ImageReadOptions{RequireStringSystem: true})
+	if err == nil {
+		t.Fatal("the strict form accepted an unverified system render")
+	}
+	if !strings.Contains(err.Error(), "(system render: unverified)") {
+		t.Errorf("the error does not name the verdict: %v", err)
+	}
+}
+
+// TestSystemRenderComparesTheWholeSystemLine pins the token the comparison is
+// anchored on, so a server whose prompt differs *before* the system line is still
+// reported as differing.
+func TestSystemRenderComparesTheWholeSystemLine(t *testing.T) {
+	readout, _ := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		var body chatRequest
+		decoded, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(decoded, &body); err != nil {
+			t.Errorf("the request is not JSON: %v", err)
+		}
+		// The response echoes the prompt the client would have rendered, so the
+		// verdict is "string"; the test then checks the comparison really ran by
+		// looking at the token count it had to work with.
+		fmt.Fprint(w, chatBody(`{"token":"A","logprob":-0.1},{"token":"B","logprob":-0.9}`))
+	})
+	state := map[string]any{"note": "one image"}
+	question := imageQuestion(2)
+	local, err := readout.Render(state, question, RenderOptions{})
+	if err != nil {
+		t.Fatalf("Render: %v", err)
+	}
+	tok, err := readout.EnsureTokenizer()
+	if err != nil {
+		t.Fatalf("EnsureTokenizer: %v", err)
+	}
+	// A response that carries exactly the local render's tokens, which is what a
+	// server rendering the text scaffold returns.
+	localIDs := tok.Encode(local)
+	entries := make([]string, 0, len(localIDs))
+	for _, id := range localIDs {
+		decoded, err := json.Marshal(tok.Decode([]int{id}))
+		if err != nil {
+			t.Fatalf("encoding the decoded token: %v", err)
+		}
+		entries = append(entries, fmt.Sprintf(`{"%d":{"logprob":-0.01,"rank":1,`+
+			`"decoded_token":%s}}`, id, decoded))
+	}
+	response := `{"choices":[{"logprobs":{"content":[{"top_logprobs":[` +
+		`{"token":"A","logprob":-0.1},{"token":"B","logprob":-0.9}]}]}}],` +
+		`"prompt_logprobs":[null,` + strings.Join(entries[1:], ",") + `]}`
+	readout, _ = chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, response)
+	})
+	read, err := readout.ReadImage(context.Background(), state, question, imageTestURL,
+		ImageReadOptions{})
+	if err != nil {
+		t.Fatalf("ReadImage: %v", err)
+	}
+	if read.SystemRender != ChatSystemString {
+		t.Errorf("system render = %q, want %q: a server echoing the local render is the "+
+			"text scaffold's rendering", read.SystemRender, ChatSystemString)
+	}
+}
+
+// TestReadImageOnAZeroReadout pins the promise that an unusable readout reports
+// why instead of panicking.
+func TestReadImageOnAZeroReadout(t *testing.T) {
+	var readout Readout
+	_, err := readout.ReadImage(context.Background(), map[string]any{"a": 1},
+		imageQuestion(2), imageTestURL, ImageReadOptions{})
+	if err == nil {
+		t.Fatal("a zero readout read an image")
+	}
+	var readoutError *ReadoutError
+	if !errors.As(err, &readoutError) {
+		t.Errorf("got a %T, want a *ReadoutError", err)
+	}
+	if !strings.Contains(err.Error(), "tokenizer") {
+		t.Errorf("the error does not name what is missing: %v", err)
+	}
+	// A readout with a tokenizer but no transport is the other unusable shape,
+	// and it is the one that would otherwise panic inside net/http.
+	built, err := NewReadout(ReadoutConfig{BaseURL: "http://x", Model: "de2-test"})
+	if err != nil {
+		t.Fatalf("NewReadout: %v", err)
+	}
+	// A tokenizer, so the read gets as far as the transport it does not have.
+	// Without one this would try the hub, which no offline test may do.
+	built.SetTokenizer(newFixtureTokenizer(map[string]int{AnswerPrefix: 101, "A": 65, "B": 66}))
+	built.client = nil
+	_, err = built.ReadImage(context.Background(), map[string]any{"a": 1},
+		imageQuestion(2), imageTestURL, ImageReadOptions{})
+	if err == nil || !strings.Contains(err.Error(), "NewReadout") {
+		t.Errorf("a readout without a client gave %v, want the error naming NewReadout", err)
+	}
+}
+
+// TestReadImageKeepsTheLetterLimit pins the option limit the image path keeps.
+//
+// DE-2 reads a text choice of up to MaxCodes options in one prompt, but an image
+// question is a chat request the server renders, so it keeps the letter limit.
+// DecisionModel refuses a wider one rather than letting the readout do it.
+func TestReadImageKeepsTheLetterLimit(t *testing.T) {
+	readout, calls := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, chatBody(`{"token":"A","logprob":-0.1}`))
+	})
+	_, err := readout.ReadImage(context.Background(), map[string]any{"a": 1},
+		imageQuestion(MaxOptions+1), imageTestURL, ImageReadOptions{TopLogprobs: 64})
+	if err == nil {
+		t.Fatal("an image question above the letter limit was read")
+	}
+	var questionError *QuestionError
+	if !errors.As(err, &questionError) {
+		t.Fatalf("got a %T, want a *QuestionError", err)
+	}
+	if *calls != 0 {
+		t.Errorf("the readout sent %d requests for a question it cannot render", *calls)
+	}
+}
+
+// TestProbeChatRenderReportsUnavailable pins the prefix a caller reads when the
+// chat endpoint cannot be asked at all.
+func TestProbeChatRenderReportsUnavailable(t *testing.T) {
+	readout, calls := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no chat here", http.StatusNotFound)
+	})
+	verdict := readout.ProbeChatRender(context.Background(), map[string]any{"health": "check"},
+		NewNoul("Is this a health check?"))
+	if !strings.HasPrefix(verdict, "unavailable: ") {
+		t.Errorf("the probe reported %q, want an unavailable prefix", verdict)
+	}
+	if !strings.Contains(verdict, "404") {
+		t.Errorf("the probe does not report the status: %q", verdict)
+	}
+	if *calls != 1 {
+		t.Errorf("the probe sent %d requests, want 1", *calls)
+	}
+}
+
+// TestProbeChatRenderSendsTheTextScaffold pins what the probe asks: the text
+// scaffold's messages, with no image and no logprobs, so the answer says
+// something about the prompt an image question will be rendered with.
+func TestProbeChatRenderSendsTheTextScaffold(t *testing.T) {
+	var got map[string]any
+	readout, _ := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		decoded, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(decoded, &got); err != nil {
+			t.Errorf("the request is not JSON: %v", err)
+		}
+		fmt.Fprint(w, chatBody(`{"token":"A","logprob":-0.1}`))
+	})
+	readout.ProbeChatRender(context.Background(), map[string]any{"health": "check"},
+		NewNoul("Is this a health check?"))
+
+	if got["max_tokens"] != float64(1) || got["temperature"] != float64(0) {
+		t.Errorf("the probe sent max_tokens=%v temperature=%v, want 1 and 0",
+			got["max_tokens"], got["temperature"])
+	}
+	if got["prompt_logprobs"] != float64(0) {
+		t.Errorf("the probe sent prompt_logprobs=%v, want 0", got["prompt_logprobs"])
+	}
+	for _, absent := range []string{"logprobs", "top_logprobs", "stop_token_ids"} {
+		if _, present := got[absent]; present {
+			t.Errorf("the probe sent %s, which it does not need", absent)
+		}
+	}
+	if kwargs, ok := got["chat_template_kwargs"].(map[string]any); !ok ||
+		kwargs["enable_thinking"] != false {
+		t.Errorf("the probe sent chat_template_kwargs=%v, want enable_thinking false",
+			got["chat_template_kwargs"])
+	}
+	messages, ok := got["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("the probe sent %v messages, want 2", got["messages"])
+	}
+	first := messages[0].(map[string]any)
+	if first["role"] != "system" || first["content"] != DirectSystem {
+		t.Errorf("the probe's system message is %v, want the direct system line", first)
+	}
+	second := messages[1].(map[string]any)
+	if _, isString := second["content"].(string); !isString {
+		t.Errorf("the probe's user turn is %T, want the JSON text the text scaffold sends",
+			second["content"])
+	}
+}
+
+// TestReadImageSendsTheImagePartFirst pins the content-part order, which is part
+// of the prompt: the image is what the question is about.
+func TestReadImageSendsTheImagePartFirst(t *testing.T) {
+	var got map[string]any
+	readout, _ := chatStubReadout(t, func(w http.ResponseWriter, r *http.Request) {
+		decoded, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(decoded, &got); err != nil {
+			t.Errorf("the request is not JSON: %v", err)
+		}
+		fmt.Fprint(w, chatBody(`{"token":"A","logprob":-0.1},{"token":"B","logprob":-0.9}`))
+	})
+	readout.ReadImage(context.Background(), map[string]any{"a": 1}, imageQuestion(2),
+		imageTestURL, ImageReadOptions{Debug: true})
+
+	messages, ok := got["messages"].([]any)
+	if !ok || len(messages) != 2 {
+		t.Fatalf("the read sent %v messages, want 2", got["messages"])
+	}
+	parts, ok := messages[1].(map[string]any)["content"].([]any)
+	if !ok || len(parts) != 2 {
+		t.Fatalf("the user turn is %v, want two content parts",
+			messages[1].(map[string]any)["content"])
+	}
+	first := parts[0].(map[string]any)
+	if first["type"] != "image_url" {
+		t.Errorf("the first content part is %v, want the image", first)
+	}
+	if url := first["image_url"].(map[string]any)["url"]; url != imageTestURL {
+		t.Errorf("the image URL is %v, want %q", url, imageTestURL)
+	}
+	second := parts[1].(map[string]any)
+	if second["type"] != "text" {
+		t.Errorf("the second content part is %v, want the question", second)
+	}
+	// The image URL must not be in the text part: the file name never reaches a
+	// request, and neither does the payload twice.
+	if text, _ := second["text"].(string); strings.Contains(text, "iVBORw0KGgo") {
+		t.Errorf("the text part carries the image payload: %s", text)
+	}
+	// The image readout keeps the letter limit and does not repeat the user turn,
+	// so the text part is the payload exactly once.
+	payload, _, err := Payload(map[string]any{"a": 1}, imageQuestion(2), MaxOptions)
+	if err != nil {
+		t.Fatalf("Payload: %v", err)
+	}
+	want, err := PythonJSON(payload)
+	if err != nil {
+		t.Fatalf("PythonJSON: %v", err)
+	}
+	if second["text"] != want {
+		t.Errorf("the text part is\n  %v\nwant the rendered payload\n  %s", second["text"], want)
 	}
 }

@@ -2,10 +2,12 @@ package shisade
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -202,6 +204,14 @@ type CodeRead struct {
 	// TopLogprobs is every entry of the first generated position's top-k, only
 	// with debug. A nil value is a null the server returned.
 	TopLogprobs map[string]*float64
+	// Messages is the multimodal messages an image read sent, only when the read
+	// was asked for debug detail. The server renders that prompt, so there is no
+	// local Prompt to keep; the messages carry the image URL or its bytes.
+	Messages []Object
+	// SystemRender is image reads only: whether the server rendered the system
+	// turn the way the text scaffold does. Empty on every other read, which is
+	// the Python client's None.
+	SystemRender string
 }
 
 // Thought is one bounded thought: the prompt it followed and the tokens
@@ -571,11 +581,9 @@ func (r *Readout) AnswerPrefixID() (int, error) {
 func (r *Readout) answerPrefixIDFor(tok Tokenizer) (int, error) {
 	ids := tok.Encode(AnswerPrefix)
 	if len(ids) != 1 || tok.Decode(ids) != AnswerPrefix {
-		// Python's is the image readout's message and says so; this port has no
-		// image readout, so the sentence stops at the tokenizer.
 		return 0, &ReadoutError{Message: fmt.Sprintf(
 			"the generation-prompt terminator %s is not one token for tokenizer %s, so the "+
-				"answer boundary cannot be confirmed with this tokenizer",
+				"image readout cannot confirm the answer boundary with this tokenizer",
 			pythonQuote(AnswerPrefix), pythonQuote(r.tokenizerSource))}
 	}
 	return ids[0], nil
@@ -938,6 +946,382 @@ func (r *Readout) Think(ctx context.Context, prompt string, budget int, debug bo
 		thought.Text = choice.Text
 	}
 	return thought, nil
+}
+
+// The verdicts one image read records for the server's rendering of the system
+// turn, and the prefix the probe reports for a server it could not ask.
+const (
+	// ChatSystemString means the server rendered the system turn the way the
+	// text scaffold does.
+	ChatSystemString = "string"
+	// ChatSystemDiffers means it did not. vLLM hands Gemma 4's chat template
+	// every message of an image request as content parts, and the template
+	// writes a space after a system message that arrives that way, so this is
+	// what a stock vLLM reports.
+	ChatSystemDiffers = "differs"
+	// ChatSystemUnverified means the response did not carry enough prompt tokens
+	// to tell.
+	ChatSystemUnverified = "unverified"
+)
+
+// DefaultImageTopLogprobs is the `top_logprobs` an image read sends when the
+// caller does not choose one. The server has to allow the limit, and the image
+// readout has no fallback, so every option has to fit inside it.
+const DefaultImageTopLogprobs = 20
+
+// ImageReadOptions are the settings one image read takes.
+type ImageReadOptions struct {
+	// TopLogprobs is the `top_logprobs` the server is asked for. Zero means
+	// DefaultImageTopLogprobs. It must be at least the option count: the image
+	// readout has no fallback, so an option outside the returned top-k is an
+	// error rather than a second request.
+	TopLogprobs int
+	// Debug keeps the sent messages and the whole returned top-k in the result.
+	Debug bool
+	// RequireStringSystem turns a system turn the server rendered differently
+	// into an error. `DecisionModel` does not set it: a stock vLLM renders the
+	// space on every image request, and rejects images outright when told to pass
+	// strings, so the strict form is for a server whose template has been fixed.
+	RequireStringSystem bool
+}
+
+// ReadImage reads one question's answer codes with one image attached.
+//
+// The image is sent as an `image_url` content part and the question as the JSON
+// object `Render` would have rendered, because only the server can turn the
+// image into image tokens. `imageURL` must already be a URL: a local file name
+// is rejected rather than forwarded, so call [PrepareImage] first.
+//
+// Unlike [Readout.ReadCodes], there is no code fallback. Appending a code to a
+// chat request does not reproduce the answer boundary, so a code outside the
+// returned top-k is an error instead of costing a second request, and an
+// incomplete distribution is never renormalized into an answer.
+//
+// The read records, as `SystemRender`, whether the server rendered the system
+// turn the way the text scaffold does.
+func (r *Readout) ReadImage(ctx context.Context, state any, question Question, imageURL string,
+	options ImageReadOptions) (CodeRead, error) {
+	url, err := ValidateImageURL(imageURL)
+	if err != nil {
+		return CodeRead{}, err
+	}
+	topLogprobs := options.TopLogprobs
+	if topLogprobs == 0 {
+		topLogprobs = DefaultImageTopLogprobs
+	}
+	if topLogprobs < 1 {
+		return CodeRead{}, &ReadoutError{Message: fmt.Sprintf(
+			"top_logprobs must be a positive integer, got %d", topLogprobs)}
+	}
+	// The image readout keeps the letter limit: 26 options, the same as the DE-1
+	// scaffold, because it is a chat request the server renders rather than a
+	// codebook read.
+	payload, options_, err := Payload(state, question, MaxOptions)
+	if err != nil {
+		return CodeRead{}, err
+	}
+	slots, err := r.CodeSlots(len(options_))
+	if err != nil {
+		return CodeRead{}, err
+	}
+	if len(slots) > topLogprobs {
+		return CodeRead{}, &ReadoutError{Message: fmt.Sprintf(
+			"%d options cannot be read from a top-%d distribution: the server returns at most "+
+				"%d tokens, so at least %d option letters would be missing and the image "+
+				"readout has no letter fallback; pass top_logprobs=%d or higher and serve the "+
+				"model with --max-logprobs %d or higher",
+			len(slots), topLogprobs, topLogprobs, len(slots)-topLogprobs, len(slots), len(slots))}
+	}
+	prefixID, err := r.AnswerPrefixID()
+	if err != nil {
+		return CodeRead{}, err
+	}
+	user, err := PythonJSON(payload)
+	if err != nil {
+		return CodeRead{}, &ReadoutError{Message: "the state cannot be rendered as the user turn", Err: err}
+	}
+	messages := imageMessages(r.systemLine(), url, user)
+	true_, zero := true, 0
+	body := chatRequest{
+		Model:              r.model,
+		Messages:           messages,
+		MaxTokens:          1,
+		Temperature:        0,
+		Logprobs:           &true_,
+		TopLogprobs:        &topLogprobs,
+		PromptLogprobs:     &zero,
+		ChatTemplateKwargs: chatTemplateKwargs{EnableThinking: false},
+	}
+	var response chatResponse
+	if err := r.chatCompletions(ctx, body, &response); err != nil {
+		return CodeRead{}, err
+	}
+	choice, err := firstChatChoice(response, "the image read")
+	if err != nil {
+		return CodeRead{}, err
+	}
+	if err := checkImageBoundary(response, prefixID); err != nil {
+		return CodeRead{}, err
+	}
+	systemRender, err := r.systemRender(response, state, question)
+	if err != nil {
+		return CodeRead{}, err
+	}
+	if options.RequireStringSystem && systemRender != ChatSystemString {
+		return CodeRead{}, &ReadoutError{Message: fmt.Sprintf(
+			"the server did not render the system turn the way the text scaffold does "+
+				"(system render: %s). Gemma 4's chat template writes a space after a system "+
+				"message that arrives as content parts, which is how vLLM passes every message "+
+				"of an image request", systemRender)}
+	}
+	top, err := contentTopLogprobs(choice)
+	if err != nil {
+		return CodeRead{}, err
+	}
+	missing := make([]string, 0, len(slots))
+	for _, slot := range slots {
+		if _, ok := top[slot.Text]; !ok {
+			missing = append(missing, slot.Code)
+		}
+	}
+	if len(missing) != 0 {
+		return CodeRead{}, &ReadoutError{Message: fmt.Sprintf(
+			"option letters %s are missing from the returned top %d logprobs and the image "+
+				"readout has no letter fallback; raise the server's --max-logprobs above %d or "+
+				"pass a higher top_logprobs", strings.Join(missing, ""), topLogprobs, topLogprobs)}
+	}
+	logprobs := make(map[string]float64, len(slots))
+	for _, slot := range slots {
+		logprobs[slot.Code] = top[slot.Text]
+	}
+	probabilities, err := Softmax(logprobs)
+	if err != nil {
+		return CodeRead{}, err
+	}
+	result := CodeRead{
+		Logprobs:       logprobs,
+		Probabilities:  probabilities,
+		Requests:       1,
+		PromptTokens:   response.Usage.PromptTokens,
+		MissingFromTop: []string{},
+		Ranks:          map[string]int{},
+		TopLogprobs:    map[string]*float64{},
+		SystemRender:   systemRender,
+	}
+	if raw, present := choice.Message["content"]; present {
+		// A null or a non-string content leaves this nil, which is the Python
+		// client's `isinstance(sampled, str)`.
+		var text *string
+		if err := json.Unmarshal(raw, &text); err == nil && text != nil {
+			result.Sampled = text
+		}
+	}
+	if options.Debug {
+		for key, value := range top {
+			entry := value
+			result.TopLogprobs[key] = &entry
+		}
+		result.Messages = messages
+	}
+	return result, nil
+}
+
+// imageMessages is the multimodal messages the server renders: the image, then
+// the JSON. There is no repeated user turn here -- the repeat is part of the
+// DE-2 text scaffold, and the server renders this prompt from what it is given.
+func imageMessages(systemPrompt, imageURL, user string) []Object {
+	return []Object{
+		{{Key: "role", Value: "system"}, {Key: "content", Value: systemPrompt}},
+		{{Key: "role", Value: "user"}, {Key: "content", Value: []any{
+			Object{{Key: "type", Value: "image_url"},
+				{Key: "image_url", Value: Object{{Key: "url", Value: imageURL}}}},
+			Object{{Key: "type", Value: "text"}, {Key: "text", Value: user}},
+		}}},
+	}
+}
+
+// systemLine is the system prompt this readout renders with. An empty
+// `SystemPrompt` means [DirectSystem], the same substitution [Render] makes, so
+// the image read and the chat probe send the line the text scaffold uses.
+func (r *Readout) systemLine() string {
+	if r.systemPrompt == "" {
+		return DirectSystem
+	}
+	return r.systemPrompt
+}
+
+// checkImageBoundary confirms the server read the distribution at the answer
+// boundary.
+//
+// [Readout.CheckCodeBoundary] does this for the text path by tokenizing the
+// prompt it rendered itself. The image readout has no local prompt to tokenize,
+// so the substitute is the server's last prompt token: it must be the exact
+// token the local tokenizer resolves the generation-prompt terminator to.
+func checkImageBoundary(response chatResponse, prefixID int) error {
+	if len(response.PromptLogprobs) == 0 {
+		return &ReadoutError{Message: "the chat response carries no root-level prompt_logprobs, " +
+			"so the answer boundary cannot be confirmed; the server must return prompt_logprobs"}
+	}
+	last := response.PromptLogprobs[len(response.PromptLogprobs)-1]
+	if len(last) == 0 {
+		return &ReadoutError{Message: "the chat response's prompt_logprobs carries no token at " +
+			"the answer boundary"}
+	}
+	tokenID, entry := boundaryEntry(last, prefixID)
+	decoded := ""
+	if entry != nil {
+		decoded = entry.DecodedToken
+	}
+	if tokenID != prefixID || decoded != AnswerPrefix {
+		return &ReadoutError{Message: fmt.Sprintf(
+			"the last prompt token is %s (id %d), not %s (id %d); the distribution was not "+
+				"read at the answer boundary", pythonQuote(decoded), tokenID,
+			pythonQuote(AnswerPrefix), prefixID)}
+	}
+	return nil
+}
+
+// boundaryEntry is the entry at the answer boundary, preferring the terminator's
+// own id.
+//
+// `prompt_logprobs: 0` returns one token per position, so a well-formed response
+// has one entry here. A position carrying several is an ambiguous boundary, and
+// refusing an ambiguous boundary is this check's whole job. The Python client
+// takes the dict's first key, which is insertion order there and unordered here,
+// so this looks for the terminator by id and otherwise reports the lowest id:
+// the same answer twice, rather than a different one each run.
+func boundaryEntry(entries map[string]*chatPromptEntry, prefixID int) (int, *chatPromptEntry) {
+	best := 0
+	var chosen *chatPromptEntry
+	found := false
+	for key, entry := range entries {
+		id, err := strconv.Atoi(key)
+		if err != nil {
+			// A key that is not a token id cannot be the boundary. It is still
+			// what the server sent, so it is reported when nothing else can be.
+			if !found {
+				best, chosen, found = 0, entry, true
+			}
+			continue
+		}
+		if id == prefixID {
+			return id, entry
+		}
+		if !found || id < best {
+			best, chosen, found = id, entry, true
+		}
+	}
+	return best, chosen
+}
+
+// systemRender reports whether the server rendered the system turn as the text
+// scaffold does.
+//
+// A chat server that hands the template content parts instead of strings can
+// render the system turn differently: Gemma 4's template writes a space after a
+// system message that arrives as parts. The answer boundary still checks out, so
+// this compares the server's prompt tokens with the local render through the
+// token that follows the system line.
+//
+// It returns [ChatSystemString] when they agree, [ChatSystemDiffers] when they do
+// not, and [ChatSystemUnverified] when the response does not carry enough prompt
+// tokens to tell.
+func (r *Readout) systemRender(response chatResponse, state any, question Question) (string, error) {
+	tok, err := r.ensureTokenizer()
+	if err != nil {
+		return "", err
+	}
+	systemPrompt := r.systemLine()
+	local, err := r.Render(state, question, RenderOptions{})
+	if err != nil {
+		return "", err
+	}
+	at := strings.Index(local, systemPrompt)
+	entries := response.PromptLogprobs
+	if at < 0 || entries == nil {
+		return ChatSystemUnverified, nil
+	}
+	localIDs := tok.Encode(local)
+	throughSystem := tok.Encode(local[:at+len(systemPrompt)])
+	want := localIDs[:min(len(throughSystem)+1, len(localIDs))]
+	if len(want) < 2 || len(want)-1 > len(throughSystem) ||
+		!slices.Equal(want[:len(want)-1], throughSystem) || len(entries) < len(want) {
+		return ChatSystemUnverified, nil
+	}
+	// The first prompt position carries no logprob, so it is not compared.
+	served := make([]string, 0, len(want)-1)
+	for _, entry := range entries[1:len(want)] {
+		if len(entry) != 1 {
+			// An empty entry is what the Python client refuses. Several tokens at
+			// one position is a server reporting alternatives, which
+			// `prompt_logprobs: 0` does not, and the Python client's answer there
+			// depends on its dict's insertion order. Neither says enough to
+			// compare, so neither is compared.
+			return ChatSystemUnverified, nil
+		}
+		for key := range entry {
+			served = append(served, key)
+		}
+	}
+	for index, id := range want[1:] {
+		if served[index] != strconv.Itoa(id) {
+			return ChatSystemDiffers, nil
+		}
+	}
+	return ChatSystemString, nil
+}
+
+// ProbeChatRender asks the chat endpoint, without an image, how it renders the
+// system turn.
+//
+// It returns [ChatSystemString], [ChatSystemDiffers], [ChatSystemUnverified], or
+// `unavailable: ...` when the request could not be made. The image readout goes
+// through the chat endpoint, so this is what an image question will be rendered
+// with.
+//
+// The Python client converts only a ReadoutError into `unavailable` and lets a
+// QuestionError propagate; this returns the same prefix for both, because a
+// caller with no error channel cannot do anything else with it. `Health` asks a
+// Noul, so the QuestionError case does not arise there.
+func (r *Readout) ProbeChatRender(ctx context.Context, state any, question Question) string {
+	payload, _, err := Payload(state, question, MaxOptions)
+	if err != nil {
+		return "unavailable: " + err.Error()
+	}
+	user, err := PythonJSON(payload)
+	if err != nil {
+		return "unavailable: shisade: the state cannot be rendered as the user turn: " + err.Error()
+	}
+	zero := 0
+	body := chatRequest{
+		Model: r.model,
+		Messages: []Object{
+			{{Key: "role", Value: "system"}, {Key: "content", Value: r.systemLine()}},
+			{{Key: "role", Value: "user"}, {Key: "content", Value: user}},
+		},
+		MaxTokens:          1,
+		Temperature:        0,
+		PromptLogprobs:     &zero,
+		ChatTemplateKwargs: chatTemplateKwargs{EnableThinking: false},
+	}
+	var response chatResponse
+	if err := r.chatCompletions(ctx, body, &response); err != nil {
+		return "unavailable: " + err.Error()
+	}
+	verdict, err := r.systemRender(response, state, question)
+	if err != nil {
+		return "unavailable: " + err.Error()
+	}
+	return verdict
+}
+
+// chatCompletions posts one request to the chat endpoint.
+func (r *Readout) chatCompletions(ctx context.Context, body chatRequest, into *chatResponse) error {
+	client, err := r.httpClient()
+	if err != nil {
+		return err
+	}
+	return postJSON(ctx, client, r.baseURL+"/v1/chat/completions", r.headers, body, into)
 }
 
 // ListModels is the model ids the endpoint serves.

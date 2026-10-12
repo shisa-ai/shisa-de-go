@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
 )
 
 // ReadoutHTTPError is a request the endpoint answered with an error status.
@@ -79,6 +81,151 @@ type completionRequest struct {
 type completionResponse struct {
 	Choices []completionChoice `json:"choices"`
 	Usage   completionUsage    `json:"usage"`
+}
+
+// The wire shapes of one /v1/chat/completions call.
+//
+// The image readout cannot render its prompt: only the server can expand an
+// image placeholder into the image tokens the checkpoint expects. So it posts
+// messages and lets the server apply the chat template, which is why the two
+// reads do not share a request type -- the fields a given call does not use are
+// absent rather than null, and the probe sends no logprobs while the image read
+// sends no `stop_token_ids`.
+type chatRequest struct {
+	Model              string             `json:"model"`
+	Messages           []Object           `json:"messages"`
+	MaxTokens          int                `json:"max_tokens"`
+	Temperature        float64            `json:"temperature"`
+	Logprobs           *bool              `json:"logprobs,omitempty"`
+	TopLogprobs        *int               `json:"top_logprobs,omitempty"`
+	PromptLogprobs     *int               `json:"prompt_logprobs,omitempty"`
+	ChatTemplateKwargs chatTemplateKwargs `json:"chat_template_kwargs"`
+}
+
+// chatTemplateKwargs is the one template flag every read here sends. The
+// thinking read is a separate request shape on the completions endpoint, so no
+// chat request in this client turns it on.
+type chatTemplateKwargs struct {
+	EnableThinking bool `json:"enable_thinking"`
+}
+
+type chatResponse struct {
+	Choices []chatChoice    `json:"choices"`
+	Usage   completionUsage `json:"usage"`
+	// PromptLogprobs has one entry per prompt token, and the first is null. Each
+	// entry maps the token's key to its logprob, rank and decoded text;
+	// `prompt_logprobs: 0` returns only the prompt's own token at each position.
+	//
+	// This is what the image readout has instead of a locally tokenized prompt:
+	// the last entry names the token the distribution was read after, and the
+	// entries after the system line say whether the server rendered that line the
+	// way the text scaffold does.
+	PromptLogprobs []map[string]*chatPromptEntry `json:"prompt_logprobs"`
+}
+
+type chatPromptEntry struct {
+	Logprob *float64 `json:"logprob"`
+	Rank    *int     `json:"rank"`
+	// DecodedToken is the server's own reading of the key, which the boundary
+	// check compares against the locally resolved terminator.
+	DecodedToken string `json:"decoded_token"`
+}
+
+// chatChoice is a chat response's choice.
+//
+// The logprob and message fields are kept as raw JSON rather than decoded into
+// structs, because the Python client validates the answer position entry by
+// entry and prints the offending entry when one is malformed. A typed struct
+// would reject the whole response in the decoder instead, and the message would
+// say the endpoint did not return JSON rather than which entry was wrong. The
+// raw bytes are read back with DecodeJSON, so an integer stays an integer and a
+// key keeps its position, which is how `repr()` spells the entry.
+type chatChoice struct {
+	Message  map[string]json.RawMessage `json:"message"`
+	Logprobs *struct {
+		// One object per generated token; the image readout reads position 0.
+		Content []map[string]json.RawMessage `json:"content"`
+	} `json:"logprobs"`
+}
+
+// contentTopLogprobs is the answer position's token distribution from a chat
+// response.
+//
+// A chat response carries top logprobs as a list of token objects, one per
+// generated token, where the completions endpoint carries a map at the same
+// position. Only the entries that are well formed take part; a malformed one is
+// an error rather than a value to skip, because skipping it would answer from a
+// distribution the server did not send.
+func contentTopLogprobs(choice chatChoice) (map[string]float64, error) {
+	if choice.Logprobs == nil || len(choice.Logprobs.Content) == 0 {
+		return nil, &ReadoutError{Message: "the chat response carries no logprobs.content, " +
+			"so there is no answer distribution to read"}
+	}
+	raw, present := choice.Logprobs.Content[0]["top_logprobs"]
+	if !present {
+		return nil, &ReadoutError{Message: "the chat response's logprobs.content[0] carries no " +
+			"top_logprobs, so there is no answer distribution to read"}
+	}
+	decoded, err := DecodeJSON(raw)
+	if err != nil {
+		return nil, &ReadoutError{Message: "the chat response's top_logprobs is not readable",
+			Err: err}
+	}
+	entries, ok := decoded.([]any)
+	if !ok || len(entries) == 0 {
+		return nil, &ReadoutError{Message: "the chat response's logprobs.content[0] carries no " +
+			"top_logprobs, so there is no answer distribution to read"}
+	}
+	top := make(map[string]float64, len(entries))
+	for _, entry := range entries {
+		token, logprob, ok := chatLogprobEntry(entry)
+		if !ok {
+			return nil, &ReadoutError{Message: fmt.Sprintf(
+				"the chat response has a malformed top_logprobs entry: %s", pythonRepr(entry, true))}
+		}
+		// First occurrence wins: a repeated token cannot carry two logprobs.
+		if _, seen := top[token]; !seen {
+			top[token] = logprob
+		}
+	}
+	return top, nil
+}
+
+// chatLogprobEntry reads one `{token, logprob}` entry, or reports that it is not
+// one.
+//
+// A bool is refused explicitly: Python's `isinstance(True, (int, float))` is
+// true, so a client that trusted the type would read `true` as 1.0.
+func chatLogprobEntry(entry any) (string, float64, bool) {
+	object, ok := entry.(Object)
+	if !ok {
+		return "", 0, false
+	}
+	tokenValue, _ := object.Get("token")
+	token, ok := tokenValue.(string)
+	if !ok {
+		return "", 0, false
+	}
+	logprobValue, _ := object.Get("logprob")
+	number, ok := logprobValue.(json.Number)
+	if !ok {
+		return "", 0, false
+	}
+	logprob, err := strconv.ParseFloat(string(number), 64)
+	if err != nil || math.IsInf(logprob, 0) || math.IsNaN(logprob) {
+		return "", 0, false
+	}
+	return token, logprob, true
+}
+
+// firstChatChoice is the choice a chat response must carry, or an error naming
+// what the response had instead.
+func firstChatChoice(response chatResponse, what string) (chatChoice, error) {
+	if len(response.Choices) == 0 {
+		return chatChoice{}, &ReadoutError{Message: fmt.Sprintf(
+			"the chat response carries no choices for %s", what)}
+	}
+	return response.Choices[0], nil
 }
 
 type completionUsage struct {

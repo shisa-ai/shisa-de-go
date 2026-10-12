@@ -71,8 +71,24 @@ class CodeStubTokenizer:
 
     def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True,
                             enable_thinking=False):
-        opened = f"<sys>{messages[0]['content']}<user>{messages[1]['content']}<model>"
-        return opened if enable_thinking else opened + ANSWER_PREFIX
+        """The pinned Gemma 4 template, spelled the way the Go port spells it.
+
+        The Go readout has no Jinja engine: it renders this one template itself.
+        `Readout._system_render` compares the server's prompt tokens against what
+        the client would have rendered, so a stub with a different template could
+        not check that comparison at all -- it would report `differs` for every
+        server.
+        """
+        system, user = messages[0]["content"], messages[1]["content"]
+        out = "<bos><|turn>system\n"
+        if enable_thinking:
+            out += f"<|think|>\n{system}"
+        else:
+            out += system
+        out += f"<turn|>\n<|turn>user\n{user}<turn|>\n<|turn>model\n"
+        if not enable_thinking:
+            out += "<|channel>thought\n" + ANSWER_PREFIX
+        return out
 
     def encode(self, text: str, add_special_tokens: bool = False) -> list[int]:
         ids, position = [], 0
@@ -103,7 +119,9 @@ class StubDE2Server:
     def __init__(self, logprob=None, thought=None, candidate_ids="honoured", top_k=20,
                  after_thought=None, prompt_tokens_delta=0, omit_token_ids=False,
                  fallback_empty=False, text_keys=False, omit_text=False, topk_score=None,
-                 reject_after=None):
+                 reject_after=None, chat_system="string", chat_drop_code="",
+                 chat_short_prompt=False, chat_non_option_filler=True, omit_message=False,
+                 malformed_top_entry=False):
         self.tokenizer = CodeStubTokenizer()
         self.logprob = logprob or (lambda code: 0.0 if code == "A" else -6.0)
         self.after_thought = after_thought or self.logprob
@@ -122,11 +140,89 @@ class StubDE2Server:
         # reject_after is how many requests with logprob_token_ids to accept
         # before rejecting the field, so a downgrade can happen mid-read.
         self.reject_after = reject_after
+        # chat_system is how the chat endpoint renders the system turn:
+        # "string" as the text scaffold does, "space" the way Gemma 4's template
+        # renders a system message that arrives as content parts, or "short" a
+        # response too small to tell.
+        self.chat_system = chat_system
+        # chat_drop_code removes one code from the returned top-k, which is the
+        # case the image readout has no fallback for.
+        self.chat_drop_code = chat_drop_code
+        # chat_short_prompt returns two prompt-logprob entries instead of the
+        # prompt's own, so `system_render` cannot compare and says so.
+        self.chat_short_prompt = chat_short_prompt
+        # chat_non_option_filler pads the top-k with tokens that are not
+        # options, which the readout has to discard.
+        self.chat_non_option_filler = chat_non_option_filler
+        self.omit_message = omit_message
+        # malformed_top_entry sends a logprob as a string, which the Python
+        # client refuses entry by entry rather than as a whole response.
+        self.malformed_top_entry = malformed_top_entry
         self.seen_candidate_requests = 0
         self.code_of = {self.tokenizer.encode(code)[0]: code for code in codebook()}
 
+    # -- the chat endpoint -------------------------------------------------
+
+    def _local_render(self, body: dict) -> str:
+        """The prompt the client would have rendered itself for this question.
+
+        The image readout cannot render it, but `Readout._system_render`
+        compares the server's prompt tokens against exactly this string, so the
+        stub has to build the same one.
+        """
+        messages = body["messages"]
+        user = messages[1]["content"]
+        if isinstance(user, list):
+            user = next(part["text"] for part in user if part["type"] == "text")
+        return self.tokenizer.apply_chat_template(
+            [{"role": "system", "content": messages[0]["content"]},
+             {"role": "user", "content": user}],
+            tokenize=False, add_generation_prompt=True, enable_thinking=False)
+
+    def _chat(self, body: dict) -> httpx.Response:
+        messages = body["messages"]
+        system = messages[0]["content"]
+        served = self._local_render(body)
+        if self.chat_system == "space":
+            # What Gemma 4's template does to a system message that arrives as
+            # content parts: one extra space, between the system line and the
+            # turn terminator.
+            served = served.replace(f"{system}<turn|>", f"{system} <turn|>", 1)
+        ids = self.tokenizer.encode(served)
+        usage = {"prompt_tokens": len(ids) + self.prompt_tokens_delta,
+                 "completion_tokens": 1}
+        if self.chat_short_prompt:
+            entries = [None, {str(ids[-1]): {"logprob": -0.01, "rank": 1,
+                                            "decoded_token": ANSWER_PREFIX}}]
+        else:
+            entries = [None] + [
+                {str(token): {"logprob": -0.01, "rank": 1,
+                              "decoded_token": self.tokenizer.decode([token])}}
+                for token in ids[1:]]
+        response: dict = {"choices": [{}], "usage": usage, "prompt_logprobs": entries}
+        if "logprobs" in body:
+            top_k = body["top_logprobs"]
+            ranked = sorted(codebook(), key=lambda code: -self.logprob(code))
+            chosen = [code for code in ranked if code != self.chat_drop_code][:top_k]
+            top = [{"token": code, "logprob": self.logprob(code)} for code in chosen]
+            if self.malformed_top_entry:
+                top[0]["logprob"] = "not a number"
+            filler = 0
+            while self.chat_non_option_filler and len(top) < top_k:
+                top.append({"token": f"z{filler}", "logprob": -99.0 - filler})
+                filler += 1
+            response["choices"][0]["logprobs"] = {
+                "content": [{"token": chosen[0], "logprob": self.logprob(chosen[0]),
+                             "top_logprobs": top}]}
+            if not self.omit_message:
+                response["choices"][0]["message"] = {
+                    "role": "assistant", "content": chosen[0]}
+        return httpx.Response(200, json=response)
+
     def __call__(self, request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
+        if request.url.path == "/v1/chat/completions":
+            return self._chat(body)
         prompt = body["prompt"]
         ids = self.tokenizer.encode(prompt) if isinstance(prompt, str) else list(prompt)
         usage = {"prompt_tokens": len(ids) + self.prompt_tokens_delta, "completion_tokens": 1}
@@ -217,6 +313,8 @@ def read_record(read) -> dict:
         "sampled": read.sampled,
         "prompt": read.prompt,
         "top_logprobs": read.top_logprobs,
+        "messages": read.messages,
+        "system_render": read.system_render,
     }
 
 
@@ -422,6 +520,76 @@ def scenarios() -> list[dict]:
     out.append({"name": "error-boundary", "steps": [{
         "op": "read-codes", "prompt": "<sys>x<user>y<model>", "codes": 2, "debug": False,
         "exchanges": recorder.take(), **result}]})
+
+    # The image read. The prompt is not rendered here at all: the server does
+    # that, which is why the scenario records the messages instead.
+    def image(name: str, count: int, server: StubDE2Server, *, top_logprobs: int = 20,
+              debug: bool = False, error_match: str = "",
+              require_string_system: bool = False) -> dict:
+        recorder = Recorder(server)
+        question = Choice("What colour is this?",
+                          {f"k{index}": f"Option {index}" for index in range(max(count, 2))})
+        state = {"note": "one image"}
+        try:
+            read = recorder.readout.read_image(
+                state, question, "data:image/png;base64,iVBORw0KGgo=",
+                top_logprobs=top_logprobs, debug=debug,
+                require_string_system=require_string_system)
+            result = {"result": read_record(read)}
+        except Exception as exc:  # noqa: BLE001 -- recorded as the expected outcome
+            if not error_match:
+                raise
+            result = {"error": error_record(exc, error_match)}
+        return {"name": name, "steps": [{
+            "op": "read-image", "state": state, "codes": count, "debug": debug,
+            "top_logprobs": top_logprobs, "image_url": "data:image/png;base64,iVBORw0KGgo=",
+            "require_string_system": require_string_system,
+            "exchanges": recorder.take(), **result}]}
+
+    out.append(image("image-basic", 3, StubDE2Server(
+        logprob=lambda code: {"A": -0.2, "B": -0.5, "C": -3.0}.get(code, -9.0))))
+    out.append(image("image-debug", 3, StubDE2Server(
+        logprob=lambda code: {"A": -0.2, "B": -0.5, "C": -3.0}.get(code, -9.0)),
+        debug=True))
+    # A stock vLLM: the system turn carries one extra space, and the read answers
+    # anyway while recording that it did.
+    out.append(image("image-system-space", 3, StubDE2Server(
+        logprob=lambda code: -0.1 * codebook().index(code), chat_system="space")))
+    out.append(image("image-system-space-strict", 3, StubDE2Server(
+        logprob=lambda code: -0.1 * codebook().index(code), chat_system="space"),
+        require_string_system=True, error_match=r"did not render the system turn"))
+    # A response with too few prompt tokens to compare against.
+    out.append(image("image-system-unverified", 3, StubDE2Server(
+        logprob=lambda code: -0.1 * codebook().index(code), chat_short_prompt=True)))
+    # A server that sends no assistant message, which is the one place the Python
+    # client's `str | None` and Go's string differ.
+    out.append(image("image-no-message", 3, StubDE2Server(
+        logprob=lambda code: -0.1 * codebook().index(code), omit_message=True)))
+    # A top-k with no non-option filler, so every returned token is an option.
+    out.append(image("image-options-only", 3, StubDE2Server(
+        logprob=lambda code: -0.1 * codebook().index(code),
+        chat_non_option_filler=False), top_logprobs=3))
+    # Errors. Each breaks one thing.
+    out.append(image("image-error-missing-code", 3, StubDE2Server(
+        logprob=lambda code: {"A": -0.2, "B": -0.5, "C": -3.0}.get(code, -9.0),
+        chat_drop_code="C"), error_match=r"missing from the returned top"))
+    out.append(image("image-error-too-many-options", 21, StubDE2Server(
+        logprob=lambda code: -0.1 * codebook().index(code)), top_logprobs=20,
+        error_match=r"cannot be read from a top-20 distribution"))
+    out.append(image("image-error-malformed-top", 3, StubDE2Server(
+        logprob=lambda code: -0.1 * codebook().index(code), malformed_top_entry=True),
+        error_match=r"malformed top_logprobs entry"))
+
+    # The chat probe `doctor --probe` reports.
+    for name, server in (("probe-string", StubDE2Server()),
+                         ("probe-space", StubDE2Server(chat_system="space")),
+                         ("probe-short", StubDE2Server(chat_short_prompt=True))):
+        recorder = Recorder(server)
+        question = Noul("Is this a health check?")
+        verdict = recorder.readout.probe_chat_render({"health": "check"}, question)
+        out.append({"name": name, "steps": [{
+            "op": "probe-chat-render", "state": {"health": "check"},
+            "exchanges": recorder.take(), "system_render": verdict}]})
 
     return out
 

@@ -132,6 +132,36 @@ func DecodeJSON(data []byte) (any, error) {
 	return value, nil
 }
 
+// MarshalJSON writes the object with its keys in order, which is what an Object
+// is.
+//
+// Without this, `encoding/json` would see the underlying []Member and write a
+// JSON array of {"Key":...,"Value":...} objects -- a shape no Python dict has.
+// The chat request bodies carry messages and content parts as Objects so their
+// keys come out in the order the Python client writes them.
+func (o Object) MarshalJSON() ([]byte, error) {
+	var buffer bytes.Buffer
+	buffer.WriteByte('{')
+	for index, member := range o {
+		if index != 0 {
+			buffer.WriteByte(',')
+		}
+		key, err := json.Marshal(member.Key)
+		if err != nil {
+			return nil, err
+		}
+		buffer.Write(key)
+		buffer.WriteByte(':')
+		value, err := json.Marshal(member.Value)
+		if err != nil {
+			return nil, err
+		}
+		buffer.Write(value)
+	}
+	buffer.WriteByte('}')
+	return buffer.Bytes(), nil
+}
+
 // Get returns a member of an object by key.
 func (o Object) Get(key string) (any, bool) {
 	for _, member := range o {
