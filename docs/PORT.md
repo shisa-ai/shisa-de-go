@@ -322,11 +322,18 @@ a Noul, and the same prefix is what the Python command line prints for the other
 one.
 
 **The image path reads the extension the way Python 3.14 reads it.**
-`pathlib.Path.suffix` changed in 3.14, and `..png` and `a.` are the whole of the
-difference: neither can name a supported image, so both interpreters accept and
-reject the same set of files. `TestPrepareImageSuffixDivergence` records the
-divergence, and `testdata/images_parity.meta.json` records the interpreter the
-fixture was generated under.
+`pathlib.Path.suffix` changed in 3.14, and the two rules differ on two shapes: a
+name with two or more leading dots and a dot-free body (`..png`, `..a`), and a
+name that ends with a dot without being all dots (`a.`, `x.`). Neither shape can
+name a supported image, so both interpreters accept and reject the same set of
+files. The fixture's `suffix_divergence` block names one input per shape and
+records both rules' answers, `TestPrepareImageSuffixDivergence` checks the port
+against the column the recording was made under and that both shapes are covered,
+and `testdata/images_parity.meta.json` records the interpreter. A regeneration
+under 3.10 or 3.12 therefore fails on the rule, naming the shape, rather than as
+two unexplained rows in the replay. `gen_images_parity.py` enumerates every name
+over `{.}` and a letter up to six characters to check that there is no third
+shape; the difference is a shape and not a fixed pair of names.
 
 **The command line's image flags.** `ask` takes `--image` and
 `--image-top-logprobs`, matching the Python command line's, including the rule

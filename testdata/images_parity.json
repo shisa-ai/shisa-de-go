@@ -15,6 +15,28 @@
     ".hidden.png": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==",
     "a..png": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
   },
+  "suffix_divergence": {
+    "note": "pathlib.Path.suffix changed in 3.14. `current` is what the recording interpreter returns; `older` is the 3.12 rule transcribed, not run. The rules differ on two shapes, and neither can name a supported image, so both interpreters accept and reject the same set of files.",
+    "current_version": "3.14.6",
+    "shapes": [
+      "leading-dots",
+      "trailing-dot"
+    ],
+    "cases": [
+      {
+        "name": "..png",
+        "current": "",
+        "older": ".png",
+        "shape": "leading-dots"
+      },
+      {
+        "name": "a.",
+        "current": ".",
+        "older": "",
+        "shape": "trailing-dot"
+      }
+    ]
+  },
   "cases": [
     {
       "func": "prepare_image",

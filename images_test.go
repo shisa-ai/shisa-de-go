@@ -17,8 +17,43 @@ import (
 // references to judge, both recorded from the Python client.
 type imagesFixture struct {
 	Files map[string]string `json:"files"`
-	Cases []imagesCase      `json:"cases"`
+	// SuffixDivergence records the two shapes the 3.14 and 3.12 `Path.suffix`
+	// rules disagree about, one input each, with both rules' answers. It is what
+	// turns a regeneration under another interpreter into a named failure rather
+	// than two unexplained rows in a diff.
+	SuffixDivergence imagesSuffixDivergence `json:"suffix_divergence"`
+	Cases            []imagesCase           `json:"cases"`
 }
+
+// imagesSuffixDivergence is the recorded version-dependence of `Path.suffix`.
+type imagesSuffixDivergence struct {
+	Note           string `json:"note"`
+	CurrentVersion string `json:"current_version"`
+	// Shapes names the shapes the rules differ on. The fixture exercises one
+	// input per shape, so this is what makes a fixture that pinned only one of
+	// them detectable.
+	Shapes []string             `json:"shapes"`
+	Cases  []imagesSuffixChange `json:"cases"`
+}
+
+// imagesSuffixChange is one input the two rules disagree about.
+type imagesSuffixChange struct {
+	// Name is the final path component, without a directory.
+	Name string `json:"name"`
+	// Current is `pathlib.Path(name).suffix` on the interpreter that ran the
+	// recorder. This port implements that rule.
+	Current string `json:"current"`
+	// Older is the 3.12 rule transcribed, which the recorder did not run.
+	Older string `json:"older"`
+	// Shape is which of the two shapes this input is an instance of. It is a
+	// shape and not a name: `..a`, `...a` and `..png` all diverge the same way.
+	Shape string `json:"shape"`
+}
+
+// suffixShapes are the two shapes the 3.14 and 3.12 `Path.suffix` rules differ
+// on. The recorder checks exhaustively that there is no third; this is the list
+// the fixture has to cover one input from.
+var suffixShapes = []string{"leading-dots", "trailing-dot"}
 
 type imagesCase struct {
 	Func  string  `json:"func"`
@@ -164,20 +199,58 @@ func TestImagesFixtureProblemsCanFail(t *testing.T) {
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatalf("parsing the images fixture: %v", err)
 	}
-	for name, mutate := range map[string]func(*imagesMeta){
-		"case count":  func(m *imagesMeta) { m.Cases++ },
-		"file count":  func(m *imagesMeta) { m.Files++ },
-		"digest":      func(m *imagesMeta) { m.SHA256 = strings.Repeat("0", 64) },
-		"interpreter": func(m *imagesMeta) { m.PythonVersion = "" },
+	// The provenance and the fixture are both checked, so both are mutated. The
+	// divergence block is the only thing standing between a regeneration under an
+	// older interpreter and two unexplained rows, so it is mutated hardest.
+	for name, mutate := range map[string]func(*imagesFixture, *imagesMeta){
+		"case count":  func(_ *imagesFixture, m *imagesMeta) { m.Cases++ },
+		"file count":  func(_ *imagesFixture, m *imagesMeta) { m.Files++ },
+		"digest":      func(_ *imagesFixture, m *imagesMeta) { m.SHA256 = strings.Repeat("0", 64) },
+		"interpreter": func(_ *imagesFixture, m *imagesMeta) { m.PythonVersion = "" },
+		"divergence dropped": func(f *imagesFixture, _ *imagesMeta) {
+			f.SuffixDivergence.Cases = nil
+		},
+		"divergence without an interpreter": func(f *imagesFixture, _ *imagesMeta) {
+			f.SuffixDivergence.CurrentVersion = ""
+		},
+		"divergence under another interpreter": func(f *imagesFixture, _ *imagesMeta) {
+			f.SuffixDivergence.CurrentVersion = "3.12.0"
+		},
+		"divergence that is not one": func(f *imagesFixture, _ *imagesMeta) {
+			f.SuffixDivergence.Cases[0].Older = f.SuffixDivergence.Cases[0].Current
+		},
+		"divergence from the wrong rule": func(f *imagesFixture, _ *imagesMeta) {
+			// The shape a 3.12 recording would carry: the older column becomes
+			// what the port is told to implement.
+			change := &f.SuffixDivergence.Cases[0]
+			change.Current, change.Older = change.Older, change.Current
+		},
+		"one shape only": func(f *imagesFixture, _ *imagesMeta) {
+			// Both remaining cases are the same shape, so the trailing-dot rule
+			// is left unrecorded while every other check still passes.
+			f.SuffixDivergence.Cases[1] = f.SuffixDivergence.Cases[0]
+		},
+		"unknown shape": func(f *imagesFixture, _ *imagesMeta) {
+			f.SuffixDivergence.Cases[0].Shape = "third-shape"
+		},
+		"shape list disagrees": func(f *imagesFixture, _ *imagesMeta) {
+			f.SuffixDivergence.Shapes = []string{"leading-dots"}
+		},
+		"unnamed input": func(f *imagesFixture, _ *imagesMeta) {
+			f.SuffixDivergence.Cases[0].Name = ""
+		},
 	} {
+		mutatedFixture := fixture
+		mutatedFixture.SuffixDivergence.Cases = append(
+			[]imagesSuffixChange(nil), fixture.SuffixDivergence.Cases...)
 		mutated := meta
 		// The digest is recomputed first, so a mutation is what the checks see
 		// rather than a stale hash, and a mutation of the digest itself still
 		// wins.
 		sum := sha256.Sum256(raw)
 		mutated.SHA256 = hex.EncodeToString(sum[:])
-		mutate(&mutated)
-		if problems := imagesFixtureProblems(raw, fixture, mutated); len(problems) == 0 {
+		mutate(&mutatedFixture, &mutated)
+		if problems := imagesFixtureProblems(raw, mutatedFixture, mutated); len(problems) == 0 {
 			t.Errorf("a mutated %s reported no problem", name)
 		}
 	}
@@ -210,6 +283,67 @@ func imagesFixtureProblems(raw []byte, fixture imagesFixture, meta imagesMeta) [
 		if (tc.Value == nil) == (tc.Error == nil) {
 			problems = append(problems, fmt.Sprintf("case %d records neither a result nor an error", index))
 		}
+	}
+	// The divergence block is what makes a regeneration under another
+	// interpreter diagnosable, so a fixture without a usable one is a problem
+	// rather than only a missing convenience.
+	divergence := fixture.SuffixDivergence
+	if len(divergence.Cases) == 0 {
+		problems = append(problems, "the fixture records no suffix divergence")
+	}
+	if divergence.CurrentVersion == "" {
+		problems = append(problems, "the suffix divergence records no interpreter")
+	}
+	if divergence.CurrentVersion != "" && divergence.CurrentVersion != meta.PythonVersion {
+		problems = append(problems, fmt.Sprintf(
+			"the suffix divergence was recorded under %s and the provenance names %s",
+			divergence.CurrentVersion, meta.PythonVersion))
+	}
+	for _, change := range divergence.Cases {
+		if change.Name == "" {
+			problems = append(problems, "a suffix divergence names no input")
+			continue
+		}
+		if change.Current == change.Older {
+			problems = append(problems, fmt.Sprintf(
+				"%q is recorded as a divergence with both rules saying %q",
+				change.Name, change.Current))
+		}
+		// The port implements the recording interpreter's rule, so the recorded
+		// column has to be that one. This is what a regeneration under 3.12
+		// trips: the rows move and this says why.
+		if got := pythonSuffix(change.Name); got != change.Current {
+			problems = append(problems, fmt.Sprintf(
+				"%q is recorded as %q under %s, and this port's rule gives %q; the "+
+					"fixture was not recorded under the rule this port implements",
+				change.Name, change.Current, divergence.CurrentVersion, got))
+		}
+	}
+	// Both shapes have to be exercised. A fixture that pinned only the leading-dot
+	// shape would still pass every check above while leaving the trailing-dot rule
+	// unrecorded.
+	covered := make(map[string]bool, len(divergence.Cases))
+	for _, change := range divergence.Cases {
+		covered[change.Shape] = true
+	}
+	for _, shape := range suffixShapes {
+		if !covered[shape] {
+			problems = append(problems, fmt.Sprintf(
+				"no recorded input is an instance of the %q shape", shape))
+		}
+	}
+	for _, change := range divergence.Cases {
+		if change.Shape != "" && !containsString(suffixShapes, change.Shape) {
+			problems = append(problems, fmt.Sprintf(
+				"%q is recorded as an instance of the unknown shape %q",
+				change.Name, change.Shape))
+		}
+	}
+	// The block's own shape list has to be the one this side checks against.
+	if len(divergence.Shapes) != 0 && !equalStrings(divergence.Shapes, suffixShapes) {
+		problems = append(problems, fmt.Sprintf(
+			"the fixture records the shapes %v and this port knows %v",
+			divergence.Shapes, suffixShapes))
 	}
 	return problems
 }
@@ -285,10 +419,42 @@ func TestPrepareImageReadsTheFileOnlyOnce(t *testing.T) {
 // TestPrepareImageSuffixDivergence records the one place the Python client's
 // answer depends on which interpreter runs it.
 //
-// `pathlib.Path.suffix` changed in 3.14. The two shapes below are the whole of
-// the difference, and neither can name a supported image, so both interpreters
-// accept and reject the same set of files.
+// `pathlib.Path.suffix` changed in 3.14, and the two rules differ on two shapes:
+// a name with two or more leading dots and a dot-free body, and a name that ends
+// with a dot without being all dots. Neither shape can name a supported image, so
+// both interpreters accept and reject the same set of files.
+//
+// The fixture names one input per shape, with both rules' answers, so a
+// regeneration under an older interpreter fails on the rule rather than on two
+// unexplained rows of the replay. This test reads it and checks that the port
+// implements the column the recording was made under.
 func TestPrepareImageSuffixDivergence(t *testing.T) {
+	fixture := loadImagesFixture(t)
+	divergence := fixture.SuffixDivergence
+	if len(divergence.Cases) == 0 {
+		t.Fatal("the fixture records no suffix divergence, so nothing here is pinned")
+	}
+	covered := make(map[string]bool, len(divergence.Cases))
+	for _, tc := range divergence.Cases {
+		if tc.Current == tc.Older {
+			t.Errorf("the fixture records %q as a divergence with both rules saying %q",
+				tc.Name, tc.Current)
+		}
+		covered[tc.Shape] = true
+		if got := pythonSuffix(tc.Name); got != tc.Current {
+			t.Errorf("pythonSuffix(%q) = %q, and the fixture records %q as what the "+
+				"recording interpreter (%s) returns. This port implements that rule; "+
+				"the other shape is %q.",
+				tc.Name, got, tc.Current, divergence.CurrentVersion, tc.Older)
+		}
+	}
+	for _, shape := range suffixShapes {
+		if !covered[shape] {
+			t.Errorf("no recorded input is an instance of the %q shape, so the fixture "+
+				"pins one shape and not the other", shape)
+		}
+	}
+
 	for _, tc := range []struct {
 		path string
 		want string
@@ -299,11 +465,25 @@ func TestPrepareImageSuffixDivergence(t *testing.T) {
 		{".bashrc", ""},
 		// 3.14: a trailing dot is a suffix of one dot; 3.10 and 3.12 say none.
 		{"a.", "."},
+		// The two shapes are shapes and not the two names the fixture records, so
+		// the other instances are pinned here. A port that special-cased `..png`
+		// and `a.` would pass the fixture and fail these.
+		{"..a", ""},
+		{"...a", ""},
+		{"x.", "."},
+		{"a..", "."},
+		{".a.", "."},
+		{"a.b.", "."},
+		// A name that is all dots has an empty body, so both rules say none.
+		{"..", ""},
+		{"...", ""},
+		{".", ""},
 		// Both agree on everything a real image carries.
 		{"a.png", ".png"},
 		{"a.tar.gz", ".gz"},
 		{".hidden.png", ".png"},
 		{"a..png", ".png"},
+		{".a", ""},
 		{"dir.d/a", ""},
 		{"a/b.png", ".png"},
 		{"a/", ""},

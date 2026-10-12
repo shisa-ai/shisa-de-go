@@ -111,7 +111,7 @@ What must not change casually:
 | `policy.go` | The DE-2 policy: repeated read, gate, thought, read after it; `ReadOptions` and the settings that select a read |
 | `calibration.go` | Temperature scaling, the confidence statistic, record selection, and `Calibration.Applicability` |
 | `client.go` | `DecisionModel.Classify`, `DecisionModel.Decide`, `SystemOne`, `Health`, `Decision`, `Answer`, `HeadSpec` |
-| `scripts/gen_images_parity.py` | Records the Python client's verdict for every image reference this port accepts, and the Go test replays it |
+| `scripts/gen_images_parity.py` | Records the Python client's verdict for every image reference this port accepts, and the Go test replays it. It also records the two shapes `pathlib.Path.suffix` changed on in 3.14, because the verdict for a name with leading or trailing dots depends on the interpreter that produced the fixture |
 | `scripts/gen_cli_parity.py` | Records the Python command line's stdout, stderr, exit status and requests for a fixed set of invocations, which `TestCLIParity` replays |
 | `scripts/gen_client_parity.py` | Records live Python `DecisionModel` exchanges against the hosted endpoint and writes the fixture the parity test replays |
 | `example_test.go` | The README's snippets as `Example*` functions `go test` runs, against a stub endpoint, so a signature or behaviour change breaks them |
@@ -243,6 +243,15 @@ Python readout sent and received, in order, plus what it made of them. Each
 writes a `.meta.json` with the provenance and a digest of the fixture, and each
 test fails when the fixture disagrees with it. Both need the Python repository
 next to this one; neither needs network access.
+
+One fixture's answers depend on the interpreter, not only on the Python
+repository's revision. `pathlib.Path.suffix` changed in 3.14, and the image
+fixture's `suffix_divergence` block records the two shapes the rules differ on
+with both answers, so a regeneration under 3.10 or 3.12 fails naming the shape
+rather than as two unexplained rows. `scripts/gen_images_parity.py` enumerates
+every name over `{.}` and a letter to check there is no third shape. This port
+implements 3.14's rule; if the fixture is regenerated under an older interpreter,
+that is the thing to fix rather than the port.
 
 `scripts/gen_client_parity.py` is the one generator that spends real requests: it
 drives the Python `DecisionModel` against the hosted endpoint through a

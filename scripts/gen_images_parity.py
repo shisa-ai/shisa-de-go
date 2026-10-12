@@ -24,9 +24,20 @@ testdata/images_parity.json and testdata/images_parity.meta.json.
 
 The `suffix` cases pin one Python version's answer. `pathlib.Path.suffix` is
 `name.lstrip('.').rfind('.')` on 3.14 and `0 < i < len(name) - 1` over the whole
-name on 3.10 and 3.12, which disagree on `..png` and `a.`. Both shapes are in
-the table, so regenerating this file under an older interpreter changes those two
-rows; the meta records the interpreter that produced it.
+name on 3.10 and 3.12. The two rules differ on two shapes: a name with two or
+more leading dots and a dot-free body (`..png`, `..a`), and a name that ends with
+a dot without being all dots (`a.`, `x.`). Both shapes are in the table, so
+regenerating this file under an older interpreter changes those rows; the meta
+records the interpreter that produced it.
+
+The `suffix_divergence` block names those rows rather than leaving them to be
+found in a diff. `current` is `pathlib.Path(name).suffix` on the interpreter that
+ran this script; `older` is the 3.12 rule transcribed from `Lib/pathlib.py`
+(`i = name.rfind('.'); 0 < i < len(name) - 1`), which cannot be run here; `shape`
+names which of the two shapes the row is an instance of. The Go test asserts that
+the port implements `current`, that both columns differ, and that both shapes are
+covered, so a regeneration under another interpreter fails on the rule rather than
+on two unexplained rows.
 """
 
 from __future__ import annotations
@@ -167,8 +178,147 @@ CASES: list[tuple[str, str]] = [
 ]
 
 
+#: Representatives of the two shapes the two `Path.suffix` rules disagree about.
+#: Both are in CASES, so the recorded verdicts for them are the current
+#: interpreter's. They are representatives and not the whole of the difference:
+#: `..a`, `a..` and `x.` diverge the same way. `divergence_shape` names the shape
+#: so the check below can require the fixture to cover both rather than to name
+#: every instance.
+SUFFIX_DIVERGENCE_NAMES = ["..png", "a."]
+
+
+def older_suffix(name: str) -> str:
+    """`PurePath.suffix` as 3.12 and earlier spell it.
+
+    Transcribed from `Lib/pathlib.py` in the 3.12 branch, where the rule is
+    `i = name.rfind('.'); 0 < i < len(name) - 1` over the whole name. The 3.14
+    rule strips the leading dots first, which is the whole of the difference.
+    """
+    index = name.rfind(".")
+    if 0 < index < len(name) - 1:
+        return name[index:]
+    return ""
+
+
+def divergence_shape(name: str) -> str:
+    """Which of the two shapes `name` has, or `""` if the rules agree on it.
+
+    The rules differ in exactly two places, and both are a shape rather than a
+    name:
+
+    - `leading-dots`: two or more leading dots and a dot-free body. 3.14 strips
+      the leading run, finds no dot and says there is no suffix; 3.12 finds the
+      last leading dot at index >= 1 and returns `'.' + body`.
+    - `trailing-dot`: the name ends with a dot and is not all dots. 3.14 finds
+      the trailing dot in the stripped name and returns `'.'`; 3.12 needs
+      `i < len(name) - 1`, which the trailing dot fails, and returns `''`.
+
+    A name that is all dots has a body of `''`, so 3.14 also returns `''` and the
+    two agree; `check_divergence_is_complete` enumerates the shapes rather than
+    trusting this comment.
+    """
+    current = pathlib.Path(name).suffix
+    older = older_suffix(name)
+    if current == older:
+        return ""
+    body = name.lstrip(".")
+    if body == "":
+        return ""
+    if len(name) - len(body) >= 2 and "." not in body:
+        return "leading-dots"
+    if name.endswith("."):
+        return "trailing-dot"
+    return "unexplained"
+
+
+def suffix_divergence() -> dict[str, object]:
+    """The two rules' answers for the names the fixture exercises.
+
+    `current` is the interpreter's own, so this cannot drift from what the CASES
+    rows recorded; `older` is the transcription above, which is why the block
+    says which one was run. `shape` names which of the two shapes the name is an
+    instance of, so the Go test can require both to be covered.
+    """
+    cases = []
+    for name in SUFFIX_DIVERGENCE_NAMES:
+        shape = divergence_shape(name)
+        if shape == "":
+            raise SystemExit(
+                f"{name!r} is not a divergence on Python {platform.python_version()}: "
+                f"both rules say {pathlib.Path(name).suffix!r}. The block would "
+                f"record nothing."
+            )
+        if shape == "unexplained":
+            raise SystemExit(
+                f"{name!r} diverges for a reason this script does not model. The "
+                f"two shapes in `divergence_shape` are not the whole difference "
+                f"after all."
+            )
+        cases.append({
+            "name": name,
+            "current": pathlib.Path(name).suffix,
+            "older": older_suffix(name),
+            "shape": shape,
+        })
+    return {
+        "note": (
+            "pathlib.Path.suffix changed in 3.14. `current` is what the recording "
+            "interpreter returns; `older` is the 3.12 rule transcribed, not run. "
+            "The rules differ on two shapes, and neither can name a supported "
+            "image, so both interpreters accept and reject the same set of files."
+        ),
+        "current_version": platform.python_version(),
+        "shapes": sorted({case["shape"] for case in cases}),
+        "cases": cases,
+    }
+
+
+def check_divergence_is_complete() -> int:
+    """Check that `divergence_shape` covers every name the rules disagree about.
+
+    `docs/PORT.md`, the Go test and `divergence_shape` all say the two rules
+    differ on two shapes. That is a claim about every name, not about the two the
+    fixture exercises, so it is checked by enumerating every name over `{.}` and
+    a letter up to six characters. A transcription error in `older_suffix`, or a
+    third shape nobody noticed, shows up here as an `unexplained` name.
+    """
+    alphabet = ".a"
+    corpus = {""}
+    frontier = [""]
+    for _ in range(6):
+        frontier = [prefix + char for prefix in frontier for char in alphabet]
+        corpus.update(frontier)
+
+    unexplained = []
+    divergent = set()
+    for name in sorted(corpus):
+        shape = divergence_shape(name)
+        if shape == "unexplained":
+            unexplained.append(name)
+        elif shape:
+            divergent.add(name)
+    if unexplained:
+        raise SystemExit(
+            "the two rules disagree on names no shape here explains: "
+            + ", ".join(repr(n) for n in unexplained[:12])
+            + f" ({len(unexplained)} of {len(corpus)})"
+        )
+
+    # The fixture has to exercise both shapes, not merely every name it lists.
+    covered = {divergence_shape(name) for name in SUFFIX_DIVERGENCE_NAMES}
+    missing = {"leading-dots", "trailing-dot"} - covered
+    if missing:
+        raise SystemExit(
+            "SUFFIX_DIVERGENCE_NAMES does not exercise "
+            + " and ".join(sorted(missing))
+            + "; the fixture would pin one shape and not the other"
+        )
+    return len(corpus)
+
+
 def main() -> int:
     home = str(pathlib.Path("~").expanduser())
+    checked = check_divergence_is_complete()
     tree = pathlib.Path(tempfile.mkdtemp(prefix="shisa-de-images-"))
     try:
         for relative, payload in FILES.items():
@@ -202,6 +352,7 @@ def main() -> int:
                 relative: base64.b64encode(data).decode("ascii")
                 for relative, data in FILES.items()
             },
+            "suffix_divergence": suffix_divergence(),
             "cases": rows,
         }
         text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
@@ -213,7 +364,8 @@ def main() -> int:
             "files": len(FILES),
             "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
         }, indent=2) + "\n")
-        print(f"wrote {OUT.name} and {META_OUT.name}: {len(rows)} cases, {len(FILES)} files")
+        print(f"wrote {OUT.name} and {META_OUT.name}: {len(rows)} cases, {len(FILES)} files; "
+              f"suffix rules checked over {checked} names")
     finally:
         shutil.rmtree(tree, ignore_errors=True)
     return 0
