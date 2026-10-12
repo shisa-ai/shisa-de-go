@@ -11,10 +11,12 @@ package shisade
 // failure that actually happens, and this catches it in a millisecond.
 
 import (
+	"bytes"
 	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -390,6 +392,75 @@ func TestPortDocFixtureCounts(t *testing.T) {
 					tc.name, match[1], tc.meta, tc.field, int(want))
 			}
 		})
+	}
+}
+
+// TestNoStaleImageCoverageClaims keeps the image read's live coverage stated the
+// same way everywhere.
+//
+// The image read gained live coverage in the M7 milestone, and the sentence
+// saying the Python suite's image case was "the gate's `image-color` question
+// rather than a test here" survived the round-1 review in `live_test.go` after
+// its twin in `docs/PORT.md` was corrected. Every phrasing that asserts the read
+// has no live coverage is now false wherever it appears, so they are pinned here
+// rather than found by hand twice.
+//
+// The scan is Go and Markdown only, because `scripts/live_parity.py` quotes the
+// old failure ("that 404 was reported as 'the endpoint does not serve images'")
+// as the history of a fixed bug, which is a use of the phrase rather than a
+// claim about the read.
+func TestNoStaleImageCoverageClaims(t *testing.T) {
+	stale := []string{
+		"rather than a test here",
+		"rather than a test of its own",
+		"no live coverage",
+		"not live-covered",
+		"does not serve images",
+		"cannot serve images",
+	}
+	walked := 0
+	err := filepath.WalkDir(".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			if strings.HasPrefix(filepath.ToSlash(path), "docs/reviews") {
+				return fs.SkipDir
+			}
+			switch entry.Name() {
+			case ".git", "testdata", "vendor", "node_modules":
+				return fs.SkipDir
+			}
+			return nil
+		}
+		switch filepath.Ext(path) {
+		case ".go", ".md":
+		default:
+			return nil
+		}
+		// This file holds the phrases, so it would match itself.
+		if filepath.ToSlash(path) == "readme_test.go" {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		walked++
+		for _, phrase := range stale {
+			if bytes.Contains(raw, []byte(phrase)) {
+				t.Errorf("%s says %q, and the image read is live-covered",
+					filepath.ToSlash(path), phrase)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A scan that read nothing would pass while checking nothing.
+	if walked < 20 {
+		t.Fatalf("the scan read %d files, which is too few to be the tree", walked)
 	}
 }
 

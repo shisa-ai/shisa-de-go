@@ -756,9 +756,9 @@ func liveNumber(value any) (float64, bool) {
 //
 // The DE-2 half of the Python `tests/test_live.py`. The DE-1 overflow case and
 // the model card's 161-token example are absent because this port has no DE-1
-// read; the Python suite's image case is the gate's `image-color` question rather
-// than a test here, so that the two clients are compared on it. `docs/PORT.md`
-// records both.
+// read; the Python suite's image case is ported twice, as the gate's `image-color`
+// question and as `TestLiveImageReadUsesTheImage` above. `docs/PORT.md` records
+// both.
 
 // liveSpam is the Python suite's obvious case.
 var liveSpam = map[string]any{
