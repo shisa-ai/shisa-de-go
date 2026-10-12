@@ -385,22 +385,31 @@ other case Python orders and Go cannot: `sorted` is stable over the dict's
 insertion order, which is the server's response order, and a Go map has none, so
 a tie sorts by token instead.
 
-**A caller-visible map prints its keys sorted.** The Python client's `dict` is
-ordered and `json.dumps` writes it in insertion order. A Go map has none, so
-`PythonJSON` sorts the keys, and that reaches `Decision.Values` -- `ask
---confidence` prints `confidence` before `label` where the Python command line
-prints `label` first. The values are the same and a JSON object's member order is
-not significant, so this is documented rather than worked around; making it match
-would mean `Decision.Values` holding an ordered type instead of `map[string]any`.
-`doctor --json` is the one place the order is restored, because the report's key
-set is fixed and the command line knows it, which makes two reports diffable.
-`Health`'s nested slot summary is the other exception and it is ordered at the
-source: Python writes `{"count": len(slots), **{letter: token_id}}`, so
-`report["slots"]` is a `shisade.Object` (`count`, then the codebook's first two
-codes) rather than a `map[string]any`. A caller who reads that one entry gets an
-`Object` and not a map, and `json.Marshal` on it writes an array of members
-rather than a JSON object; `PythonJSON` and `PythonJSONWith` write it as the
-object Python writes.
+**A caller-visible map prints its keys sorted, and the views are `Object`s.**
+The Python client's `dict` is ordered and `json.dumps` writes it in insertion
+order. A Go map has none, so `PythonJSON` sorts the keys. That reaches
+`Decision.Values`, whose `--confidence` and `--probabilities` views are
+`shisade.Object` rather than `map[string]any`: `label` then `confidence` then
+`probabilities`, and the distribution's own keys in the caller's option order
+(`yes` then `no` for a noul, ascending positions for a score). The recording
+above is what pins it -- `ask --image --labels outage,billing --probabilities`
+prints the distribution in that order, and a map would print it sorted.
+
+This is the one place the port's public API differs from a plain Go shape, and it
+is deliberate: `Object` is the ordered map `PythonJSONWith` renders, so the type
+that carries the order is the type the writer needs. `Object.Get` reads a key and
+`OrderedProbabilities` builds the distribution's `Object` from `Answer`. An
+`Answer` a caller builds itself has no order to reproduce and its keys are
+sorted.
+
+`doctor --json` restores the order from a fixed key list instead, because the
+report's key set is the command line's own. `Health`'s nested slot summary is the
+third case and it is ordered at the source: Python writes
+`{"count": len(slots), **{letter: token_id}}`, so `report["slots"]` is a
+`shisade.Object` (`count`, then the codebook's first two codes) rather than a
+`map[string]any`. A caller who reads either one gets an `Object` and not a map,
+and `json.Marshal` on it writes an array of members rather than a JSON object;
+`PythonJSON` and `PythonJSONWith` write it as the object Python writes.
 
 **The library's `ResolveCalibration("")` means "auto".** Python's
 `resolve_calibration(None)` means "let the client pick from the served model" and

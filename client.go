@@ -67,6 +67,17 @@ type Answer struct {
 	// Probabilities is the distribution over the answer keys, tempered when
 	// Calibrated.
 	Probabilities map[string]float64
+	// ProbabilityKeys is `Probabilities`' key order, which is the order the
+	// Python client's dict is built in: `yes` then `no` for a noul, ascending
+	// positions for a score, and the caller's option order for a choice.
+	//
+	// A Go map has no order and `json.dumps` writes a dict in insertion order,
+	// so anything that renders the distribution has to use this to write
+	// Python's bytes: the command line's stdout, and `ToDict` and `ToWire`.
+	// `OrderedProbabilities` is the reader. It is empty on an Answer a caller
+	// built itself, where there is no Python order to reproduce and the writer
+	// falls back to a sorted map.
+	ProbabilityKeys []string
 	// Confidence is the TypeSafe confidence statistic, absent only where the
 	// Python client leaves it None.
 	Confidence *float64
@@ -131,12 +142,50 @@ func (a Answer) Label() any {
 	return a.Value()
 }
 
+// OrderedProbabilities is Probabilities in Python's key order, for a writer that
+// has to produce Python's bytes.
+//
+// Python builds the distribution as a dict literal, so `json.dumps` writes its
+// keys in the order the client inserted them: `yes` then `no` for a noul,
+// ascending positions for a score, and the caller's option order for a choice. A
+// Go map would write them sorted, which is a different line on stdout.
+//
+// An Answer a caller built itself has no `ProbabilityKeys`, and then the keys are
+// sorted: there is no Python order to reproduce, and a stable order is better
+// than a random one. A key `ProbabilityKeys` does not name is appended the same
+// way rather than dropped, because a caller who set the field incompletely
+// should lose the order and not the value.
+func (a Answer) OrderedProbabilities() Object {
+	out := make(Object, 0, len(a.Probabilities))
+	seen := make(map[string]bool, len(a.Probabilities))
+	for _, key := range a.ProbabilityKeys {
+		value, ok := a.Probabilities[key]
+		if !ok || seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, Member{Key: key, Value: value})
+	}
+	rest := make([]string, 0, len(a.Probabilities)-len(out))
+	for key := range a.Probabilities {
+		if !seen[key] {
+			rest = append(rest, key)
+		}
+	}
+	sort.Strings(rest)
+	for _, key := range rest {
+		out = append(out, Member{Key: key, Value: a.Probabilities[key]})
+	}
+	return out
+}
+
 // ToWire is the TypeSafe answer shape.
 //
 // The primary field carries the value, not a pointer to it, so a caller reads it
 // with `wire["choice"].(string)` rather than through a dereference. That is what
 // the Python client returns, and JSON cannot tell the two apart.
 func (a Answer) ToWire() map[string]any {
+	probabilities := a.OrderedProbabilities()
 	switch a.Type {
 	case "noul":
 		return map[string]any{"type": "noul", "noul": a.Value()}
@@ -145,14 +194,14 @@ func (a Answer) ToWire() map[string]any {
 			"type":          "score",
 			"score":         a.Value(),
 			"legend":        a.Legend,
-			"probabilities": a.Probabilities,
+			"probabilities": probabilities,
 			"confidence":    numberOrNil(a.Confidence),
 		}
 	}
 	out := map[string]any{
 		"type":          "choice",
 		"choice":        a.Value(),
-		"probabilities": a.Probabilities,
+		"probabilities": probabilities,
 	}
 	if a.Confidence != nil {
 		out["confidence"] = *a.Confidence
@@ -173,7 +222,7 @@ func (a Answer) ToDict() map[string]any {
 		"type":          a.Type,
 		"value":         a.Value(),
 		"confidence":    numberOrNil(a.Confidence),
-		"probabilities": a.Probabilities,
+		"probabilities": a.OrderedProbabilities(),
 		"calibrated":    a.Calibrated,
 		"temperature":   a.Temperature,
 		"requests":      a.Requests,
@@ -902,15 +951,15 @@ func (m *DecisionModel) Classify(ctx context.Context, state any, heads map[strin
 	for head, question := range questions {
 		if multi, ok := question.(*multiLabelHead); ok {
 			threshold := multiLabelThreshold(heads[head])
-			entries := make([]map[string]any, 0, len(multi.labels))
+			entries := make([]Object, 0, len(multi.labels))
 			for _, label := range multi.labels {
 				key := head + ":" + label
 				answer := decision.Answers[key]
 				delete(decision.Answers, key)
-				entry := map[string]any{
-					"label":         label,
-					"confidence":    numberOrNil(answer.Confidence),
-					"probabilities": answer.Probabilities,
+				entry := Object{
+					{Key: "label", Value: label},
+					{Key: "confidence", Value: numberOrNil(answer.Confidence)},
+					{Key: "probabilities", Value: answer.OrderedProbabilities()},
 				}
 				if answer.Noul != nil && *answer.Noul >= threshold {
 					entries = append(entries, entry)
@@ -922,41 +971,54 @@ func (m *DecisionModel) Classify(ctx context.Context, state any, heads map[strin
 			case options.IncludeProbabilities:
 				decision.Values[head] = entries
 			case options.IncludeConfidence:
-				labels := make([]map[string]any, 0, len(entries))
+				labels := make([]Object, 0, len(entries))
 				for _, entry := range entries {
-					labels = append(labels, map[string]any{
-						"label": entry["label"], "confidence": entry["confidence"]})
+					labels = append(labels, Object{
+						{Key: "label", Value: entry[0].Value},
+						{Key: "confidence", Value: entry[1].Value}})
 				}
 				decision.Values[head] = labels
 			default:
 				labels := make([]string, 0, len(entries))
 				for _, entry := range entries {
-					labels = append(labels, entry["label"].(string))
+					labels = append(labels, entry[0].Value.(string))
 				}
 				decision.Values[head] = labels
 			}
 			continue
 		}
 		answer := decision.Answers[head]
+		// The key order is Python's, not the writer's: `json.dumps` writes a
+		// dict in insertion order, and the command line's output is compared
+		// byte for byte, so a Go map's alphabetical order is a different answer
+		// on stdout. `Object` is the ordered writer `pyjson.go` provides for
+		// exactly this.
 		switch {
 		case options.IncludeProbabilities:
-			value := map[string]any{
-				"label":         answer.Label(),
-				"confidence":    numberOrNil(answer.Confidence),
-				"probabilities": answer.Probabilities,
+			value := Object{
+				{Key: "label", Value: answer.Label()},
+				{Key: "confidence", Value: numberOrNil(answer.Confidence)},
+				{Key: "probabilities", Value: answer.OrderedProbabilities()},
 			}
 			if answer.ScoreSemantics != "option-softmax" {
-				value["strategy"] = answer.Strategy
-				value["score_semantics"] = answer.ScoreSemantics
-				value["calibrated"] = false
+				value = append(value, Object{
+					{Key: "strategy", Value: answer.Strategy},
+					{Key: "score_semantics", Value: answer.ScoreSemantics},
+					{Key: "calibrated", Value: false},
+				}...)
 			}
 			decision.Values[head] = value
 		case options.IncludeConfidence:
-			value := map[string]any{"label": answer.Label(), "confidence": numberOrNil(answer.Confidence)}
+			value := Object{
+				{Key: "label", Value: answer.Label()},
+				{Key: "confidence", Value: numberOrNil(answer.Confidence)},
+			}
 			if answer.ScoreSemantics != "option-softmax" {
-				value["strategy"] = answer.Strategy
-				value["score_semantics"] = answer.ScoreSemantics
-				value["calibrated"] = false
+				value = append(value, Object{
+					{Key: "strategy", Value: answer.Strategy},
+					{Key: "score_semantics", Value: answer.ScoreSemantics},
+					{Key: "calibrated", Value: false},
+				}...)
 			}
 			decision.Values[head] = value
 		default:
@@ -1326,6 +1388,8 @@ func answerFromRead(question Question, read CodeRead, options []Option, calibrat
 		answer.Type = "noul"
 		answer.Noul = &yes
 		answer.Probabilities = probabilities
+		// Python's literal is `{"yes": ..., "no": ...}`.
+		answer.ProbabilityKeys = []string{"yes", "no"}
 		answer.Confidence = &confidence
 		return answer, nil
 	}
@@ -1354,9 +1418,11 @@ func answerFromRead(question Question, read CodeRead, options []Option, calibrat
 		level := pythonStr(options[index].Description)
 		legend := make(map[string]string, len(options))
 		distributions := make(map[string]float64, len(letters))
+		positions := make([]string, 0, len(letters))
 		for position, letter := range letters {
 			legend[strconv.Itoa(position)] = pythonStr(options[position].Description)
 			distributions[strconv.Itoa(position)] = probabilities[letter]
+			positions = append(positions, strconv.Itoa(position))
 		}
 		choice := options[index].Key
 		confidence := Confidence(probabilities)
@@ -1367,13 +1433,18 @@ func answerFromRead(question Question, read CodeRead, options []Option, calibrat
 		answer.Choice = &choice
 		answer.Legend = legend
 		answer.Probabilities = distributions
+		// Python keys a score's distribution by ascending position.
+		answer.ProbabilityKeys = positions
 		answer.Confidence = &confidence
 		return answer, nil
 	}
 
 	keyed := make(map[string]float64, len(letters))
+	keys := make([]string, 0, len(letters))
 	for _, letter := range letters {
-		keyed[options[indexOf(letters, letter)].Key] = probabilities[letter]
+		key := options[indexOf(letters, letter)].Key
+		keyed[key] = probabilities[letter]
+		keys = append(keys, key)
 	}
 	choice := options[index].Key
 	confidence := Confidence(probabilities)
@@ -1381,6 +1452,8 @@ func answerFromRead(question Question, read CodeRead, options []Option, calibrat
 	answer.Type = "choice"
 	answer.Choice = &choice
 	answer.Probabilities = keyed
+	// Python keys a choice's distribution by the caller's option order.
+	answer.ProbabilityKeys = keys
 	answer.Confidence = &confidence
 	return answer, nil
 }

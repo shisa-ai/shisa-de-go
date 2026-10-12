@@ -200,8 +200,9 @@ func ExampleDecisionModel_Classify_image() {
 		panic(err)
 	}
 
-	view := decision.Values["animal"].(map[string]any)
-	fmt.Println(view["label"])
+	view := decision.Values["animal"].(Object)
+	label, _ := view.Get("label")
+	fmt.Println(label)
 	fmt.Println(decision.Answers["animal"].Calibrated)
 	fmt.Println(exampleKeys(decision.Answers["animal"].Probabilities))
 	// Output:
@@ -230,9 +231,12 @@ func ExampleDecisionModel_Classify() {
 		panic(err)
 	}
 
-	// With IncludeProbabilities the value is the answer's full view.
-	view := decision.Values["intent"].(map[string]any)
-	fmt.Println(view["label"])
+	// With IncludeProbabilities the value is the answer's full view, in the
+	// order the Python client writes it: the label, the confidence, then the
+	// distribution. `Object` is what keeps that order; a Go map would sort it.
+	view := decision.Values["intent"].(Object)
+	label, _ := view.Get("label")
+	fmt.Println(label)
 	fmt.Println(exampleKeys(decision.Answers["intent"].Probabilities))
 	// Output:
 	// refund_request

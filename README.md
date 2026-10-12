@@ -88,15 +88,20 @@ if err != nil {
 }
 
 // The value is the answer's full view, and the answer itself is on Answers.
-view := decision.Values["intent"].(map[string]any)
-fmt.Println(view["label"])
+view := decision.Values["intent"].(shisade.Object)
+label, _ := view.Get("label")
+fmt.Println(label)
 fmt.Println(decision.Answers["intent"].Probabilities)
 fmt.Println(decision.Usage["requests"])
 ```
 
 By default each name maps straight to its label. `IncludeConfidence` returns the
 label with a confidence, and `IncludeProbabilities` adds the full probability
-map; both change `Values[head]` from the bare label to a map.
+map; both change `Values[head]` from the bare label to an `Object`, whose keys
+are in the order the Python client writes them: the label, then the confidence,
+then the distribution. A Go map would sort them, and the distribution's own keys
+would sort too, where the Python client uses your option order. `Object` is the
+ordered map `PythonJSONWith` renders; `Object.Get` reads one key.
 
 A `HeadSpec` has four shapes:
 

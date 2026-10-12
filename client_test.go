@@ -412,9 +412,17 @@ func TestClassifyMultiLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	entries, ok := decision.Values["topic"].([]map[string]any)
-	if !ok || len(entries) != 1 || entries[0]["label"] != "billing" {
+	entries, ok := decision.Values["topic"].([]Object)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("the confidence view is %v", decision.Values["topic"])
+	}
+	if label, _ := entries[0].Get("label"); label != "billing" {
 		t.Errorf("the confidence view is %v", decision.Values["topic"])
+	}
+	// The key order is Python's, which is what the command line's stdout is
+	// compared against.
+	if got := objectKeys(entries[0]); !equalStrings(got, []string{"label", "confidence"}) {
+		t.Errorf("the confidence view's keys are %v, want label then confidence", got)
 	}
 	// The probabilities view adds the distribution.
 	model, _ = newStubModel(t, 2,
@@ -427,9 +435,18 @@ func TestClassifyMultiLabel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	entries, ok = decision.Values["topic"].([]map[string]any)
-	if !ok || len(entries) != 1 || entries[0]["probabilities"] == nil {
+	entries, ok = decision.Values["topic"].([]Object)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("the probabilities view is %v", decision.Values["topic"])
+	}
+	if _, present := entries[0].Get("probabilities"); !present {
 		t.Errorf("the probabilities view is %v", decision.Values["topic"])
+	}
+	// A noul's distribution is `yes` then `no`, whatever the option order was.
+	distribution, _ := entries[0].Get("probabilities")
+	ordered, ok := distribution.(Object)
+	if !ok || !equalStrings(objectKeys(ordered), []string{"yes", "no"}) {
+		t.Errorf("the multi-label distribution is %v, want yes then no", distribution)
 	}
 	// A threshold above the answer's probability drops the label.
 	high := 0.99
@@ -474,12 +491,21 @@ func TestClassifyViews(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	view, ok := decision.Values["route"].(map[string]any)
-	if !ok || view["label"] != "billing" || view["confidence"] == nil {
+	view, ok := decision.Values["route"].(Object)
+	if !ok {
+		t.Fatalf("the confidence view is %v", decision.Values["route"])
+	}
+	if label, _ := view.Get("label"); label != "billing" {
 		t.Errorf("the confidence view is %v", decision.Values["route"])
 	}
-	if _, ok := view["probabilities"]; ok {
+	if _, present := view.Get("confidence"); !present {
+		t.Errorf("the confidence view is %v", decision.Values["route"])
+	}
+	if _, present := view.Get("probabilities"); present {
 		t.Error("the confidence view carries probabilities")
+	}
+	if got := objectKeys(view); !equalStrings(got, []string{"label", "confidence"}) {
+		t.Errorf("the confidence view's keys are %v, want label then confidence", got)
 	}
 
 	model, _ = newStubModel(t, 2, body)
@@ -488,9 +514,22 @@ func TestClassifyViews(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Classify: %v", err)
 	}
-	view, ok = decision.Values["route"].(map[string]any)
-	if !ok || view["probabilities"] == nil {
+	view, ok = decision.Values["route"].(Object)
+	if !ok {
+		t.Fatalf("the probabilities view is %v", decision.Values["route"])
+	}
+	distribution, present := view.Get("probabilities")
+	if !present {
 		t.Errorf("the probabilities view is %v", decision.Values["route"])
+	}
+	// The distribution is keyed in the caller's option order, which is what
+	// Python's dict literal gives and a Go map would not.
+	ordered, ok := distribution.(Object)
+	if !ok {
+		t.Fatalf("the distribution is a %T, want an Object", distribution)
+	}
+	if got := objectKeys(ordered); !equalStrings(got, []string{"billing", "shipping"}) {
+		t.Errorf("the distribution's keys are %v, want the option order", got)
 	}
 }
 
@@ -1698,5 +1737,48 @@ func TestImageTopLogprobsReachesTheReadout(t *testing.T) {
 		Model: "shisa-ai/shisa-de-2", Readout: readout, ImageTopLogprobs: -1,
 	}); err == nil {
 		t.Error("a negative image logprob limit was accepted")
+	}
+}
+
+// objectKeys is an Object's keys in order, for a test that pins the order rather
+// than only the contents.
+func objectKeys(object Object) []string {
+	keys := make([]string, 0, len(object))
+	for _, member := range object {
+		keys = append(keys, member.Key)
+	}
+	return keys
+}
+
+// TestOrderedProbabilities pins the reader the writers use, including the two
+// cases no client path produces: an Answer a caller built itself, and one whose
+// keys are set incompletely.
+func TestOrderedProbabilities(t *testing.T) {
+	// No order to reproduce: sorted, which is stable rather than random.
+	built := Answer{Probabilities: map[string]float64{"no": 0.4, "yes": 0.6}}
+	if got := objectKeys(built.OrderedProbabilities()); !equalStrings(got, []string{"no", "yes"}) {
+		t.Errorf("a hand-built answer's keys are %v, want them sorted", got)
+	}
+	// An order that names only some of the keys: the order is lost for the rest
+	// and no value is.
+	partial := Answer{
+		Probabilities:   map[string]float64{"b": 0.5, "a": 0.3, "c": 0.2},
+		ProbabilityKeys: []string{"b"},
+	}
+	got := objectKeys(partial.OrderedProbabilities())
+	if !equalStrings(got, []string{"b", "a", "c"}) {
+		t.Errorf("a partial order gives %v, want b then the rest sorted", got)
+	}
+	if len(partial.OrderedProbabilities()) != 3 {
+		t.Errorf("a partial order dropped a value: %v", partial.OrderedProbabilities())
+	}
+	// A key the distribution does not have is skipped rather than written as a
+	// zero.
+	extra := Answer{
+		Probabilities:   map[string]float64{"a": 0.5},
+		ProbabilityKeys: []string{"a", "gone"},
+	}
+	if members := extra.OrderedProbabilities(); len(members) != 1 {
+		t.Errorf("a stale key produced %v", members)
 	}
 }
