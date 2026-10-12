@@ -11,12 +11,15 @@ package shisade
 // failure that actually happens, and this catches it in a millisecond.
 
 import (
+	"encoding/json"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -304,6 +307,87 @@ func TestReadmeSectionsArePresent(t *testing.T) {
 		if !containsString(headings, want) {
 			t.Errorf("README.md has no %q section; it has %v", want, headings)
 		}
+	}
+}
+
+// portFixtureCounts are the fixture sizes `docs/PORT.md` states, with the
+// metadata each one comes from and a pattern that reads it out of the prose.
+//
+// The paragraph and the fixture are regenerated together, and nothing was
+// checking the paragraph. The readout's counts were stale -- 22 scenarios and 62
+// exchanges against the metadata's 38 and 77 -- until the M7 review found them by
+// hand, and regenerating the client fixture for the image cases moved its counts
+// too. A number a test does not read is a number that drifts.
+//
+// The command line's count is spelled out ("eleven invocations") rather than
+// written as a digit, so it is not in this table.
+var portFixtureCounts = []struct {
+	name    string
+	meta    string
+	fields  []string
+	pattern string
+}{
+	{
+		name:    "readout",
+		meta:    "readout_parity.meta.json",
+		fields:  []string{"scenarios", "exchanges"},
+		pattern: `\*\*Readout\.\*\* (\d+) scenarios, (\d+) recorded exchanges`,
+	},
+	{
+		name:    "client",
+		meta:    "client_parity.meta.json",
+		fields:  []string{"cases", "exchanges"},
+		pattern: `\*\*Client\.\*\* (\d+) cases, (\d+) recorded exchanges`,
+	},
+	{
+		name:    "images",
+		meta:    "images_parity.meta.json",
+		fields:  []string{"cases"},
+		pattern: "`testdata/images_parity.json` replays (\\d+) references",
+	},
+	{
+		name:    "render",
+		meta:    "render_parity.meta.json",
+		fields:  []string{"renders"},
+		pattern: "compares (\\d+) rendered prompts",
+	},
+}
+
+// TestPortDocFixtureCounts checks the sizes `docs/PORT.md` states against the
+// metadata the generators wrote, so a regenerated fixture and its paragraph
+// cannot disagree in silence.
+func TestPortDocFixtureCounts(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("docs", "PORT.md"))
+	if err != nil {
+		t.Fatalf("reading docs/PORT.md: %v", err)
+	}
+	text := string(raw)
+	for _, tc := range portFixtureCounts {
+		t.Run(tc.name, func(t *testing.T) {
+			metaRaw, err := os.ReadFile(filepath.Join("testdata", tc.meta))
+			if err != nil {
+				t.Fatalf("reading %s: %v", tc.meta, err)
+			}
+			var meta map[string]any
+			if err := json.Unmarshal(metaRaw, &meta); err != nil {
+				t.Fatalf("parsing %s: %v", tc.meta, err)
+			}
+			match := regexp.MustCompile(tc.pattern).FindStringSubmatch(text)
+			if match == nil {
+				t.Fatalf("docs/PORT.md does not state the %s fixture's counts in the form "+
+					"%q any more, so this check reads nothing", tc.name, tc.pattern)
+			}
+			for index, field := range tc.fields {
+				want, ok := meta[field].(float64)
+				if !ok {
+					t.Fatalf("%s records no numeric %q", tc.meta, field)
+				}
+				if got := match[index+1]; got != strconv.Itoa(int(want)) {
+					t.Errorf("docs/PORT.md says the %s fixture has %s %s, and %s records %d",
+						tc.name, got, field, tc.meta, int(want))
+				}
+			}
+		})
 	}
 }
 

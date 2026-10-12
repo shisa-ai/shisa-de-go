@@ -179,8 +179,10 @@ What must not change casually:
   against.
 - Any number added to a doc was measured, and the doc says when and against
   which serving fingerprint. The fixture counts in `docs/PORT.md` come from
-  `testdata/*.meta.json`, and `TestReadoutFixtureProvenance` fails when they
-  disagree, so a regenerated fixture and its paragraph move together.
+  `testdata/*.meta.json`, and `TestPortDocFixtureCounts` fails when they disagree,
+  so a regenerated fixture and its paragraph move together. The check reads the
+  count out of the prose, so rewording a paragraph past its pattern fails as
+  "this check reads nothing" rather than passing quietly.
 - A field named in the docs' prose is checked against the package by
   `TestReadmeProseNamesRealFields`, which resolves a backticked `Type.Field`
   whenever `Type` is an exported type here. The Go-block check cannot see prose,
@@ -195,6 +197,7 @@ What must not change casually:
 | Offline suite | `go test ./...` |
 | Documented examples | `go test . -run Example` (runs the `Example*` functions in `example_test.go`, whose `// Output:` blocks are the README's snippets) |
 | Documentation rot | `go test . -run TestReadme` (every `shisade.X` the README and `PORT.md` name has to be an exported identifier; the blocks also have to parse) |
+| Documented fixture counts | `go test . -run TestPortDocFixtureCounts` (the fixture sizes `docs/PORT.md` states against `testdata/*.meta.json`) |
 | Tokenizer parity | `go test ./tokenizer/` (reads the pinned tokenizer from the hub cache or `SHISA_DE_TOKENIZER_JSON`; `SHISA_DE_TOKENIZER_REQUIRE=1` fails instead of skipping) |
 | Readout replay | `go test . -run TestReadout` (replays recorded Python request/response pairs, text and image, through an `httptest` stub; offline) |
 | Image reference replay | `go test . -run TestImagesParity` (replays recorded Python `prepare_image`/`validate_image_url` verdicts and error text; offline) |
