@@ -123,6 +123,26 @@
     },
     {
       "func": "prepare_image",
+      "input": "/~/shisa-de-no-such-image.png",
+      "error": "image file not found: /~/shisa-de-no-such-image.png"
+    },
+    {
+      "func": "prepare_image",
+      "input": "//~/shisa-de-no-such-image.png",
+      "error": "image file not found: //~/shisa-de-no-such-image.png"
+    },
+    {
+      "func": "prepare_image",
+      "input": "/./~/shisa-de-no-such-image.png",
+      "error": "image file not found: /~/shisa-de-no-such-image.png"
+    },
+    {
+      "func": "prepare_image",
+      "input": "a/~/shisa-de-no-such-image.png",
+      "error": "image file not found: a/~/shisa-de-no-such-image.png"
+    },
+    {
+      "func": "prepare_image",
       "input": "",
       "error": "image is empty"
     },

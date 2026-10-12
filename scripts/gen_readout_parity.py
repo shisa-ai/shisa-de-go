@@ -121,7 +121,7 @@ class StubDE2Server:
                  fallback_empty=False, text_keys=False, omit_text=False, topk_score=None,
                  reject_after=None, chat_system="string", chat_drop_code="",
                  chat_short_prompt=False, chat_non_option_filler=True, omit_message=False,
-                 malformed_top_entry=False):
+                 malformed_top_entry=False, chat_boundary="ok"):
         self.tokenizer = CodeStubTokenizer()
         self.logprob = logprob or (lambda code: 0.0 if code == "A" else -6.0)
         self.after_thought = after_thought or self.logprob
@@ -158,6 +158,12 @@ class StubDE2Server:
         # malformed_top_entry sends a logprob as a string, which the Python
         # client refuses entry by entry rather than as a whole response.
         self.malformed_top_entry = malformed_top_entry
+        # chat_boundary is what the last prompt-logprob entry says the answer
+        # position was: "ok" the terminator, "wrong_token" a different token
+        # entirely, "no_decoded" the right id with no decoded text at all, or
+        # "absent" no prompt_logprobs field. The first two are the refusals the
+        # image readout has instead of a locally tokenized prompt.
+        self.chat_boundary = chat_boundary
         self.seen_candidate_requests = 0
         self.code_of = {self.tokenizer.encode(code)[0]: code for code in codebook()}
 
@@ -199,7 +205,14 @@ class StubDE2Server:
                 {str(token): {"logprob": -0.01, "rank": 1,
                               "decoded_token": self.tokenizer.decode([token])}}
                 for token in ids[1:]]
+        if self.chat_boundary == "wrong_token":
+            entries[-1] = {"7": {"logprob": -0.01, "rank": 1, "decoded_token": "x"}}
+        elif self.chat_boundary == "no_decoded":
+            entries[-1] = {key: {"logprob": -0.01, "rank": 1}
+                           for key in entries[-1]}
         response: dict = {"choices": [{}], "usage": usage, "prompt_logprobs": entries}
+        if self.chat_boundary == "absent":
+            del response["prompt_logprobs"]
         if "logprobs" in body:
             top_k = body["top_logprobs"]
             ranked = sorted(codebook(), key=lambda code: -self.logprob(code))
@@ -579,6 +592,18 @@ def scenarios() -> list[dict]:
     out.append(image("image-error-malformed-top", 3, StubDE2Server(
         logprob=lambda code: -0.1 * codebook().index(code), malformed_top_entry=True),
         error_match=r"malformed top_logprobs entry"))
+    # The answer-boundary refusals. The image readout has no local prompt to
+    # tokenize, so the server's last prompt token is the whole of the evidence,
+    # and each of these breaks one part of it.
+    out.append(image("image-error-boundary-wrong-token", 3, StubDE2Server(
+        logprob=lambda code: -0.1 * codebook().index(code), chat_boundary="wrong_token"),
+        error_match=r"was not read at the answer boundary"))
+    out.append(image("image-error-boundary-no-decoded-token", 3, StubDE2Server(
+        logprob=lambda code: -0.1 * codebook().index(code), chat_boundary="no_decoded"),
+        error_match=r"was not read at the answer boundary"))
+    out.append(image("image-error-boundary-absent", 3, StubDE2Server(
+        logprob=lambda code: -0.1 * codebook().index(code), chat_boundary="absent"),
+        error_match=r"carries no root-level prompt_logprobs"))
 
     # The chat probe `doctor --probe` reports.
     for name, server in (("probe-string", StubDE2Server()),
@@ -592,6 +617,15 @@ def scenarios() -> list[dict]:
             "exchanges": recorder.take(), "system_render": verdict}]})
 
     return out
+
+
+def operation_counts(recorded: list[dict]) -> dict[str, int]:
+    """How many steps each operation has, so the fixture's mix is pinned."""
+    counts: dict[str, int] = {}
+    for case in recorded:
+        for step in case["steps"]:
+            counts[step["op"]] = counts.get(step["op"], 0) + 1
+    return dict(sorted(counts.items()))
 
 
 def git_head(path: pathlib.Path) -> str:
@@ -623,6 +657,11 @@ def main() -> int:
         "think_system": THINK_SYSTEM,
         "scenarios": len(recorded),
         "exchanges": sum(len(step["exchanges"]) for case in recorded for step in case["steps"]),
+        # Per-operation and per-error counts, so a regeneration that silently
+        # dropped a case fails the provenance check rather than only shrinking
+        # the totals. The readout's coverage is the reason the fixture exists.
+        "operations": operation_counts(recorded),
+        "errors": sum(1 for case in recorded for step in case["steps"] if "error" in step),
         "sha256": hashlib.sha256(body.encode("utf-8")).hexdigest(),
     }
     META_OUT.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8", newline="")

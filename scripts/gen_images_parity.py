@@ -124,6 +124,13 @@ CASES: list[tuple[str, str]] = [
     # The home directory is expanded before the file is looked for.
     ("prepare_image", "~/shisa-de-no-such-image.png"),
     ("prepare_image", "{home}/shisa-de-no-such-image.png"),
+    # ...but only when the path has neither a drive nor a root, which is
+    # pathlib's guard. A rooted `~` stays a literal component, and the file is
+    # looked for under it.
+    ("prepare_image", "/~/shisa-de-no-such-image.png"),
+    ("prepare_image", "//~/shisa-de-no-such-image.png"),
+    ("prepare_image", "/./~/shisa-de-no-such-image.png"),
+    ("prepare_image", "a/~/shisa-de-no-such-image.png"),
     # Rejections, in the order the function tests for them.
     ("prepare_image", ""),
     ("prepare_image", "   "),
