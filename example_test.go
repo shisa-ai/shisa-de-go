@@ -178,6 +178,38 @@ func ExampleNewDecisionModel() {
 	// de2-codebook-v1
 }
 
+// -- classify images ----------------------------------------------------------
+
+// An image question takes the same arguments as a text one, with the image on
+// CallOptions. It is one direct read, so its probabilities are uncalibrated.
+func ExampleDecisionModel_Classify_image() {
+	model := exampleImageModel(3, 0)
+	defer model.Close()
+
+	decision, err := model.Classify(context.Background(), map[string]any{},
+		map[string]HeadSpec{"animal": {Options: []Option{
+			{Key: "cat"}, {Key: "dog"}, {Key: "bird"},
+		}}},
+		ClassifyOptions{
+			IncludeProbabilities: true,
+			CallOptions: CallOptions{
+				Image: "data:image/png;base64,iVBORw0KGgo=",
+			},
+		})
+	if err != nil {
+		panic(err)
+	}
+
+	view := decision.Values["animal"].(map[string]any)
+	fmt.Println(view["label"])
+	fmt.Println(decision.Answers["animal"].Calibrated)
+	fmt.Println(exampleKeys(decision.Answers["animal"].Probabilities))
+	// Output:
+	// cat
+	// false
+	// [bird cat dog]
+}
+
 // -- classify with labels -----------------------------------------------------
 
 // Labels can carry descriptions, and an answer can carry its distribution.
@@ -205,6 +237,127 @@ func ExampleDecisionModel_Classify() {
 	// Output:
 	// refund_request
 	// [order_status refund_request]
+}
+
+// exampleImageModel is exampleModel's chat counterpart.
+//
+// An image question cannot be rendered by this client: only the server can
+// expand an image placeholder into the image tokens the checkpoint expects, so
+// the question is sent as messages and the answer is read from a chat response.
+// That makes the stub different in two ways. It answers on the chat endpoint,
+// and it has to return `prompt_logprobs`, because the read confirms the answer
+// boundary from the prompt the server says it built.
+//
+// The stub rebuilds the served prompt from the messages it was sent, using the
+// same template fragments this package renders with, so the system-render
+// verdict is `string` rather than a difference the example would then have to
+// explain.
+func exampleImageModel(count, winner int) *DecisionModel {
+	codebook, err := Codebook()
+	if err != nil {
+		panic(err)
+	}
+	codes, err := CodesFor(len(codebook))
+	if err != nil {
+		panic(err)
+	}
+	words := map[string]int{AnswerPrefix: 101}
+	for index, code := range codes {
+		words[code] = 1000 + index
+	}
+	tokenizer := newFixtureTokenizer(words)
+
+	// The option letters, not the codebook: an image question is a chat request
+	// with at most 26 options, so it keeps the DE-1 scaffold's letters.
+	letters, err := CodesFor(count)
+	if err != nil {
+		panic(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(r.URL.Path, "/models") {
+			fmt.Fprint(w, `{"data":[{"id":"shisa-ai/shisa-de-2"}]}`)
+			return
+		}
+		var sent struct {
+			Messages []struct {
+				Content any `json:"content"`
+			} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&sent); err != nil {
+			panic(err)
+		}
+		if len(sent.Messages) != 2 {
+			panic(fmt.Sprintf("the example sent %d messages, want 2", len(sent.Messages)))
+		}
+		// The system turn is a string and the user turn is content parts: the
+		// image, then the question as text.
+		system, _ := sent.Messages[0].Content.(string)
+		parts, ok := sent.Messages[1].Content.([]any)
+		if !ok {
+			panic("the user turn is not content parts")
+		}
+		user := ""
+		for _, part := range parts {
+			if fields, ok := part.(map[string]any); ok && fields["type"] == "text" {
+				user, _ = fields["text"].(string)
+			}
+		}
+		if user == "" {
+			panic("the user turn carries no text part")
+		}
+		served := templateBOS + templateTurnOpen + "system" + templateRoleEnd +
+			system + templateTurnClose + templateRoleEnd +
+			templateTurnOpen + "user" + templateRoleEnd + user +
+			templateTurnClose + templateRoleEnd + templateTurnOpen + "model" + templateRoleEnd +
+			templateThought + AnswerPrefix
+		ids := tokenizer.Encode(served)
+		// The first prompt position carries no logprob, which is what
+		// `prompt_logprobs: 0` returns, and the last one is the answer boundary
+		// the read checks.
+		promptLogprobs := make([]string, 0, len(ids))
+		promptLogprobs = append(promptLogprobs, "null")
+		for _, id := range ids[1:] {
+			decoded, err := json.Marshal(tokenizer.Decode([]int{id}))
+			if err != nil {
+				panic(err)
+			}
+			promptLogprobs = append(promptLogprobs, fmt.Sprintf(
+				`{"%d":{"logprob":-0.01,"rank":1,"decoded_token":%s}}`, id, decoded))
+		}
+		top := make([]string, 0, len(letters))
+		for index, letter := range letters {
+			logprob := -10.0
+			if index == winner {
+				logprob = 0
+			}
+			top = append(top, fmt.Sprintf(`{"token":%q,"logprob":%v}`, letter, logprob))
+		}
+		fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":%q},`+
+			`"logprobs":{"content":[{"token":%q,"logprob":%v,"top_logprobs":[%s]}]}}],`+
+			`"prompt_logprobs":[%s],"usage":{"prompt_tokens":%d,"completion_tokens":1}}`,
+			letters[winner], letters[winner], 0, strings.Join(top, ","),
+			strings.Join(promptLogprobs, ","), len(ids))
+	}))
+
+	readout, err := NewReadout(ReadoutConfig{
+		BaseURL: server.URL, Model: "shisa-ai/shisa-de-2", HTTPClient: server.Client(),
+	})
+	if err != nil {
+		panic(err)
+	}
+	readout.SetTokenizer(tokenizer)
+	model, err := NewDecisionModel(DecisionModelConfig{
+		BaseURL:   server.URL,
+		Model:     "shisa-ai/shisa-de-2",
+		Tokenizer: "shisa-ai/shisa-de-2",
+		Readout:   readout,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return model
 }
 
 // A label set can be an ordered scale instead. The value is the
