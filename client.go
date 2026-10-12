@@ -289,8 +289,14 @@ type CallOptions struct {
 	// calibration or the return shape.
 	Probability bool
 	// Calibrated requests calibration. Nil means "on", which is what the Python
-	// client does for text.
+	// client does for text; with an Image it means "off", because the bundled
+	// record was fitted for the text path.
 	Calibrated *bool
+	// Image attaches one image to every question: a local PNG, JPEG or WebP
+	// file, an HTTP(S) URL, or an image data URL. Empty means no image, and the
+	// read is the text one. The file name is never inserted into the evidence,
+	// and a local file is read into a data URL before any request starts.
+	Image string
 	// Debug keeps the rendered prompts in Raw.
 	Debug bool
 	// Overrides replace the model's defaults for this call only.
@@ -489,6 +495,10 @@ type DecisionModelConfig struct {
 	// MaxLogprobs is the top-k the server is asked for. Zero means
 	// DefaultMaxLogprobs.
 	MaxLogprobs int
+	// ImageTopLogprobs is the top-k an image read is asked for. Zero means
+	// DefaultImageTopLogprobs. The image readout has no fallback, so every
+	// option has to fit inside it.
+	ImageTopLogprobs int
 	// Calibration overrides the shipped record. A record passed here is the
 	// caller's assertion and is applied as given; Health still reports how far
 	// it matches.
@@ -550,7 +560,8 @@ type DecisionModel struct {
 	// Readout is the raw-read client underneath.
 	Readout *Readout
 
-	maxWorkers int
+	maxWorkers       int
+	imageTopLogprobs int
 }
 
 // NewDecisionModel builds a client.
@@ -644,6 +655,15 @@ func NewDecisionModel(config DecisionModelConfig) (*DecisionModel, error) {
 	if maxLogprobs < 1 {
 		return nil, &ReadoutError{Message: "max_logprobs must be a positive integer"}
 	}
+
+	imageTopLogprobs := config.ImageTopLogprobs
+	if imageTopLogprobs == 0 {
+		imageTopLogprobs = DefaultImageTopLogprobs
+	}
+	if imageTopLogprobs < 1 {
+		return nil, &ReadoutError{Message: "image_top_logprobs must be a positive integer"}
+	}
+	model_.imageTopLogprobs = imageTopLogprobs
 
 	if readout != nil {
 		model_.Readout = readout
@@ -837,6 +857,11 @@ func (m *DecisionModel) Health(ctx context.Context, probe bool) map[string]any {
 			answer := decision.Answers["probe"]
 			report["read_probe"] = fmt.Sprintf("passed (%s, %d requests)", answer.Strategy, answer.Requests)
 		}
+		// What an image question will be rendered with. The Python client sets
+		// this whenever it probes, whatever the read probe did, because the two
+		// are separate questions about the endpoint.
+		report["chat_system_render"] = readout.ProbeChatRender(ctx,
+			map[string]any{"health": "check"}, question)
 	}
 	return report
 }
@@ -986,8 +1011,18 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 		return nil, err
 	}
 	started := time.Now()
+	// The image is turned into a URL before anything is validated or sent, so a
+	// path that cannot be read fails here rather than after a request.
+	imageURL := ""
+	if options.Image != "" {
+		resolved, err := PrepareImage(options.Image)
+		if err != nil {
+			return nil, err
+		}
+		imageURL = resolved
+	}
 	requestedCalibration := options.Calibrated
-	calibrated := true
+	calibrated := imageURL == ""
 	if requestedCalibration != nil {
 		calibrated = *requestedCalibration
 	}
@@ -1025,10 +1060,18 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 		policy = "repeat"
 	}
 
-	// Validate every head before issuing any requests.
+	// Validate every head before issuing any requests. An image question keeps
+	// the letter limit: it is a chat request the server renders rather than a
+	// codebook read, so a wider one is refused rather than sent.
 	for _, item := range work {
+		wide := item.question.Kind() == "choice" && len(item.question.Options()) > MaxOptions
+		if wide && imageURL != "" {
+			return nil, &QuestionError{Message: fmt.Sprintf(
+				"head %s: image choices above %d options are not supported",
+				pythonQuote(item.head), MaxOptions)}
+		}
 		limit := MaxOptions
-		if item.question.Kind() == "choice" {
+		if wide {
 			limit = MaxCodes
 		}
 		if err := item.question.Validate(limit); err != nil {
@@ -1038,6 +1081,14 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 
 	results := make([]headResult, len(work))
 	runOne := func(index int, item headWork) headResult {
+		if imageURL != "" {
+			read, err := m.Readout.ReadImage(ctx, state, item.question, imageURL,
+				ImageReadOptions{TopLogprobs: m.imageTopLogprobs, Debug: options.Debug})
+			if err != nil {
+				return headResult{head: item.head, err: err}
+			}
+			return headResult{head: item.head, question: item.question, image: &read}
+		}
 		read, err := ReadPolicy(ctx, m.Readout, state, item.question, ReadOptions{
 			Family:      m.Family,
 			Policy:      policy,
@@ -1083,6 +1134,22 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 	logicalReads := 0
 	thoughtTokens := 0
 	for _, result := range results {
+		if result.image != nil {
+			// The image path has no policy: one direct read, and its Raw is the
+			// read's own shape rather than the staged one.
+			read := *result.image
+			answer, err := answerFromRead(result.question, read, result.question.Options(),
+				m.Calibration, calibrated && m.CalibrationApplied, "image")
+			if err != nil {
+				return nil, err
+			}
+			decision.Answers[result.head] = answer
+			decision.Raw[result.head] = imageRaw(read, result.question.Options(), options.Debug)
+			inputTokens += read.PromptTokens
+			requests += read.Requests
+			logicalReads++
+			continue
+		}
 		read := result.read
 		// Each read is tempered by its own fit. A record without per-read
 		// temperatures was fitted on a read before any thought, so an answer read
@@ -1136,6 +1203,10 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 	default:
 		calibratedMeta = nil
 	}
+	inputType := "text"
+	if imageURL != "" {
+		inputType = "image"
+	}
 	calibrationByHead := map[string]bool{}
 	strategyByHead := map[string]string{}
 	for head, answer := range decision.Answers {
@@ -1149,7 +1220,7 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 		"readout_version":     m.ReadoutVersion,
 		"policy":              policy,
 		"probability":         options.Probability,
-		"input_type":          "text",
+		"input_type":          inputType,
 		"calibration":         m.Calibration.ID(),
 		"calibrated":          calibratedMeta,
 		"calibration_by_head": calibrationByHead,
@@ -1161,11 +1232,43 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 	return decision, nil
 }
 
+// imageRaw is one image read as the plain data the Python client records for
+// that path.
+//
+// It is the flat read shape rather than the policy's staged one, because an
+// image question takes one read: there is no repeated read and no thought.
+func imageRaw(read CodeRead, options []Option, debug bool) map[string]any {
+	raw := map[string]any{
+		"logprobs":         read.Logprobs,
+		"probabilities":    read.Probabilities,
+		"requests":         read.Requests,
+		"missing_from_top": read.MissingFromTop,
+		"ranks":            read.Ranks,
+		"prompt_tokens":    read.PromptTokens,
+		"sampled":          stringOrNil(read.Sampled),
+		"options":          optionKeys(options),
+	}
+	if debug {
+		raw["prompt"] = read.Prompt
+		raw["top_logprobs"] = read.TopLogprobs
+		if read.Messages != nil {
+			raw["messages"] = read.Messages
+		}
+	}
+	if read.SystemRender != "" {
+		raw["system_render"] = read.SystemRender
+	}
+	return raw
+}
+
 type headResult struct {
 	head     string
 	question Question
 	read     PolicyRead
-	err      error
+	// image is the flat read an image question takes, or nil. Exactly one of
+	// this and read is set.
+	image *CodeRead
+	err   error
 }
 
 // answerFromRead turns one code read into a typed answer, tempering if asked.

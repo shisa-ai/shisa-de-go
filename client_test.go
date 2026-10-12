@@ -878,7 +878,11 @@ func TestHealthOffline(t *testing.T) {
 func TestHealthProbe(t *testing.T) {
 	readout, _ := newPolicyReadout(t, MaxCodes,
 		modelsBody("shisa-ai/shisa-de-2"),
-		codeReadBody(map[string]float64{"A": -0.1, "B": -1.0}))
+		codeReadBody(map[string]float64{"A": -0.1, "B": -1.0}),
+		// The chat probe: `doctor --probe` also asks the chat endpoint how it
+		// renders the system turn, because that is what an image question is
+		// rendered with.
+		`{"choices":[],"usage":{"prompt_tokens":0}}`)
 	model, err := NewDecisionModel(DecisionModelConfig{Model: "shisa-ai/shisa-de-2", Readout: readout})
 	if err != nil {
 		t.Fatalf("NewDecisionModel: %v", err)
@@ -890,6 +894,32 @@ func TestHealthProbe(t *testing.T) {
 	}
 	if !strings.Contains(probe, StrategyRepeat) {
 		t.Errorf("the read probe does not name the strategy it used: %v", probe)
+	}
+	// A response with no prompt tokens cannot say how the server rendered the
+	// system turn, and saying so is the whole report.
+	if report["chat_system_render"] != ChatSystemUnverified {
+		t.Errorf("the chat probe reports %v, want %q",
+			report["chat_system_render"], ChatSystemUnverified)
+	}
+}
+
+// TestHealthWithoutAProbeSkipsTheChatRequest pins that the chat probe is the
+// probe's cost, not the report's: without `--probe` nothing is spent.
+func TestHealthWithoutAProbeSkipsTheChatRequest(t *testing.T) {
+	readout, server := newPolicyReadout(t, MaxCodes, modelsBody("shisa-ai/shisa-de-2"))
+	model, err := NewDecisionModel(DecisionModelConfig{Model: "shisa-ai/shisa-de-2", Readout: readout})
+	if err != nil {
+		t.Fatalf("NewDecisionModel: %v", err)
+	}
+	report := model.Health(context.Background(), false)
+	if _, present := report["chat_system_render"]; present {
+		t.Errorf("a report with no probe carries chat_system_render: %v",
+			report["chat_system_render"])
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.requests) != 1 {
+		t.Errorf("the report sent %d requests, want the model listing only", len(server.requests))
 	}
 }
 
@@ -1415,4 +1445,157 @@ func hasWarning(model *DecisionModel, text string) bool {
 		}
 	}
 	return false
+}
+
+// -- the image read through the friendly layer --------------------------------
+
+// TestClassifyImageIsOneDirectRead pins what the image path changes above the
+// readout: one read, raw probabilities, and `input_type: image`.
+func TestClassifyImageIsOneDirectRead(t *testing.T) {
+	model, server := newStubModel(t, MaxCodes,
+		chatBody(`{"token":"A","logprob":-0.1},{"token":"B","logprob":-1.0}`))
+
+	decision, err := model.Classify(context.Background(), map[string]any{},
+		map[string]HeadSpec{"intent": {Options: []Option{{Key: "spam"}, {Key: "ham"}}}},
+		ClassifyOptions{IncludeProbabilities: true,
+			CallOptions: CallOptions{Image: imageTestURL}})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+
+	answer := decision.Answers["intent"]
+	if answer.Choice == nil || *answer.Choice != "spam" {
+		t.Errorf("the answer is %v, want spam", answer.Choice)
+	}
+	if answer.Requests != 1 || answer.LogicalReads != 1 {
+		t.Errorf("the read spent %d requests and %d logical reads, want 1 and 1",
+			answer.Requests, answer.LogicalReads)
+	}
+	// The image path has no fit: the caller's `Calibrated` is not even consulted,
+	// because the default is already off and a temperature of 1.0 leaves
+	// `Calibrated` false whatever was asked for.
+	if answer.Calibrated || answer.Temperature != 1.0 {
+		t.Errorf("an image answer is calibrated at temperature %v", answer.Temperature)
+	}
+	if got := decision.Meta["input_type"]; got != "image" {
+		t.Errorf("input_type is %v, want image", got)
+	}
+	if got := decision.Usage["requests"]; got != 1 {
+		t.Errorf("the call reports %v requests, want 1", got)
+	}
+
+	// The raw record is the flat read shape rather than the policy's staged one,
+	// and it carries what the server did with the system turn.
+	raw := decision.Raw["intent"]
+	for _, key := range []string{"logprobs", "probabilities", "requests", "missing_from_top",
+		"ranks", "prompt_tokens", "sampled", "options", "system_render"} {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("the raw record has no %q: %v", key, raw)
+		}
+	}
+	if _, staged := raw["stages"]; staged {
+		t.Errorf("the image raw record carries the policy's staged shape: %v", raw)
+	}
+	if got := len(server.requests); got != 1 {
+		t.Errorf("the call sent %d requests, want 1", got)
+	}
+}
+
+// TestClassifyImageKeepsTheLetterLimit pins that a choice above 26 options is
+// refused rather than sent, and refused before any request.
+func TestClassifyImageKeepsTheLetterLimit(t *testing.T) {
+	model, server := newStubModel(t, MaxCodes)
+	options := make([]Option, MaxOptions+1)
+	for index := range options {
+		options[index] = Option{Key: fmt.Sprintf("option-%d", index)}
+	}
+	_, err := model.Classify(context.Background(), map[string]any{},
+		map[string]HeadSpec{"intent": {Options: options}},
+		ClassifyOptions{CallOptions: CallOptions{Image: imageTestURL}})
+	if err == nil {
+		t.Fatal("an image choice above the letter limit was accepted")
+	}
+	var questionError *QuestionError
+	if !errors.As(err, &questionError) {
+		t.Fatalf("got a %T, want a *QuestionError", err)
+	}
+	if !strings.Contains(err.Error(), "image choices above 26 options") {
+		t.Errorf("the error is %v", err)
+	}
+	if got := len(server.requests); got != 0 {
+		t.Errorf("a refused question sent %d requests", got)
+	}
+}
+
+// TestClassifyImageFailsBeforeAnyRequest pins that an image the client cannot
+// read is refused by the client, not by the server.
+func TestClassifyImageFailsBeforeAnyRequest(t *testing.T) {
+	model, server := newStubModel(t, MaxCodes)
+	_, err := model.Classify(context.Background(), map[string]any{},
+		map[string]HeadSpec{"intent": {Options: []Option{{Key: "spam"}, {Key: "ham"}}}},
+		ClassifyOptions{CallOptions: CallOptions{Image: "photo.gif"}})
+	if err == nil {
+		t.Fatal("an unsupported image extension was accepted")
+	}
+	var imageError *ImageError
+	if !errors.As(err, &imageError) {
+		t.Fatalf("got a %T, want an *ImageError", err)
+	}
+	if got := len(server.requests); got != 0 {
+		t.Errorf("a refused image sent %d requests", got)
+	}
+}
+
+// TestDecideWithAnImage pins that the image reaches the typed-question call too,
+// and that its `noul` shape comes back the same way.
+func TestDecideWithAnImage(t *testing.T) {
+	model, _ := newStubModel(t, MaxCodes,
+		chatBody(`{"token":"A","logprob":-0.1},{"token":"B","logprob":-1.0}`))
+	decision, err := model.Decide(context.Background(), map[string]any{},
+		map[string]Question{"square": NewNoul("Is this a square?")},
+		CallOptions{Image: imageTestURL})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	answer := decision.Answers["square"]
+	if answer.Type != "noul" || answer.Noul == nil {
+		t.Fatalf("the answer is %+v, want a noul", answer)
+	}
+	if *answer.Noul <= 0.5 {
+		t.Errorf("the answer is %v, want the peaked option", *answer.Noul)
+	}
+	if answer.Calibrated {
+		t.Errorf("an image answer is calibrated at temperature %v", answer.Temperature)
+	}
+}
+
+// TestImageTopLogprobsReachesTheReadout pins the one thing the config field does.
+func TestImageTopLogprobsReachesTheReadout(t *testing.T) {
+	readout, server := newPolicyReadout(t, MaxCodes,
+		chatBody(`{"token":"A","logprob":-0.1},{"token":"B","logprob":-1.0}`))
+	model, err := NewDecisionModel(DecisionModelConfig{
+		Model: "shisa-ai/shisa-de-2", Readout: readout, ImageTopLogprobs: 64,
+	})
+	if err != nil {
+		t.Fatalf("NewDecisionModel: %v", err)
+	}
+	if _, err := model.Classify(context.Background(), map[string]any{},
+		map[string]HeadSpec{"intent": {Options: []Option{{Key: "spam"}, {Key: "ham"}}}},
+		ClassifyOptions{CallOptions: CallOptions{Image: imageTestURL}}); err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.requests) != 1 {
+		t.Fatalf("the call sent %d requests, want 1", len(server.requests))
+	}
+	if server.requests[0]["top_logprobs"] != float64(64) {
+		t.Errorf("the request asked for %v, want 64", server.requests[0]["top_logprobs"])
+	}
+	// A non-positive limit is refused at construction rather than at the read.
+	if _, err := NewDecisionModel(DecisionModelConfig{
+		Model: "shisa-ai/shisa-de-2", Readout: readout, ImageTopLogprobs: -1,
+	}); err == nil {
+		t.Error("a negative image logprob limit was accepted")
+	}
 }
