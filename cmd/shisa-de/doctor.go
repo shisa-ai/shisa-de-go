@@ -11,9 +11,7 @@ import (
 // runDoctor is the Python command line's `doctor` branch.
 //
 // The report is `Health`'s map, and the text form prints the same lines in the
-// same order. The one line the Python command line prints that this one cannot
-// is `chat system`: it comes from the chat-render probe, which exists for the
-// image path this port does not have.
+// same order.
 func runDoctor(ctx context.Context, args *args, model *shisade.DecisionModel,
 	stdout, stderr io.Writer) int {
 	report := model.Health(ctx, args.probe)
@@ -52,7 +50,7 @@ var reportOrder = []string{
 	"calibration_serving_shape", "calibration_level", "calibration_applied", "ok",
 	"family_note", "calibration_match", "calibration_mismatch", "calibration_note",
 	"models_status", "served_models", "model_listed", "slots", "boundary_check",
-	"read_probe",
+	"read_probe", "chat_system_render",
 }
 
 // orderedReport is the report as an `Object` in that order, with the keys the
@@ -109,6 +107,9 @@ func writeDoctorReport(out io.Writer, report map[string]any) {
 	fmt.Fprintf(out, "boundary check  %v\n", report["boundary_check"])
 	if probe, ok := report["read_probe"]; ok {
 		fmt.Fprintf(out, "read probe      %v\n", probe)
+	}
+	if system, ok := report["chat_system_render"]; ok {
+		fmt.Fprintf(out, "chat system     %v\n", system)
 	}
 	if note, ok := report["family_note"]; ok {
 		fmt.Fprintf(out, "note            %v\n", note)

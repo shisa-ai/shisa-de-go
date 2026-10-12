@@ -175,6 +175,9 @@ func commonFlags(command string) string {
 	case "ask":
 		lines = append(lines,
 			"  --state JSON|TEXT       the state; a built-in example by default",
+			"  --image REFERENCE       local image path, HTTP(S) URL, or image data URL",
+			fmt.Sprintf("  --image-top-logprobs N  image logprob limit (default: %d)",
+				shisade.DefaultImageTopLogprobs),
 			"  --labels a,b,c          comma separated labels",
 			"  --prompt TEXT           the question to ask",
 			"  --confidence            return the label with its confidence",

@@ -2,11 +2,9 @@
 // endpoint before you depend on it, `ask` is the one-line classification call,
 // and `explain` prints every step of the readout for one question.
 //
-// The Python client's `shisa_de/cli.py` is the reference. Three things are
-// deliberately absent here because this port has no DE-1 read and no image
-// path: the `--image` and `--image-top-logprobs` flags, the DE-1 branches of
-// `explain`, and the `chat_system_render` line `doctor` prints from the
-// chat-render probe. `PORT.md` records all three.
+// The Python client's `shisa_de/cli.py` is the reference. What is deliberately
+// absent here is the DE-1 read: the DE-1 branches of `explain`. `PORT.md`
+// records it.
 package main
 
 import (
@@ -115,14 +113,16 @@ type args struct {
 	compound       optionalBool
 	timeout        float64
 
-	json          bool
-	probe         bool
-	state         string
-	stateSet      bool
-	labels        string
-	prompt        string
-	confidence    bool
-	probabilities bool
+	json             bool
+	probe            bool
+	state            string
+	stateSet         bool
+	labels           string
+	prompt           string
+	confidence       bool
+	probabilities    bool
+	image            string
+	imageTopLogprobs int
 }
 
 // newModel builds the client. It is a variable so a test can inject a readout
@@ -142,10 +142,11 @@ func (a *args) model() (*shisade.DecisionModel, error) {
 // modelConfig is the flags as a `DecisionModelConfig`.
 func (a *args) modelConfig() (shisade.DecisionModelConfig, error) {
 	config := shisade.DecisionModelConfig{
-		BaseURL:   a.baseURL,
-		Model:     a.modelID,
-		Tokenizer: a.tokenizer,
-		Timeout:   time.Duration(a.timeout * float64(time.Second)),
+		BaseURL:          a.baseURL,
+		Model:            a.modelID,
+		Tokenizer:        a.tokenizer,
+		Timeout:          time.Duration(a.timeout * float64(time.Second)),
+		ImageTopLogprobs: a.imageTopLogprobs,
 	}
 	// The family is an exact choice, which is what `argparse`'s `choices` is:
 	// `--family DE-2` is a bad invocation, not a spelling to normalize.
@@ -207,6 +208,10 @@ func parse(command string, argv []string) (*args, error) {
 		modelID:   defaultModel,
 		reasoning: optionalBool{},
 		timeout:   120,
+		// The Python command line reads this with
+		// `getattr(args, "image_top_logprobs", 20)`, so every command has the
+		// default even though only `ask` registers the flag.
+		imageTopLogprobs: shisade.DefaultImageTopLogprobs,
 	}
 	// A nil `--state` is a real value here: it means "use the built-in example",
 	// and the empty string is a state like any other. `flag` cannot tell the two
@@ -254,6 +259,11 @@ func parse(command string, argv []string) (*args, error) {
 		flags.Var(&state, "state", "JSON state, or plain text; a built-in example by default")
 		flags.StringVar(&parsed.prompt, "prompt", "", "the question to ask (default: derived from the head name)")
 		flags.Var(&labels, "labels", "comma separated labels")
+		flags.StringVar(&parsed.image, "image", "",
+			"local image path, HTTP(S) URL, or image data URL")
+		flags.IntVar(&parsed.imageTopLogprobs, "image-top-logprobs",
+			shisade.DefaultImageTopLogprobs,
+			"image logprob limit (must be allowed by the server)")
 		flags.BoolVar(&parsed.confidence, "confidence", false, "return the label with its confidence")
 		flags.BoolVar(&parsed.probabilities, "probabilities", false, "return the full distribution")
 	case "explain":

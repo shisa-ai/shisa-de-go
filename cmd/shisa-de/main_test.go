@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -104,6 +105,10 @@ type cliServer struct {
 
 	mu       sync.Mutex
 	requests []map[string]any
+	// paths[i] is the path requests[i] was sent to, so a test can tell the chat
+	// endpoint's requests from the completions ones. It is kept beside the body
+	// rather than inside it: the body is what the client sent.
+	paths []string
 	// models is the id list `/v1/models` returns.
 	models []string
 	// completionStatus, when non-zero, is the status every completion answers
@@ -123,6 +128,7 @@ func newCLIServer(t *testing.T, models ...string) *cliServer {
 		}
 		stub.mu.Lock()
 		stub.requests = append(stub.requests, body)
+		stub.paths = append(stub.paths, r.URL.Path)
 		stub.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		if !strings.HasSuffix(r.URL.Path, "/models") && stub.completionStatus != 0 {
@@ -136,6 +142,10 @@ func newCLIServer(t *testing.T, models ...string) *cliServer {
 				entries = append(entries, fmt.Sprintf(`{"id":%q}`, id))
 			}
 			fmt.Fprintf(w, `{"data":[%s]}`, strings.Join(entries, ","))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			fmt.Fprint(w, stub.chat(body))
 			return
 		}
 		fmt.Fprint(w, stub.completion(body))
@@ -172,6 +182,74 @@ func (s *cliServer) completion(body map[string]any) string {
 	}
 	return fmt.Sprintf(`{"choices":[{"text":%q,"logprobs":{"top_logprobs":[{%s}]}}],`+
 		`"usage":{"prompt_tokens":%d}}`, codes[0], strings.Join(entries, ","), tokens)
+}
+
+// chat answers the chat endpoint, which serves two calls: `doctor --probe` asks
+// how the server renders the system turn, and `ask --image` reads an answer
+// position there.
+//
+// The stub renders the pinned template from the messages it was sent, so its
+// prompt tokens are the ones the client would have rendered itself and the
+// verdict is `string`. That is what a server rendering the text scaffold
+// returns; a stock vLLM writes one extra space and reports `differs`, which the
+// readout's own replay gate covers.
+func (s *cliServer) chat(body map[string]any) string {
+	messages, _ := body["messages"].([]any)
+	if len(messages) != 2 {
+		return `{"choices":[],"usage":{"prompt_tokens":0}}`
+	}
+	system, _ := messages[0].(map[string]any)["content"].(string)
+	user, _ := messages[1].(map[string]any)["content"].(string)
+	served := "<bos><|turn>system\n" + system + "<turn|>\n<|turn>user\n" + user +
+		"<turn|>\n<|turn>model\n<|channel>thought\n" + shisade.AnswerPrefix
+	ids := s.tokenizer.Encode(served)
+	// The first prompt position carries no logprob, which is what
+	// `prompt_logprobs: 0` returns.
+	promptLogprobs := make([]any, 0, len(ids))
+	promptLogprobs = append(promptLogprobs, nil)
+	for _, id := range ids[1:] {
+		promptLogprobs = append(promptLogprobs, map[string]any{
+			strconv.Itoa(id): map[string]any{
+				"logprob": -0.01, "rank": 1, "decoded_token": s.tokenizer.Decode([]int{id}),
+			},
+		})
+	}
+	response := map[string]any{
+		"prompt_logprobs": promptLogprobs,
+		"usage": map[string]any{
+			"prompt_tokens": len(ids), "completion_tokens": 1},
+		"choices": []any{},
+	}
+	if _, isRead := body["logprobs"]; isRead {
+		codes, err := shisade.Codebook()
+		if err != nil {
+			return `{"choices":[],"usage":{"prompt_tokens":0}}`
+		}
+		limit, _ := body["top_logprobs"].(float64)
+		top := make([]any, 0, len(codes))
+		for index, code := range codes {
+			if float64(len(top)) >= limit {
+				break
+			}
+			// The same steep spread `completion` uses, so the first option is
+			// the answer by a wide margin.
+			logprob := -8.0 - float64(index)
+			if index == 0 {
+				logprob = -0.1
+			}
+			top = append(top, map[string]any{"token": code, "logprob": logprob})
+		}
+		response["choices"] = []any{map[string]any{
+			"message": map[string]any{"role": "assistant", "content": codes[0]},
+			"logprobs": map[string]any{"content": []any{map[string]any{
+				"token": codes[0], "logprob": -0.1, "top_logprobs": top}}},
+		}}
+	}
+	encoded, err := json.Marshal(response)
+	if err != nil {
+		return `{"choices":[],"usage":{"prompt_tokens":0}}`
+	}
+	return string(encoded)
 }
 
 func (s *cliServer) requestCount() int {
@@ -546,11 +624,16 @@ func TestDoctorProbeSpendsOneQuestion(t *testing.T) {
 	if !strings.Contains(stdout, "read probe      passed (") {
 		t.Errorf("the probe did not report a pass:\n%s", stdout)
 	}
-	// The listing, then one read: the default policy's repeated read is one
-	// request with the user turn written twice, and the stub answers
-	// confidently, so no thought follows and no read after one.
-	if got := server.requestCount(); got != 2 {
-		t.Errorf("the probe spent %d requests, want 2", got)
+	// The chat probe is the second half of `--probe`: it is what an image
+	// question would be rendered with.
+	if !strings.Contains(stdout, "chat system     string") {
+		t.Errorf("the probe did not report the chat rendering:\n%s", stdout)
+	}
+	// The listing, then one read, then the chat probe. The default policy's
+	// repeated read is one request with the user turn written twice, and the
+	// stub answers confidently, so no thought follows and no read after one.
+	if got := server.requestCount(); got != 3 {
+		t.Errorf("the probe spent %d requests, want 3", got)
 	}
 }
 
@@ -1135,4 +1218,211 @@ func TestExplainPrintsTheGateLikePython(t *testing.T) {
 	if !strings.Contains(stdout, "the think gate (default: 0.7)") {
 		t.Errorf("the help does not spell the gate default:\n%s", stdout)
 	}
+}
+
+// TestAskImage is `ask --image` end to end.
+//
+// The image readout posts to the chat endpoint rather than the completions one,
+// and the question is the JSON the server renders, so what this checks is that
+// the flag reaches the request at all: the read itself is covered by the
+// readout's own replay gate.
+func TestAskImage(t *testing.T) {
+	server := newCLIServer(t, "shisa-ai/shisa-de-2")
+	installCLIModel(t, server)
+
+	const image = "data:image/png;base64,iVBORw0KGgo="
+	status, stdout, stderr := invoke(t, "ask", "--model", "shisa-ai/shisa-de-2",
+		"--image", image, "--labels", "red,green,blue")
+	if status != 0 {
+		t.Fatalf("ask --image exited %d: %s", status, stderr)
+	}
+	var values map[string]any
+	if err := json.Unmarshal([]byte(stdout), &values); err != nil {
+		t.Fatalf("the answer is not JSON: %v\n%s", err, stdout)
+	}
+	if values["intent"] != "red" {
+		t.Errorf("the answer is %v, want the first label the stub answers with", values["intent"])
+	}
+
+	// The read went to the chat endpoint, with the image beside the question.
+	requests := server.bodiesFor(t, "/v1/chat/completions")
+	if len(requests) != 1 {
+		t.Fatalf("the image read sent %d chat requests, want 1", len(requests))
+	}
+	messages, _ := requests[0]["messages"].([]any)
+	if len(messages) != 2 {
+		t.Fatalf("the read sent %v messages, want 2", requests[0]["messages"])
+	}
+	parts, _ := messages[1].(map[string]any)["content"].([]any)
+	if len(parts) != 2 {
+		t.Fatalf("the user turn is %v, want two content parts", messages[1])
+	}
+	if url := parts[0].(map[string]any)["image_url"].(map[string]any)["url"]; url != image {
+		t.Errorf("the image URL is %v, want %q", url, image)
+	}
+	// An image question with no `--state` is about the image alone, which is the
+	// Python command line's `{} if args.image and args.state is None`.
+	if text, _ := parts[1].(map[string]any)["text"].(string); !strings.Contains(text, `"evidence": {}`) {
+		t.Errorf("the evidence is not an empty object:\n%s", text)
+	}
+	// The image path keeps the letter limit and does not repeat the user turn, so
+	// the question appears exactly once.
+	if text, _ := parts[1].(map[string]any)["text"].(string); strings.Count(text, `"criterion"`) != 1 {
+		t.Errorf("the question is written more than once:\n%s", text)
+	}
+}
+
+// TestAskImageKeepsAnExplicitState pins the other half of that rule: a state the
+// caller gave is the state, image or not.
+func TestAskImageKeepsAnExplicitState(t *testing.T) {
+	server := newCLIServer(t, "shisa-ai/shisa-de-2")
+	installCLIModel(t, server)
+
+	status, _, stderr := invoke(t, "ask", "--model", "shisa-ai/shisa-de-2",
+		"--image", "data:image/png;base64,iVBORw0KGgo=", "--state", `{"note": "a red square"}`)
+	if status != 0 {
+		t.Fatalf("ask --image --state exited %d: %s", status, stderr)
+	}
+	requests := server.bodiesFor(t, "/v1/chat/completions")
+	if len(requests) != 1 {
+		t.Fatalf("the image read sent %d chat requests, want 1", len(requests))
+	}
+	messages, _ := requests[0]["messages"].([]any)
+	parts, _ := messages[1].(map[string]any)["content"].([]any)
+	text, _ := parts[1].(map[string]any)["text"].(string)
+	if !strings.Contains(text, `"note": "a red square"`) {
+		t.Errorf("the state did not reach the question:\n%s", text)
+	}
+}
+
+// TestAskImageRefusesABadReference pins that a bad image fails before any
+// request, which is the promise `PrepareImage` makes.
+func TestAskImageRefusesABadReference(t *testing.T) {
+	server := newCLIServer(t, "shisa-ai/shisa-de-2")
+	installCLIModel(t, server)
+
+	status, stdout, stderr := invoke(t, "ask", "--model", "shisa-ai/shisa-de-2",
+		"--image", "photo.gif")
+	if status != 1 {
+		t.Errorf("ask --image with a bad extension exited %d, want 1", status)
+	}
+	if stdout != "" {
+		t.Errorf("a refused image wrote to stdout: %q", stdout)
+	}
+	if !strings.Contains(stderr, "unsupported image extension '.gif'") {
+		t.Errorf("the error is %q", stderr)
+	}
+	if got := server.requestCount(); got != 0 {
+		t.Errorf("the command sent %d requests for a rejected reference", got)
+	}
+}
+
+// TestAskImageTopLogprobsReachesTheRequest pins the flag's one effect.
+func TestAskImageTopLogprobsReachesTheRequest(t *testing.T) {
+	server := newCLIServer(t, "shisa-ai/shisa-de-2")
+	installCLIModel(t, server)
+
+	status, _, stderr := invoke(t, "ask", "--model", "shisa-ai/shisa-de-2",
+		"--image", "data:image/png;base64,iVBORw0KGgo=",
+		"--image-top-logprobs", "64", "--labels", "red,green,blue")
+	if status != 0 {
+		t.Fatalf("ask exited %d: %s", status, stderr)
+	}
+	requests := server.bodiesFor(t, "/v1/chat/completions")
+	if len(requests) != 1 {
+		t.Fatalf("the image read sent %d chat requests, want 1", len(requests))
+	}
+	if requests[0]["top_logprobs"] != float64(64) {
+		t.Errorf("the request asked for top_logprobs %v, want 64", requests[0]["top_logprobs"])
+	}
+}
+
+// TestAskImageTopLogprobsDefault pins the default the Python command line reads
+// with `getattr(args, "image_top_logprobs", 20)`.
+func TestAskImageTopLogprobsDefault(t *testing.T) {
+	server := newCLIServer(t, "shisa-ai/shisa-de-2")
+	installCLIModel(t, server)
+
+	status, _, stderr := invoke(t, "ask", "--model", "shisa-ai/shisa-de-2",
+		"--image", "data:image/png;base64,iVBORw0KGgo=", "--labels", "red,green,blue")
+	if status != 0 {
+		t.Fatalf("ask exited %d: %s", status, stderr)
+	}
+	requests := server.bodiesFor(t, "/v1/chat/completions")
+	if len(requests) != 1 || requests[0]["top_logprobs"] != float64(shisade.DefaultImageTopLogprobs) {
+		t.Errorf("the request asked for %v, want %d",
+			requests[0]["top_logprobs"], shisade.DefaultImageTopLogprobs)
+	}
+}
+
+// TestAskHelpNamesTheImageFlags pins that the flags a command takes are the ones
+// its usage lists, which is what `commonFlags` is written by hand for.
+func TestAskHelpNamesTheImageFlags(t *testing.T) {
+	status, stdout, _ := invoke(t, "ask", "--help")
+	if status != 0 {
+		t.Fatalf("ask --help exited %d", status)
+	}
+	for _, wanted := range []string{"--image REFERENCE", "--image-top-logprobs N"} {
+		if !strings.Contains(stdout, wanted) {
+			t.Errorf("ask --help does not mention %s:\n%s", wanted, stdout)
+		}
+	}
+	// The flags belong to `ask`, and a command that does not take them must not
+	// advertise them: `doctor` has no state to attach an image to.
+	_, stdout, _ = invoke(t, "doctor", "--help")
+	if strings.Contains(stdout, "--image") {
+		t.Errorf("doctor --help advertises the image flags:\n%s", stdout)
+	}
+	// And they are not accepted where they are not registered.
+	if status, _, stderr := invoke(t, "explain", "--image", "x.png"); status != 2 ||
+		!strings.Contains(stderr, "image") {
+		t.Errorf("explain accepted --image: %d, %q", status, stderr)
+	}
+}
+
+// TestDoctorProbeReportsTheChatSystem pins the line the reference command line
+// prints after the read probe.
+func TestDoctorProbeReportsTheChatSystem(t *testing.T) {
+	server := newCLIServer(t, "shisa-ai/shisa-de-2")
+	installCLIModel(t, server)
+
+	status, stdout, stderr := invoke(t, "doctor", "--model", "shisa-ai/shisa-de-2",
+		"--probe", "--json")
+	if status != 0 {
+		t.Fatalf("doctor --probe --json exited %d: %s", status, stderr)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("the report is not JSON: %v", err)
+	}
+	if report["chat_system_render"] != "string" {
+		t.Errorf("chat_system_render is %v, want string", report["chat_system_render"])
+	}
+	// Without the probe there is nothing to report, and the key is absent rather
+	// than null: `doctor --json` is read next to the Python one.
+	_, stdout, _ = invoke(t, "doctor", "--model", "shisa-ai/shisa-de-2", "--json")
+	// A fresh map: unmarshalling into a live one merges keys, which would leave
+	// the probe's verdict in place and make this pass for the wrong reason.
+	report = map[string]any{}
+	if err := json.Unmarshal([]byte(stdout), &report); err != nil {
+		t.Fatalf("the report is not JSON: %v", err)
+	}
+	if _, present := report["chat_system_render"]; present {
+		t.Errorf("a report with no probe carries chat_system_render: %v",
+			report["chat_system_render"])
+	}
+}
+
+// bodiesFor is every request body the stub received for one path.
+func (s *cliServer) bodiesFor(t *testing.T, path string) []map[string]any {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	bodies := make([]map[string]any, 0, len(s.requests))
+	for index, body := range s.requests {
+		if s.paths[index] == path {
+			bodies = append(bodies, body)
+		}
+	}
+	return bodies
 }

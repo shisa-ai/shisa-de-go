@@ -18,6 +18,12 @@ import (
 func runAsk(ctx context.Context, args *args, model *shisade.DecisionModel,
 	stdout, stderr io.Writer) int {
 	state := stateFrom(args.state, args.stateSet)
+	if args.image != "" && !args.stateSet {
+		// An image question with no state asks about the image alone, which is
+		// what the Python command line's `{} if args.image and args.state is
+		// None else _state_from(args.state)` does.
+		state = shisade.Object{}
+	}
 	head, labels := labelsFrom(args.labels)
 	spec := shisade.HeadSpec{Options: optionsFromLabels(labels)}
 	if args.prompt != "" {
@@ -27,6 +33,7 @@ func runAsk(ctx context.Context, args *args, model *shisade.DecisionModel,
 		shisade.ClassifyOptions{
 			IncludeConfidence:    args.confidence,
 			IncludeProbabilities: args.probabilities,
+			CallOptions:          shisade.CallOptions{Image: args.image},
 		})
 	if err != nil {
 		fmt.Fprintf(stderr, "shisa-de ask: %v\n", err)
