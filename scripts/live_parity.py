@@ -37,10 +37,11 @@ checkpoint, so the metadata carries the served `system_fingerprint`, the date,
 the Python revision and the tokenizer revision; a number without its fingerprint
 is not reproducible.
 
-The exit status is 0 for a repeatable run and 3 when the passes disagreed on the
-chosen value; either way the output and the metadata are written first, so a
-caller that treats 3 as "recorded, but the server moved" can read them. The Go
-test does exactly that.
+The exit status is 0 for a repeatable run, 3 when the passes disagreed on the
+chosen value, and 4 when the endpoint's vision capability could not be measured;
+for 0 and 3 the output and the metadata are written first, so a caller that
+treats 3 as "recorded, but the server moved" can read them. The Go test does
+exactly that.
 """
 
 from __future__ import annotations
@@ -136,8 +137,21 @@ def api_url(path: str) -> str:
     return base + path
 
 
-def serves_images() -> tuple[bool, str]:
-    """Whether the endpoint will answer a chat request that carries an image.
+#: The probe's three outcomes. A capability and a failure are different things,
+#: and only the server's own refusal is evidence of the first.
+PROBE_SERVED = "served"
+PROBE_REFUSED = "refused"
+PROBE_UNKNOWN = "unknown"
+
+#: Words a server uses when it refuses an image because it has no vision. A
+#: refusal that does not name one of these is treated as unmeasured, not as a
+#: capability: a 404 from a wrong path and a 400 from a malformed body are bugs,
+#: not deployment facts.
+_NO_VISION_WORDS = ("image", "vision", "multimodal", "modality")
+
+
+def probe_images(client=None) -> tuple[str, str]:
+    """Ask the endpoint for an image read, and classify what comes back.
 
     The image read is the only read that needs `/v1/chat/completions` with vision
     enabled, and a text-only vLLM is a documented deployment for this client. So
@@ -145,11 +159,21 @@ def serves_images() -> tuple[bool, str]:
     cannot, rather than making the text gate depend on a capability it does not
     use.
 
+    Three outcomes, because two would conflate a capability with a failure:
+
+    - `PROBE_SERVED` -- the server answered the image request.
+    - `PROBE_REFUSED` -- the server answered with an error that names images,
+      vision or modality. That is the server's own statement that it cannot, and
+      it is the only thing that may become a skip.
+    - `PROBE_UNKNOWN` -- a transport error, a 401/403/429, a 5xx, or an error
+      that says nothing about images. The caller fails on this rather than
+      recording an unmeasured capability as an absent one.
+
     The probe is one request and it is deliberately the real shape: an image
     content part on a one-option question. It returns the reason as well as the
-    verdict so the skip says what the server answered.
+    verdict so the skip says what the server answered. `client` is injectable so
+    the classification can be tested without a socket.
     """
-    httpx = http()
     body = {
         "model": model_id(),
         "messages": [
@@ -162,17 +186,27 @@ def serves_images() -> tuple[bool, str]:
         "max_tokens": 1,
         "temperature": 0,
     }
+    own = client is None
+    if own:
+        client = http().Client(timeout=120.0)
     try:
-        with httpx.Client(timeout=120.0) as client:
+        try:
             response = client.post(
                 api_url("/v1/chat/completions"),
                 json=body, headers={"Authorization": f"Bearer {api_key()}"})
-    except Exception as exc:  # noqa: BLE001 -- the reason is the point
-        return False, f"the probe could not be sent: {exc}"
+        except Exception as exc:  # noqa: BLE001 -- the reason is the point
+            return PROBE_UNKNOWN, f"the probe could not be sent: {exc}"
+    finally:
+        if own:
+            client.close()
     if response.status_code == 200:
-        return True, ""
-    return False, (f"the endpoint answered {response.status_code} to an image request: "
-                   f"{response.text[:200]}")
+        return PROBE_SERVED, ""
+    detail = (f"the endpoint answered {response.status_code} to an image request: "
+              f"{response.text[:200]}")
+    if response.status_code < 500 and any(word in response.text.lower()
+                                         for word in _NO_VISION_WORDS):
+        return PROBE_REFUSED, detail
+    return PROBE_UNKNOWN, detail
 
 
 #: A 32x32 solid red PNG, the shape the Python live suite's image test builds.
@@ -385,8 +419,17 @@ def main(argv: list[str] | None = None) -> int:
     # An image question needs a server with vision enabled, and a text-only vLLM is
     # a documented deployment. The capability is measured rather than declared, and
     # the meta carries it so the Go side can skip the same case for the same
-    # reason instead of failing on it.
-    images, why_not = serves_images()
+    # reason instead of failing on it. Only the server's own refusal is a verdict:
+    # a probe that failed for any other reason aborts the recording, so a
+    # deployment fact is never inferred from a bug or a bad minute.
+    verdict, why_not = probe_images()
+    if verdict == PROBE_UNKNOWN:
+        print(f"error: could not measure whether the endpoint serves images: {why_not}",
+              file=sys.stderr)
+        print("       nothing was recorded; re-run, or fix the endpoint or the probe",
+              file=sys.stderr)
+        return 4
+    images = verdict == PROBE_SERVED
     if not images:
         dropped = [spec["id"] for spec in questions if spec.get("image")]
         questions = [spec for spec in questions if not spec.get("image")]
@@ -447,8 +490,9 @@ def main(argv: list[str] | None = None) -> int:
                  "value and on the distribution within tolerance. `self_delta` is how far "
                  "the Python client's own two passes are apart, which is the server's "
                  "repeatability rather than the port's. `images` is whether the endpoint "
-                 "answered an image request, and `images_reason` why not when it did not; "
-                 "the image questions are left out when it is false."),
+                 "answered an image request, and `images_reason` the server's own refusal "
+                 "when it did not; the image questions are left out when it is false, and "
+                 "a probe that failed for any other reason aborts the run instead."),
     }
     out.with_name(out.stem + ".meta.json").write_text(json.dumps(meta, indent=2) + "\n")
 
@@ -457,7 +501,7 @@ def main(argv: list[str] | None = None) -> int:
               f"{recorder.requests} requests, fingerprint {meta['serving_fingerprint']}")
         print(f"the Python client's own passes differ by at most {self_delta:.3g} in probability")
         if unstable:
-            print(f"and disagree on the chosen value for: {', '.join(unstable)}", file=sys.stderr)
+            print(f"and disagree for: {', '.join(unstable)}", file=sys.stderr)
     if unstable:
         return 3
     return 0

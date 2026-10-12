@@ -294,8 +294,10 @@ version, and the test fails when the fixture disagrees with it.
   clients in one session and measures the server's own repeatability so it can
   say which one moved.
 - The port's own live measurements are the M6 gate: the fixed question set
-  through both clients in one session, agreeing to 1e-19 up to a few multiples
-  of 1e-16, against `vllm-0.30.0-tp2-ca69195e` on 2026-10-10. The worst key moves
+  through both clients in one session, agreeing to 2.2e-19 up to 5.6e-16,
+  against `vllm-0.30.0-tp2-ca69195e` on 2026-10-12. The same nine text questions
+  measured 1e-19 to a few multiples of 1e-16 against the same fingerprint on
+  2026-10-10, before the image question joined the set. The worst key moves
   between runs, so quote the range rather than one run's maximum. Anything else
   measured here is the Python client's result replayed, and should be said that
   way rather than restated as if this code had been measured against a server.
@@ -307,14 +309,20 @@ version, and the test fails when the fixture disagrees with it.
   derives the expectation from the model's own applicability rather than writing
   the temperature down; do not replace it with a literal.
 - The image read is live-covered by the gate's `image-color` question, which
-  compares both clients on one image against the hosted endpoint, and by the two
-  image cases in the client parity fixture. Both need a server that will accept an
-  image content part: the gate measures that rather than assuming it and skips the
-  question with the server's own answer as the reason when it will not, and the
-  recorder leaves the image questions out of the fixture for the same reason,
-  recording `images` and `images_reason`. Do not turn either into a silent pass:
-  a skip here is a statement about the deployment, and the claim it supports has
-  to say so.
+  compares both clients on one image against the hosted endpoint
+  (`vllm-0.30.0-tp2-ca69195e`, 2026-10-12), and by the two image cases in the
+  client parity fixture. Both need a server that will accept an image content
+  part, and the gate measures that rather than assuming it: `probe_images()` in
+  `scripts/live_parity.py` sends one image request, and only a refusal that names
+  images is a capability, recorded as `images: false` with the server's own words
+  in `images_reason` so the gate can skip the case. A transport error, a
+  401/403/429, a 5xx or an error that says nothing about images makes the
+  recorder exit 4 without writing a fixture, so an unmeasured capability fails
+  the run rather than being recorded as an absent one. `scripts/gen_client_parity.py`
+  has no such probe: against a text-only endpoint it fails, because that fixture
+  is a replay artifact rather than a live gate. Do not turn either into a silent
+  pass: a skip here is a statement about the deployment, and the claim it
+  supports has to say so.
 
 ## Git Discipline
 

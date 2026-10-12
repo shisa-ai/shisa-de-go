@@ -122,6 +122,95 @@ class ApiUrlCase(EnvCase):
                          live_parity.BASE_URL + "/v1/chat/completions")
 
 
+class _FakeResponse:
+    def __init__(self, status_code, text):
+        self.status_code = status_code
+        self.text = text
+
+
+class _FakeClient:
+    """The bit of `httpx.Client` the probe uses, with the answer chosen here."""
+
+    def __init__(self, response=None, raises=None):
+        self.response = response
+        self.raises = raises
+        self.closed = False
+        self.sent = []
+
+    def post(self, url, json=None, headers=None):
+        self.sent.append((url, json, headers))
+        if self.raises is not None:
+            raise self.raises
+        return self.response
+
+    def close(self):
+        self.closed = True
+
+
+class ProbeImagesCase(EnvCase):
+    """The probe's verdict, which is the only thing that may become a skip.
+
+    Two outcomes are not enough. "The server refused an image" is a fact about
+    the deployment; "I could not ask" is a fact about the run, and recording the
+    second as the first drops the gate's image coverage while the run passes.
+    Only a refusal that names images is allowed to be a verdict.
+    """
+
+    def probe(self, response=None, raises=None):
+        client = _FakeClient(response=response, raises=raises)
+        return live_parity.probe_images(client), client
+
+    def test_a_200_is_served(self):
+        (verdict, reason), _ = self.probe(_FakeResponse(200, "ok"))
+        self.assertEqual(verdict, live_parity.PROBE_SERVED)
+        self.assertEqual(reason, "")
+
+    def test_a_refusal_that_names_images_is_a_verdict(self):
+        (verdict, reason), _ = self.probe(
+            _FakeResponse(400, "the model does not support image inputs"))
+        self.assertEqual(verdict, live_parity.PROBE_REFUSED)
+        self.assertIn("400", reason)
+        self.assertIn("image", reason)
+
+    def test_a_transport_error_is_not_a_verdict(self):
+        (verdict, reason), _ = self.probe(raises=RuntimeError("connection reset"))
+        self.assertEqual(verdict, live_parity.PROBE_UNKNOWN)
+        self.assertIn("connection reset", reason)
+
+    def test_a_rate_limit_is_not_a_verdict(self):
+        # 429 is the plausible one on the hosted endpoint, and it says nothing
+        # about vision.
+        (verdict, _), _ = self.probe(_FakeResponse(429, "rate limit exceeded"))
+        self.assertEqual(verdict, live_parity.PROBE_UNKNOWN)
+
+    def test_an_auth_failure_is_not_a_verdict(self):
+        (verdict, _), _ = self.probe(_FakeResponse(401, "invalid api key"))
+        self.assertEqual(verdict, live_parity.PROBE_UNKNOWN)
+
+    def test_a_server_error_is_not_a_verdict(self):
+        (verdict, _), _ = self.probe(_FakeResponse(503, "image backend unavailable"))
+        self.assertEqual(verdict, live_parity.PROBE_UNKNOWN)
+
+    def test_a_refusal_that_says_nothing_about_images_is_not_a_verdict(self):
+        # A 404 from a wrong path and a 400 from a malformed body are bugs in the
+        # probe, which is exactly the class the `api_url` fix came from.
+        (verdict, _), _ = self.probe(_FakeResponse(404, "not found"))
+        self.assertEqual(verdict, live_parity.PROBE_UNKNOWN)
+
+    def test_the_probe_sends_an_image_content_part(self):
+        _, client = self.probe(_FakeResponse(200, "ok"))
+        _, body, headers = client.sent[0]
+        parts = body["messages"][1]["content"]
+        self.assertEqual(parts[0]["type"], "image_url")
+        self.assertTrue(parts[0]["image_url"]["url"].startswith("data:image/png;base64,"))
+        self.assertIn("Authorization", headers)
+
+    def test_an_injected_client_is_not_closed(self):
+        # The caller owns the client it passed in; the probe only closes its own.
+        _, client = self.probe(_FakeResponse(200, "ok"))
+        self.assertFalse(client.closed)
+
+
 # -- the tokenizer pin --------------------------------------------------------
 
 

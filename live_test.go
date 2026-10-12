@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"math"
 	"net/http"
@@ -36,11 +40,16 @@ import (
 // question set in `testdata/live_questions.json`, asked of the same endpoint by
 // both clients, has to produce the same chosen value and the same distribution.
 // The set includes an image question, so the gate covers the one read that goes
-// to a different endpoint path; a server that will not answer an image request
-// skips that case with the server's own answer as the reason rather than failing
-// on a capability the rest of the gate does not use. The rest are the DE-2 half
-// of the Python `tests/test_live.py`; the DE-1 case is absent because this port
-// has no DE-1 read. `docs/PORT.md` records both.
+// to a different endpoint path; the recorder measures whether the endpoint will
+// serve an image at all, and a refusal that names images skips that case with the
+// server's own answer as the reason rather than failing on a capability the rest
+// of the gate does not use. A probe that failed for any other reason stops the
+// recording, so a deployment fact is never inferred from a bug or a bad minute.
+// `TestLiveImageReadUsesTheImage` is the check the parity comparison cannot make,
+// because agreement on an answer about nothing is still agreement: it asks two
+// images that differ only in colour the same question and requires the answer to
+// follow. The rest are the DE-2 half of the Python `tests/test_live.py`; the DE-1
+// case is absent because this port has no DE-1 read. `docs/PORT.md` records both.
 //
 // These tests spend real requests and are not deterministic in the way an
 // offline test is: a server that changes its mind between two runs makes them
@@ -493,7 +502,7 @@ func TestLiveParityAgainstPython(t *testing.T) {
 			"offline with TestClientParity.", meta.SelfDelta, liveTolerance)
 	}
 	if len(meta.Unstable) != 0 {
-		t.Fatalf("the Python client's own passes disagree on the chosen value for %v: "+
+		t.Fatalf("the Python client's own passes disagree for %v: "+
 			"the served checkpoint is not repeatable right now, so this run cannot tell a "+
 			"port difference from the server's. Re-run, or compare the recorded exchanges "+
 			"offline with TestClientParity.", meta.Unstable)
@@ -528,10 +537,11 @@ func TestLiveParityAgainstPython(t *testing.T) {
 	for _, question := range set.Questions {
 		t.Run(question.ID, func(t *testing.T) {
 			if question.Image != "" && !meta.Images {
-				// The endpoint would not answer an image request. That is a property
-				// of the deployment, not of the port, and the reason is the server's
-				// own answer rather than this test's assumption.
-				t.Skipf("the endpoint does not serve images: %s", meta.ImagesReason)
+				// The endpoint refused an image request. That is a property of the
+				// deployment, not of the port, and the reason is the server's own
+				// answer: the recorder aborts rather than recording a skip when the
+				// capability could not be measured at all.
+				t.Skipf("the endpoint refused an image request: %s", meta.ImagesReason)
 			}
 			want, ok := recorded.Questions[question.ID]
 			if !ok {
@@ -558,7 +568,7 @@ func TestLiveParityAgainstPython(t *testing.T) {
 			if !ok {
 				t.Fatalf("no answer for %s", question.Head)
 			}
-			compareLiveAnswer(t, got, want, decision.Raw[question.Head])
+			compareLiveAnswer(t, question.Image != "", got, want, decision.Raw[question.Head])
 		})
 	}
 
@@ -575,16 +585,28 @@ func TestLiveParityAgainstPython(t *testing.T) {
 // liveSystemRenderProblem is the image read's one judgement compared against the
 // recording, as a string rather than an error so it can be tested directly.
 //
-// An empty want means the question was not an image question, and the text read
-// has no such key to compare. A recorded verdict with nothing in `raw` is a
-// problem too: it means the Go client stopped recording the judgement, which is
-// the failure a comparison against a missing key would otherwise pass.
-func liveSystemRenderProblem(want string, raw map[string]any) string {
-	if want == "" {
+// `isImage` comes from the question set, not from the recording, because an empty
+// recorded verdict means "nothing was recorded" and not "this was a text
+// question". Inferring image-ness from the recording made a missing verdict pass
+// the comparison on both sides, which is the failure the comparison exists to
+// catch. A text question has no such key and none is expected; an image question
+// must carry one of the three verdicts on both sides.
+func liveSystemRenderProblem(isImage bool, want string, raw map[string]any) string {
+	rendered, present := raw["system_render"].(string)
+	if !isImage {
+		if want != "" || present {
+			return fmt.Sprintf("a text question recorded a system render (%q in the recording, "+
+				"%q in the answer); only the image read renders the system turn", want, rendered)
+		}
 		return ""
 	}
-	rendered, ok := raw["system_render"].(string)
-	if !ok {
+	switch want {
+	case "string", "differs", "unverified":
+	default:
+		return fmt.Sprintf("the recording carries no system render for an image question (want %q); "+
+			"the comparison would otherwise pass against nothing", want)
+	}
+	if !present {
 		return fmt.Sprintf("the recording says the server rendered the system turn as %q "+
 			"and the answer carries no system_render at all", want)
 	}
@@ -601,10 +623,10 @@ func liveSystemRenderProblem(want string, raw map[string]any) string {
 // `raw` is the head's entry in `Decision.Raw`, which is where the image read's
 // `system_render` verdict lives; a text answer has no such key and none is
 // expected.
-func compareLiveAnswer(t *testing.T, got Answer, want livePythonAnswer, raw map[string]any) {
+func compareLiveAnswer(t *testing.T, isImage bool, got Answer, want livePythonAnswer, raw map[string]any) {
 	t.Helper()
 
-	if problem := liveSystemRenderProblem(want.SystemRender, raw); problem != "" {
+	if problem := liveSystemRenderProblem(isImage, want.SystemRender, raw); problem != "" {
 		t.Error(problem)
 	}
 	if got.Type != want.Type {
@@ -1027,6 +1049,82 @@ func TestLiveModelIsTheRecordedCheckpoint(t *testing.T) {
 		report["readout_version"], recorder.fingerprint(t), recorder.requests)
 }
 
+// TestLiveImageReadUsesTheImage is the check the parity gate cannot make: that
+// the endpoint answered from the pixels rather than accepting the image content
+// part and ignoring it.
+//
+// The gate asks one image question and compares the two clients against each
+// other, so a server that discarded the image would produce agreement on an
+// answer about nothing. This asks the same question of two images that differ
+// only in colour and requires the answer to follow, which is the Python live
+// suite's own image test. It is the one live check whose failure means the image
+// read is not reading.
+func TestLiveImageReadUsesTheImage(t *testing.T) {
+	liveSkip(t)
+	model, _ := liveModel(t, OptionOverrides{})
+
+	for _, testCase := range []struct {
+		want string
+		rgb  color.RGBA
+	}{
+		{"red", color.RGBA{R: 0xff, A: 0xff}},
+		{"blue", color.RGBA{B: 0xff, A: 0xff}},
+	} {
+		t.Run(testCase.want, func(t *testing.T) {
+			image := solidPNG(t, testCase.rgb)
+			decision, err := model.Classify(context.Background(), nil,
+				map[string]HeadSpec{
+					"color": {Options: []Option{{Key: "red"}, {Key: "blue"}},
+						Instructions: "What is the dominant color in this image?"},
+				},
+				ClassifyOptions{
+					CallOptions:          CallOptions{Image: image},
+					IncludeProbabilities: true,
+				})
+			if err != nil {
+				t.Fatalf("Classify: %v", err)
+			}
+			answer, ok := decision.Answers["color"]
+			if !ok {
+				t.Fatal("no answer for the color head")
+			}
+			if got := answer.Value(); got != testCase.want {
+				t.Errorf("the image is %s and the answer is %v; the read is not using the image",
+					testCase.want, got)
+			}
+			// An image answer is never calibrated in either client, and one request
+			// is what the read costs. Both are cheap ways to catch a path that fell
+			// through to the text read.
+			if answer.Calibrated {
+				t.Error("an image answer is calibrated; the image path selects no record")
+			}
+			if answer.Requests != 1 {
+				t.Errorf("the read cost %d requests, want 1", answer.Requests)
+			}
+			if got := decision.Meta["input_type"]; got != "image" {
+				t.Errorf("the report says the input was %v, want image", got)
+			}
+		})
+	}
+}
+
+// solidPNG is a 32x32 image of one colour, built in memory so the test needs no
+// file and the two colours differ in nothing else.
+func solidPNG(t *testing.T, rgba color.RGBA) string {
+	t.Helper()
+	frame := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	for x := 0; x < 32; x++ {
+		for y := 0; y < 32; y++ {
+			frame.SetRGBA(x, y, rgba)
+		}
+	}
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, frame); err != nil {
+		t.Fatalf("encoding the %v image: %v", rgba, err)
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes())
+}
+
 // -- the harness's own logic, offline -----------------------------------------
 //
 // These do not spend a request and do not need `SHISA_DE_LIVE=1`. They pin the
@@ -1037,33 +1135,60 @@ func TestLiveModelIsTheRecordedCheckpoint(t *testing.T) {
 // TestLiveRecorderExitClassification is the branch that decides whether a
 // recorder run whose own passes disagreed is a usable recording or a failure.
 // It was unreachable when any non-zero exit was a plain error, which made the
-// "the server moved, so this run is inconclusive" reporting dead code.
+// "the server moved, so this run is inconclusive" reporting dead code. Exit 4 is
+// the probe's "the vision capability could not be measured", which is a failure
+// like any other rather than an unstable recording.
+func TestLiveRecorderExitClassification(t *testing.T) {
+	for _, testCase := range []struct {
+		status   int
+		unstable bool
+	}{{0, false}, {1, false}, {2, false}, {3, true}, {4, false}} {
+		t.Run(fmt.Sprint(testCase.status), func(t *testing.T) {
+			command := exec.Command(os.Args[0], "-test.run=TestLiveRecorderExitHelper")
+			command.Env = append(os.Environ(), "SHISA_DE_RECORDER_EXIT="+fmt.Sprint(testCase.status))
+			err := command.Run()
+			if got := liveRecorderExitIsUnstable(err); got != testCase.unstable {
+				t.Errorf("exit %d is classified unstable=%v, want %v (err %v)",
+					testCase.status, got, testCase.unstable, err)
+			}
+		})
+	}
+}
+
 // TestLiveSystemRenderComparison pins the image read's one judgement against the
-// recording, including the case that would otherwise pass: a recorded verdict
-// and an answer that carries none.
+// recording, including the two cases that would otherwise pass: a recorded
+// verdict and an answer that carries none, and an image question whose recording
+// carries none.
 func TestLiveSystemRenderComparison(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
+		isImage bool
 		want    string
 		raw     map[string]any
 		problem bool
 	}{
-		{"a text answer has nothing to compare", "",
+		{"a text answer has nothing to compare", false, "",
 			map[string]any{"probabilities": map[string]any{}}, false},
-		{"the same verdict", "differs",
+		{"a text answer that recorded a verdict", false, "differs",
+			map[string]any{"system_render": "differs"}, true},
+		{"the same verdict", true, "differs",
 			map[string]any{"system_render": "differs"}, false},
-		{"the string form", "string",
+		{"the string form", true, "string",
 			map[string]any{"system_render": "string"}, false},
-		{"a different verdict", "differs",
+		{"a different verdict", true, "differs",
 			map[string]any{"system_render": "string"}, true},
-		{"no verdict recorded at all", "differs",
+		{"no verdict recorded at all", true, "differs",
 			map[string]any{"probabilities": map[string]any{}}, true},
-		{"a verdict that is not a string", "differs",
+		{"a null verdict in the recording", true, "",
+			map[string]any{"system_render": "differs"}, true},
+		{"an unreadable verdict in the recording", true, "something",
+			map[string]any{"system_render": "something"}, true},
+		{"a verdict that is not a string", true, "differs",
 			map[string]any{"system_render": 7}, true},
-		{"a nil raw entry", "differs", nil, true},
+		{"a nil raw entry", true, "differs", nil, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			problem := liveSystemRenderProblem(tc.want, tc.raw)
+			problem := liveSystemRenderProblem(tc.isImage, tc.want, tc.raw)
 			if tc.problem && problem == "" {
 				t.Errorf("want %q against %v reported no problem", tc.want, tc.raw)
 			}
@@ -1097,23 +1222,6 @@ func TestLiveQuestionSetHasAnImageCase(t *testing.T) {
 	}
 	if images == 0 {
 		t.Fatal("no question in the live set carries an image")
-	}
-}
-
-func TestLiveRecorderExitClassification(t *testing.T) {
-	for _, testCase := range []struct {
-		status   int
-		unstable bool
-	}{{0, false}, {1, false}, {2, false}, {3, true}} {
-		t.Run(fmt.Sprint(testCase.status), func(t *testing.T) {
-			command := exec.Command(os.Args[0], "-test.run=TestLiveRecorderExitHelper")
-			command.Env = append(os.Environ(), "SHISA_DE_RECORDER_EXIT="+fmt.Sprint(testCase.status))
-			err := command.Run()
-			if got := liveRecorderExitIsUnstable(err); got != testCase.unstable {
-				t.Errorf("exit %d is classified unstable=%v, want %v (err %v)",
-					testCase.status, got, testCase.unstable, err)
-			}
-		})
 	}
 }
 
