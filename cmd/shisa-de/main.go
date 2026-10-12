@@ -122,6 +122,7 @@ type args struct {
 	confidence       bool
 	probabilities    bool
 	image            string
+	imageSet         bool
 	imageTopLogprobs int
 }
 
@@ -217,6 +218,10 @@ func parse(command string, argv []string) (*args, error) {
 	// and the empty string is a state like any other. `flag` cannot tell the two
 	// apart, so the flag is recorded through a `flag.Value`.
 	state := optionalStringValue{}
+	// `--image` needs the same treatment: an absent `--image` is a text read and
+	// `--image ""` is an unusable reference, which the Python command line
+	// reports as `image is empty` rather than answering the text question.
+	image := optionalStringValue{}
 	labels := optionalStringValue{}
 	calibration := optionalStringValue{}
 	family := optionalStringValue{}
@@ -259,8 +264,7 @@ func parse(command string, argv []string) (*args, error) {
 		flags.Var(&state, "state", "JSON state, or plain text; a built-in example by default")
 		flags.StringVar(&parsed.prompt, "prompt", "", "the question to ask (default: derived from the head name)")
 		flags.Var(&labels, "labels", "comma separated labels")
-		flags.StringVar(&parsed.image, "image", "",
-			"local image path, HTTP(S) URL, or image data URL")
+		flags.Var(&image, "image", "local image path, HTTP(S) URL, or image data URL")
 		flags.IntVar(&parsed.imageTopLogprobs, "image-top-logprobs",
 			shisade.DefaultImageTopLogprobs,
 			"image logprob limit (must be allowed by the server)")
@@ -279,6 +283,7 @@ func parse(command string, argv []string) (*args, error) {
 		return nil, fmt.Errorf("unexpected argument %q", flags.Arg(0))
 	}
 	parsed.state, parsed.stateSet = state.value, state.set
+	parsed.image, parsed.imageSet = image.value, image.set
 	parsed.labels = labels.value
 	parsed.calibration, parsed.calibrationSet = calibration.value, calibration.set
 	parsed.family, parsed.familySet = family.value, family.set

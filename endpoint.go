@@ -127,8 +127,11 @@ type chatPromptEntry struct {
 	Logprob *float64 `json:"logprob"`
 	Rank    *int     `json:"rank"`
 	// DecodedToken is the server's own reading of the key, which the boundary
-	// check compares against the locally resolved terminator.
-	DecodedToken string `json:"decoded_token"`
+	// check compares against the locally resolved terminator. It is a pointer so
+	// an entry that omits the field, or sends null, is distinguishable from one
+	// that sends the empty string: the Python client reads it with `.get`, which
+	// is None in the first two cases, and the refusal names what arrived.
+	DecodedToken *string `json:"decoded_token"`
 }
 
 // chatChoice is a chat response's choice.
@@ -220,10 +223,13 @@ func chatLogprobEntry(entry any) (string, float64, bool) {
 
 // firstChatChoice is the choice a chat response must carry, or an error naming
 // what the response had instead.
-func firstChatChoice(response chatResponse, what string) (chatChoice, error) {
+//
+// The message is the Python client's `_first_choice` verbatim, with no suffix
+// naming the read: both chat reads send the same request shape, and the Python
+// client does not distinguish them here either.
+func firstChatChoice(response chatResponse) (chatChoice, error) {
 	if len(response.Choices) == 0 {
-		return chatChoice{}, &ReadoutError{Message: fmt.Sprintf(
-			"the chat response carries no choices for %s", what)}
+		return chatChoice{}, &ReadoutError{Message: "the chat response carries no choices"}
 	}
 	return response.Choices[0], nil
 }

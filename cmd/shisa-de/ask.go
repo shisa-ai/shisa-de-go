@@ -17,6 +17,18 @@ import (
 // `explain` is the command for those.
 func runAsk(ctx context.Context, args *args, model *shisade.DecisionModel,
 	stdout, stderr io.Writer) int {
+	// An explicitly empty `--image` is an unusable reference, not "no image". The
+	// Python command line passes whatever it was given to `prepare_image`, which
+	// reports it as `image is empty` rather than answering the text question.
+	// `CallOptions.Image` cannot express the difference — empty means no image
+	// there — so the flag records whether it was given, and the message comes from
+	// the library rather than from a second copy of it here.
+	if args.imageSet && args.image == "" {
+		if _, err := shisade.PrepareImage(args.image); err != nil {
+			fmt.Fprintf(stderr, "shisa-de ask: %v\n", err)
+			return 1
+		}
+	}
 	state := stateFrom(args.state, args.stateSet)
 	if args.image != "" && !args.stateSet {
 		// An image question with no state asks about the image alone, which is

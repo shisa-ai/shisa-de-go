@@ -215,7 +215,10 @@ func pythonPath(text string) (string, error) {
 		}
 		components = append(components, part)
 	}
-	if len(components) != 0 && strings.HasPrefix(components[0], "~") {
+	// pathlib's guard: `~` is expanded only when the path has neither a drive nor
+	// a root, so `/~/x.png` and `//~/x.png` keep their literal first component.
+	if drive == "" && root == "" && len(components) != 0 &&
+		strings.HasPrefix(components[0], "~") {
 		home, err := pythonExpandUser(components[0])
 		if err != nil {
 			return "", err

@@ -26,10 +26,12 @@ import (
 // DE-2 contract only, so every question is read twice, and thought about when
 // that read is unsure. Every answer records its strategy and cost.
 //
-// The Python client also reads images and, on DE-1, overflows a wide text choice
-// through balanced chunks. Neither is ported: this client's readout has no image
-// path and no DE-1 read, so `Classify` and `Decide` have no image argument and a
-// DE-1 checkpoint is refused outright.
+// The Python client also reads images, and on DE-1 overflows a wide text choice
+// through balanced chunks. Images are ported: pass one on `CallOptions.Image`
+// and every question in the call is asked about it, through a single read that
+// the server renders. Overflow is not, because DE-2 reads a wide text choice
+// natively and DE-1 is the only family that needs it. A DE-1 checkpoint is
+// refused outright rather than read through the other family's contract.
 
 // DefaultEndpoint is the hosted DE endpoint.
 const DefaultEndpoint = "https://api.shisa.ai/openai"
@@ -1249,8 +1251,15 @@ func imageRaw(read CodeRead, options []Option, debug bool) map[string]any {
 		"options":          optionKeys(options),
 	}
 	if debug {
-		raw["prompt"] = read.Prompt
-		raw["top_logprobs"] = read.TopLogprobs
+		// An image read has no text prompt: the server renders it, so the Python
+		// client's `prompt` is None there. The port's field is the empty string,
+		// which must not reach the caller as an empty prompt.
+		if read.Prompt == "" {
+			raw["prompt"] = nil
+		} else {
+			raw["prompt"] = read.Prompt
+		}
+		raw["top_logprobs"] = optionalFloatMap(read.TopLogprobs)
 		if read.Messages != nil {
 			raw["messages"] = read.Messages
 		}

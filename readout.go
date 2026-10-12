@@ -527,6 +527,18 @@ func (r *Readout) slotLocked(code string) (Slot, error) {
 	if err != nil {
 		return Slot{}, err
 	}
+	slot, err := slotFor(tok, code, r.tokenizerSource)
+	if err != nil {
+		return Slot{}, err
+	}
+	r.slots[code] = slot
+	return slot, nil
+}
+
+// slotFor resolves one code against one tokenizer, so a read that already holds
+// a tokenizer keeps using it rather than picking up a replacement part way
+// through.
+func slotFor(tok Tokenizer, code, source string) (Slot, error) {
 	ids := tok.Encode(code)
 	if len(ids) != 1 || tok.Decode(ids) != code {
 		// Python's shared slot resolver says "answer letter ... read with letter
@@ -534,11 +546,44 @@ func (r *Readout) slotLocked(code string) (Slot, error) {
 		// are codes. The quoting is still Python's `!r`.
 		return Slot{}, &ReadoutError{Message: fmt.Sprintf(
 			"answer code %s is not one token for tokenizer %s; this checkpoint cannot be "+
-				"read with the codebook", pythonQuote(code), pythonQuote(r.tokenizerSource))}
+				"read with the codebook", pythonQuote(code), pythonQuote(source))}
 	}
-	slot := Slot{Code: code, TokenID: ids[0], Text: code}
-	r.slots[code] = slot
-	return slot, nil
+	return Slot{Code: code, TokenID: ids[0], Text: code}, nil
+}
+
+// codeSlotsFor is [Readout.CodeSlots] against one tokenizer.
+//
+// A slot resolved from a tokenizer the readout has since replaced is still the
+// code it names, so it is used; it is only written to the cache when the
+// tokenizer is still the readout's, which is the rule [Readout.checkCodeBoundaryFor]
+// follows. That is what keeps a replacement from leaving the cache holding ids
+// from two tokenizers.
+func (r *Readout) codeSlotsFor(tok Tokenizer, generation uint64, count int) ([]Slot, error) {
+	codes, err := CodesFor(count)
+	if err != nil {
+		return nil, err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := r.tokenizerGeneration == generation
+	slots := make([]Slot, len(codes))
+	for i, code := range codes {
+		if current {
+			if slot, ok := r.slots[code]; ok {
+				slots[i] = slot
+				continue
+			}
+		}
+		slot, err := slotFor(tok, code, r.tokenizerSource)
+		if err != nil {
+			return nil, err
+		}
+		if current {
+			r.slots[code] = slot
+		}
+		slots[i] = slot
+	}
+	return slots, nil
 }
 
 // CodeSlots resolves the first count codes of the codebook, in codebook order.
@@ -1013,6 +1058,14 @@ func (r *Readout) ReadImage(ctx context.Context, state any, question Question, i
 		return CodeRead{}, &ReadoutError{Message: fmt.Sprintf(
 			"top_logprobs must be a positive integer, got %d", topLogprobs)}
 	}
+	// One tokenizer for the whole read: the slots, the terminator and the
+	// system-render comparison all have to come from the same one, or a
+	// concurrent [Readout.SetTokenizer] could have this read confirm the boundary
+	// with one tokenizer and compare the server's rendering with another.
+	tok, generation, err := r.tokenizerSnapshot()
+	if err != nil {
+		return CodeRead{}, err
+	}
 	// The image readout keeps the letter limit: 26 options, the same as the DE-1
 	// scaffold, because it is a chat request the server renders rather than a
 	// codebook read.
@@ -1020,7 +1073,7 @@ func (r *Readout) ReadImage(ctx context.Context, state any, question Question, i
 	if err != nil {
 		return CodeRead{}, err
 	}
-	slots, err := r.CodeSlots(len(options_))
+	slots, err := r.codeSlotsFor(tok, generation, len(options_))
 	if err != nil {
 		return CodeRead{}, err
 	}
@@ -1032,7 +1085,7 @@ func (r *Readout) ReadImage(ctx context.Context, state any, question Question, i
 				"model with --max-logprobs %d or higher",
 			len(slots), topLogprobs, topLogprobs, len(slots)-topLogprobs, len(slots), len(slots))}
 	}
-	prefixID, err := r.AnswerPrefixID()
+	prefixID, err := r.answerPrefixIDFor(tok)
 	if err != nil {
 		return CodeRead{}, err
 	}
@@ -1056,14 +1109,14 @@ func (r *Readout) ReadImage(ctx context.Context, state any, question Question, i
 	if err := r.chatCompletions(ctx, body, &response); err != nil {
 		return CodeRead{}, err
 	}
-	choice, err := firstChatChoice(response, "the image read")
+	choice, err := firstChatChoice(response)
 	if err != nil {
 		return CodeRead{}, err
 	}
 	if err := checkImageBoundary(response, prefixID); err != nil {
 		return CodeRead{}, err
 	}
-	systemRender, err := r.systemRender(response, state, question)
+	systemRender, err := r.systemRenderFor(tok, response, state, question)
 	if err != nil {
 		return CodeRead{}, err
 	}
@@ -1167,15 +1220,21 @@ func checkImageBoundary(response chatResponse, prefixID int) error {
 		return &ReadoutError{Message: "the chat response's prompt_logprobs carries no token at " +
 			"the answer boundary"}
 	}
-	tokenID, entry := boundaryEntry(last, prefixID)
-	decoded := ""
-	if entry != nil {
-		decoded = entry.DecodedToken
+	key, entry := boundaryEntry(last, prefixID)
+	// Python reads the entry with `.get("decoded_token")`, so an entry that
+	// omits it, or is not an object, is None rather than the empty string.
+	decoded := "None"
+	if entry != nil && entry.DecodedToken != nil {
+		decoded = pythonQuote(*entry.DecodedToken)
 	}
-	if tokenID != prefixID || decoded != AnswerPrefix {
+	// The comparison is on the key's text, which is how the Python client
+	// compares it: a key that is not a token id at all is reported as itself
+	// rather than as an id.
+	if key != strconv.Itoa(prefixID) || entry == nil || entry.DecodedToken == nil ||
+		*entry.DecodedToken != AnswerPrefix {
 		return &ReadoutError{Message: fmt.Sprintf(
-			"the last prompt token is %s (id %d), not %s (id %d); the distribution was not "+
-				"read at the answer boundary", pythonQuote(decoded), tokenID,
+			"the last prompt token is %s (id %s), not %s (id %d); the distribution was not "+
+				"read at the answer boundary", decoded, key,
 			pythonQuote(AnswerPrefix), prefixID)}
 	}
 	return nil
@@ -1190,25 +1249,34 @@ func checkImageBoundary(response chatResponse, prefixID int) error {
 // takes the dict's first key, which is insertion order there and unordered here,
 // so this looks for the terminator by id and otherwise reports the lowest id:
 // the same answer twice, rather than a different one each run.
-func boundaryEntry(entries map[string]*chatPromptEntry, prefixID int) (int, *chatPromptEntry) {
-	best := 0
+//
+// The key is returned as the server sent it, so a refusal can print it. A key
+// that is not a token id cannot be the boundary, and it is reported as itself
+// rather than as an id it does not have.
+func boundaryEntry(entries map[string]*chatPromptEntry, prefixID int) (string, *chatPromptEntry) {
+	wanted := strconv.Itoa(prefixID)
+	best := ""
 	var chosen *chatPromptEntry
 	found := false
 	for key, entry := range entries {
+		if key == wanted {
+			return key, entry
+		}
 		id, err := strconv.Atoi(key)
 		if err != nil {
-			// A key that is not a token id cannot be the boundary. It is still
-			// what the server sent, so it is reported when nothing else can be.
+			// A key that is not a token id is still what the server sent, so it is
+			// reported when nothing else can be.
 			if !found {
-				best, chosen, found = 0, entry, true
+				best, chosen, found = key, entry, true
 			}
 			continue
 		}
-		if id == prefixID {
-			return id, entry
+		if !found {
+			best, chosen, found = key, entry, true
+			continue
 		}
-		if !found || id < best {
-			best, chosen, found = id, entry, true
+		if previous, err := strconv.Atoi(best); err != nil || id < previous {
+			best, chosen = key, entry
 		}
 	}
 	return best, chosen
@@ -1231,6 +1299,14 @@ func (r *Readout) systemRender(response chatResponse, state any, question Questi
 	if err != nil {
 		return "", err
 	}
+	return r.systemRenderFor(tok, response, state, question)
+}
+
+// systemRenderFor is [Readout.systemRender] against one tokenizer, so a read
+// that already holds one compares the server's prompt with the same tokenizer it
+// resolved the answer boundary with.
+func (r *Readout) systemRenderFor(tok Tokenizer, response chatResponse, state any,
+	question Question) (string, error) {
 	systemPrompt := r.systemLine()
 	local, err := r.Render(state, question, RenderOptions{})
 	if err != nil {
