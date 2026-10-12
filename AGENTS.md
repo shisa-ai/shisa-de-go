@@ -300,6 +300,16 @@ version, and the test fails when the fixture disagrees with it.
   where the record does not apply. `docs/PORT.md` records both sides. The Go test
   derives the expectation from the model's own applicability rather than writing
   the temperature down; do not replace it with a literal.
+- There is no live measurement of the image read, here or in the Python suite.
+  It needs a vision-enabled server, and the servers every other number here came
+  from are text-only, so every image number in these docs is either the DE-2
+  page's own (measured in the research repository, with its fingerprint) or a
+  replay of the Python client's recorded verdicts. The readout replay is request
+  for request against an `httptest` stub and the client-level parts are Go-only
+  tests, which is weaker than a recording: the raw block's `prompt` and
+  `top_logprobs` shapes went unnoticed until a review found them. Say which of
+  those a claim rests on rather than writing it as if this code had been measured
+  against a server.
 
 ## Git Discipline
 

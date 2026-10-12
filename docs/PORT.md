@@ -19,6 +19,9 @@ client deliberately behaves differently.
 | `httpx` | `net/http` in `endpoint.go` |
 | `shisa_de/overflow.py` | not ported; DE-1 only, so nothing here needs it |
 | `shisa_de/images.py` | `images.go` |
+| the exception classes in `questions.py`, `readout.py` and `images.py` | `errors.go` |
+| the codebook load in `readout.py` | `codebook.go` |
+| `repr()` of a `str`, and `str.isprintable()` | `pythonprintable.go`, and `pythonQuote` in `client.go` |
 | `shisa_de/data/*.json` | `data/*.json`, embedded with `go:embed` |
 | `shisa_de/cli.py` | `cmd/shisa-de/` |
 | `tests/test_offline.py` | `*_test.go` with a stub tokenizer and `httptest` |
@@ -27,6 +30,19 @@ client deliberately behaves differently.
 The tokenizer has no Python counterpart as a module: the Python client calls
 `transformers.AutoTokenizer`. This port implements the tokenizer in
 `tokenizer/` so the library needs neither cgo nor a Python runtime.
+
+Three rows cross a module boundary on the Python side. `errors.go` holds the four
+classes Python defines in three places -- `QuestionError` in `questions.py`,
+`ReadoutError` and `ReadoutHTTPError` in `readout.py`, `ImageError` in
+`images.py` -- because a caller catching them here does so with `errors.As` and
+the package is one namespace. `codebook.go` is the load of
+`data/codebook-de2.json` that Python does inside `readout.py`, split out because
+this port reads the codes from an embedded copy, lazily on first use rather than
+at import. `pythonprintable.go` is the `str.isprintable()` half of `repr()`:
+Python spells a label with `{value!r}` in most of the messages this port has to
+reproduce byte for byte, Go's `strconv.Quote` is a different predicate against a
+different Unicode table, so the port embeds the interpreter's predicate over
+every code point and `pythonQuote` in `client.go` does the escaping around it.
 
 The file mapping is the target layout, not a description of the tree: M1 landed
 the codebook and the tokenizer; M2 landed the renderer, family resolution, the

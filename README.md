@@ -179,8 +179,9 @@ if err != nil {
 	return err
 }
 
-view := decision.Values["animal"].(map[string]any)
-fmt.Println(view["label"])
+view := decision.Values["animal"].(shisade.Object)
+label, _ := view.Get("label")
+fmt.Println(label)
 fmt.Println(decision.Answers["animal"].Probabilities)
 ```
 
@@ -191,6 +192,19 @@ shisa-de ask --image photo.jpg --labels cat,dog,bird --prompt 'What animal is sh
 `Decide(..., CallOptions{Image: "photo.jpg"})` asks typed questions about an
 image too. Local files are uploaded; URLs are fetched by the server. Supported
 formats are PNG, JPEG, and WebP.
+
+`PrepareImage` is what turns a local path into the data URL a request carries,
+and `ValidateImageURL` checks one that is already a URL. Both are what `Classify`
+and `Decide` call, and both return an `*ImageError` carrying the Python client's
+message when a reference is rejected, so a caller who would rather fail before
+spending a request can call them directly.
+
+If your server's chat template has been fixed so that an image request renders
+the system turn the way a text request does, `ImageReadOptions{RequireStringSystem:
+true}` on a direct `Readout.ReadImage` call makes a differing render an error
+instead of a recorded verdict. `DecisionModel` leaves it off, because a stock
+vLLM renders the extra space on every image request and rejects images outright
+when told to pass strings.
 
 Image questions take at most 26 options and return uncalibrated probabilities.
 That is the default rather than a rule: `Calibrated` is off for an image because

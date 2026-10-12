@@ -296,9 +296,10 @@ func TestReadmeSectionsArePresent(t *testing.T) {
 	}
 	sort.Strings(headings)
 	for _, want := range []string{
-		"Ask typed questions", "Classify with labels", "Command line", "Development",
-		"Large label sets", "License", "Performance", "Probabilities and calibration",
-		"Quick start", "Read settings", "Use a local server",
+		"Ask typed questions", "Classify images", "Classify with labels", "Command line",
+		"Development", "Large label sets", "License", "Performance",
+		"Probabilities and calibration", "Quick start", "Read settings",
+		"Use a local server",
 	} {
 		if !containsString(headings, want) {
 			t.Errorf("README.md has no %q section; it has %v", want, headings)
@@ -306,18 +307,30 @@ func TestReadmeSectionsArePresent(t *testing.T) {
 	}
 }
 
-// TestReadmeNamesTheSectionsThisPortCannotHave keeps the deliberate absences
-// stated rather than silently missing, so a reader looking for the image path
-// finds out why it is not there.
-func TestReadmeNamesTheSectionsThisPortCannotHave(t *testing.T) {
+// TestReadmeNamesTheDeliberateAbsences keeps the real absences stated rather
+// than silently missing, so a reader looking for one finds out why it is not
+// there.
+//
+// The image path used to be on this list. It is implemented now and has its own
+// section, which TestReadmeSectionsArePresent requires; what is left is the DE-1
+// family and the overflow machinery that belongs to it.
+func TestReadmeNamesTheDeliberateAbsences(t *testing.T) {
 	raw, err := os.ReadFile("README.md")
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	for _, want := range []string{"DE-1", "image", "overflow"} {
+	for _, want := range []string{"DE-1", "overflow"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("README.md never mentions %q, so its absence is unexplained", want)
+		}
+	}
+	// The image read is present, and a reader should not be told otherwise. These
+	// are the phrasings the README carried while it was a gap; a future edit that
+	// reinstates one of them fails here.
+	for _, stale := range []string{"No images", "not implement", "no image path"} {
+		if strings.Contains(text, stale) {
+			t.Errorf("README.md says %q, and the image read is implemented", stale)
 		}
 	}
 }
