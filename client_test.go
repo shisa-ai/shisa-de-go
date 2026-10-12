@@ -1017,6 +1017,14 @@ func TestCallerVisibleMapsHoldValuesNotPointers(t *testing.T) {
 		t.Errorf("an image read's debug prompt is %#v, want nil: the server rendered the "+
 			"prompt, so there is no local one", prompt)
 	}
+	// The debug keys a caller reads, each one named: an image read has no local
+	// prompt, its top-k is the server's, and `messages` and `system_render` are
+	// what the server did with the turn the client could not render itself.
+	for _, key := range []string{"prompt", "top_logprobs", "messages", "system_render"} {
+		if _, present := decision.Raw["intent"][key]; !present {
+			t.Errorf("a debug image raw head has no %q: %v", key, decision.Raw["intent"])
+		}
+	}
 }
 
 // assertNoPointers fails on any pointer inside a caller-visible value, at any
@@ -1489,9 +1497,10 @@ func TestClassifyImageIsOneDirectRead(t *testing.T) {
 		t.Errorf("the read spent %d requests and %d logical reads, want 1 and 1",
 			answer.Requests, answer.LogicalReads)
 	}
-	// The image path has no fit: the caller's `Calibrated` is not even consulted,
-	// because the default is already off and a temperature of 1.0 leaves
-	// `Calibrated` false whatever was asked for.
+	// The image path has no fit in the shipped record, so a temperature of 1.0
+	// leaves `Calibrated` false whatever was asked for. The caller's `Calibrated`
+	// is still consulted -- TestClassifyImageHonoursAnExplicitCalibration pins
+	// that -- it just has nothing to apply here.
 	if answer.Calibrated || answer.Temperature != 1.0 {
 		t.Errorf("an image answer is calibrated at temperature %v", answer.Temperature)
 	}
@@ -1521,15 +1530,22 @@ func TestClassifyImageIsOneDirectRead(t *testing.T) {
 
 // TestClassifyImageKeepsTheLetterLimit pins that a choice above 26 options is
 // refused rather than sent, and refused before any request.
+//
+// Overflow is the DE-1 mechanism for exactly this case, so it is also asked for
+// here: the image path must refuse rather than balance chunks, whatever the
+// caller requested. Python's `_run` refuses at the same point, before the
+// overflow heads are even collected.
 func TestClassifyImageKeepsTheLetterLimit(t *testing.T) {
 	model, server := newStubModel(t, MaxCodes)
 	options := make([]Option, MaxOptions+1)
 	for index := range options {
 		options[index] = Option{Key: fmt.Sprintf("option-%d", index)}
 	}
+	finalistTop1 := OverflowStrategies[0]
 	_, err := model.Classify(context.Background(), map[string]any{},
 		map[string]HeadSpec{"intent": {Options: options}},
-		ClassifyOptions{CallOptions: CallOptions{Image: imageTestURL}})
+		ClassifyOptions{CallOptions: CallOptions{Image: imageTestURL,
+			Overrides: OptionOverrides{Overflow: &finalistTop1}}})
 	if err == nil {
 		t.Fatal("an image choice above the letter limit was accepted")
 	}
@@ -1584,6 +1600,73 @@ func TestDecideWithAnImage(t *testing.T) {
 	}
 	if answer.Calibrated {
 		t.Errorf("an image answer is calibrated at temperature %v", answer.Temperature)
+	}
+}
+
+// TestClassifyImageHonoursAnExplicitCalibration pins both halves of the image
+// path's calibration rule.
+//
+// The default is off because the shipped record has no fit for that read. An
+// explicit `Calibrated` is still consulted, which is what the Python client does
+// (`calibrated = image_url is None` only when the caller passed None), so a
+// record that does carry an image fit is applied when it is asked for and left
+// alone when it is not. The fit is supplied here rather than taken from the
+// shipped record, because no shipped record has one.
+func TestClassifyImageHonoursAnExplicitCalibration(t *testing.T) {
+	calibration := Calibration{
+		Temperatures:   map[string]float64{"choice": 2.0, "noul": 2.0},
+		Reads:          map[string]map[string]float64{"image": {"choice": 2.0, "noul": 2.0}},
+		ReadoutVersion: ReadoutVersionFor(FamilyDE2),
+		Model:          "shisa-ai/shisa-de-2",
+		Family:         FamilyDE2,
+	}
+	newModel := func(t *testing.T) *DecisionModel {
+		t.Helper()
+		readout, _ := newPolicyReadout(t, MaxCodes,
+			chatBody(`{"token":"A","logprob":-0.1},{"token":"B","logprob":-1.0}`))
+		model, err := NewDecisionModel(DecisionModelConfig{
+			BaseURL: "http://stub.invalid", Model: "shisa-ai/shisa-de-2",
+			Tokenizer: "shisa-ai/shisa-de-2", Calibration: &calibration, Readout: readout,
+		})
+		if err != nil {
+			t.Fatalf("NewDecisionModel: %v", err)
+		}
+		return model
+	}
+	ask := func(t *testing.T, model *DecisionModel, options CallOptions) Answer {
+		t.Helper()
+		options.Image = imageTestURL
+		decision, err := model.Classify(context.Background(), map[string]any{},
+			map[string]HeadSpec{"intent": {Options: []Option{{Key: "spam"}, {Key: "ham"}}}},
+			ClassifyOptions{CallOptions: options})
+		if err != nil {
+			t.Fatalf("Classify: %v", err)
+		}
+		return decision.Answers["intent"]
+	}
+
+	// The default: the fit exists and is not applied.
+	plain := ask(t, newModel(t), CallOptions{})
+	if plain.Calibrated || plain.Temperature != 1.0 {
+		t.Errorf("an image answer was calibrated without being asked: calibrated=%v "+
+			"temperature=%v", plain.Calibrated, plain.Temperature)
+	}
+
+	// The override: the same call, asked for.
+	asked := ask(t, newModel(t), CallOptions{Calibrated: boolPointer(true)})
+	if !asked.Calibrated || asked.Temperature != 2.0 {
+		t.Errorf("an explicit Calibrated was ignored with an image: calibrated=%v "+
+			"temperature=%v", asked.Calibrated, asked.Temperature)
+	}
+	if asked.Choice == nil || plain.Choice == nil || *asked.Choice != *plain.Choice {
+		t.Errorf("the fit changed the choice from %v to %v, so this test is not "+
+			"distinguishing the two cases", plain.Choice, asked.Choice)
+	}
+	// The distribution moved, which is what makes the assertion above an
+	// observation rather than a report of the flag.
+	if asked.Probabilities["spam"] == plain.Probabilities["spam"] {
+		t.Errorf("the tempered distribution is identical to the raw one: %v",
+			asked.Probabilities)
 	}
 }
 
