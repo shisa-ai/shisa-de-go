@@ -18,7 +18,7 @@ client deliberately behaves differently.
 | `json.dumps` / `json.loads` | `pyjson.go` |
 | `httpx` | `net/http` in `endpoint.go` |
 | `shisa_de/overflow.py` | not ported; DE-1 only, so nothing here needs it |
-| `shisa_de/images.py` | not ported; see "No images" below -- DE-2 has an image read, this port does not implement it |
+| `shisa_de/images.py` | `images.go` |
 | `shisa_de/data/*.json` | `data/*.json`, embedded with `go:embed` |
 | `shisa_de/cli.py` | `cmd/shisa-de/` |
 | `tests/test_offline.py` | `*_test.go` with a stub tokenizer and `httptest` |
@@ -32,8 +32,45 @@ The file mapping is the target layout, not a description of the tree: M1 landed
 the codebook and the tokenizer; M2 landed the renderer, family resolution, the
 question types and the Python-JSON writer; M3 landed the DE-2 readout and its
 HTTP layer; M4 landed the policy, the calibration records and the friendly layer;
-M5 landed the command line; M6 landed the live suite and its parity gate. The
-port is complete.
+M5 landed the command line; M6 landed the live suite and its parity gate; M7
+landed the image read, which is the last read the DE-2 page specifies. The port
+is complete.
+
+**The image read is part of that mapping.** DE-2 is not a text-only model: it has
+an image read, specified in `docs/READOUT-DE2.md` section 6 -- a page this
+repository ships -- and this port implements it. `images.go` builds the
+`image_url` content part from a local path, an HTTP(S) URL or a data URL;
+`Readout.ReadImage` posts to `/v1/chat/completions` and reads the option letters
+from the returned top-k; `Classify` and `Decide` take the image on `CallOptions`;
+`Answer.SystemRender` records what the server did with the system turn; `Health`
+reports it as `chat_system_render`; and `ask` takes `--image` and
+`--image-top-logprobs`. The readout version stays `de2-codebook-v1`, because the
+image read is part of that contract rather than a new one.
+
+It is a third read beside the text one, not a variant of it: an image cannot
+travel through the text readout at all, because the client renders that prompt
+itself with the checkpoint's chat template and only the server can expand an
+image placeholder into the image tokens the checkpoint expects. So the image
+question posts to the chat endpoint, lets the server render, and takes one direct
+read: no repeat, no thinking step, at most 26 options, no fallback for a letter
+outside the returned top-k, and no calibration.
+
+The system turn is the one place the read has to make a judgement rather than
+follow a rule. vLLM hands Gemma 4's chat template every message of an image
+request as content parts, and the template writes a space after a system message
+that arrives that way, so the image prompt carries one token the text prompt does
+not. DE-2 was trained on the string rendering, without images. This port records
+the difference in `Answer.SystemRender` (`string`, `differs` or `unverified`) and
+answers anyway, which is what the Python client does, and exposes
+`ImageReadOptions.RequireStringSystem` for a server whose template has been
+fixed. Section 6 of the DE-2 page has the measurement the judgement rests on.
+
+The reference API is otherwise Python's, message for message:
+`testdata/images_parity.json` replays 51 references through both clients and
+compares the verdicts and the error text. Two differences are language rather
+than behaviour: Python's `prepare_image` also accepts a `pathlib.Path` and
+rejects other types by name, which a Go `string` parameter cannot express, and
+`ImageError` is its own type here where Python's subclasses `ValueError`.
 
 ## Deliberate differences
 
@@ -253,46 +290,37 @@ returns an `UnsupportedFamilyError` rather than a working client, and that
 error's message says to pass a DE-2 checkpoint. The Python client with the same
 empty config works; this one does not.
 
-**No images, and this one is a scope decision rather than a family limit.**
-DE-2 is not a text-only model. It has an image read, specified in
-`docs/READOUT-DE2.md` section 6 -- a page this repository ships -- and the Python
-client implements it for both families. It is a third read beside the text one,
-because an image cannot travel through the text readout at all: the client
-renders that prompt itself with the checkpoint's chat template, and only the
-server can expand an image placeholder into the image tokens the checkpoint
-expects. So an image question posts to `/v1/chat/completions`, lets the server
-render the prompt, and takes one direct read: no repeat, no thinking step, at
-most 26 options, no fallback for a code outside the returned top-k, and no
-calibration. `readout_version` stays `de2-codebook-v1`.
+**The image path resolves an ambiguous answer boundary by token id.** The image
+readout cannot render its prompt locally, so it confirms the answer position from
+the server's side: the last prompt token must be the terminator's own id.
+`prompt_logprobs: 0` returns one token per position, so a well-formed response has
+one entry at the boundary; a position carrying several is ambiguous and both
+clients refuse it. Before refusing, the Python client takes the dict's first key,
+which is insertion order there. A Go map has none, so `boundaryEntry` looks for
+the terminator by id and otherwise reports the lowest id: the same answer twice
+rather than a different one each run. `checkImageBoundary`'s refusal names the
+token it resolved, which is the one image-path message that differs in wording
+from Python's.
 
-This port left that read out rather than finding it impossible. `readout.go` and
-`render.go` have no chat path at all, so there is no `/v1/chat/completions`
-request, no `image_url` content part, and no `system_render` recording;
-`Classify` and `Decide` take no image argument, and `Health` has no
-`chat_system_render` entry. What a port needs is `shisa_de/images.py` (161 lines:
-media-type sniffing by file signature, base64 data URLs for local files, URL
-validation), a `read_image` on the readout, the image argument and its rules on
-the two entry points, the probe, and `--image` on the command line.
+**The image path reads the extension the way Python 3.14 reads it.**
+`pathlib.Path.suffix` changed in 3.14, and `..png` and `a.` are the whole of the
+difference: neither can name a supported image, so both interpreters accept and
+reject the same set of files. `TestPrepareImageSuffixDivergence` records the
+divergence, and `testdata/images_parity.meta.json` records the interpreter the
+fixture was generated under.
 
-The part that needs a decision rather than plumbing is the system turn. vLLM
-hands Gemma 4's chat template every message of an image request as content
-parts, and the template writes a space after a system message that arrives that
-way, so the image prompt carries one token the text prompt does not. DE-2 was
-trained on the string rendering, without images. Python records the difference
-in `result.raw[head]["system_render"]` (`string`, `differs` or `unverified`) and
-answers anyway, with `require_string_system=True` available for a server whose
-template has been fixed. A Go port would have to make the same call, and section
-6 of the DE-2 page has the measurement it would be making it on.
-
-**The command line drops what the image path carries.** Three things follow from
-the paragraph above. `ask` has no `--image` or `--image-top-logprobs`, because
-there is no image read to point them at. `explain` prints the DE-2 walkthrough
-and no DE-1 branch, because there is no DE-1 read. And `doctor` prints no
-`chat system` line, because that line is the chat-render probe's answer and
-`Health` does not run one; the Python command line prints it only under
-`--probe`, so the two reports differ by that one line and nothing else. The
-`explain` output is otherwise byte-identical to the Python command line's for the
-same question, checked against the hosted endpoint.
+**The command line's image flags.** `ask` takes `--image` and
+`--image-top-logprobs`, matching the Python command line's, including the rule
+that an image question with no `--state` asks about the image alone rather than
+falling back to the built-in ticket. `--image-top-logprobs` is registered on
+`ask` only, the way `argparse` registers it; the other commands still carry the
+default, because the Python command line reads it with
+`getattr(args, "image_top_logprobs", 20)`. `doctor --probe` prints the
+`chat system` line after the read probe, from the same `chat_system_render`
+entry. `explain` still prints the DE-2 walkthrough and no DE-1 branch, because
+there is no DE-1 read. The `explain` output is otherwise byte-identical to the
+Python command line's for the same question, checked against the hosted
+endpoint.
 
 **The command line's `--model` defaults to DE-2.** The library keeps
 `DefaultModel` at the Python client's DE-1 id so that a caller who asks for
@@ -372,14 +400,16 @@ slots are codes. Two other messages have no Python counterpart at all and are
 Go's own: the wrapper around a tokenizer that will not load, and the two checks
 on the `prompt_logprobs` fallback (more than one entry, or a null one) that keep a
 server this client cannot read that way from scoring a token nobody asked about.
-Two more are Python's sentence with one clause reworded. The terminator message
-drops "the image readout cannot confirm" and says the answer boundary cannot be
-confirmed, because this port has no image readout; it is reachable through
-`doctor`'s `boundary_check` in both output forms and `explain`'s stderr, so a
-tokenizer under which `<channel|>` is not one token is the one failing run where
-the two command lines' text differs. And `Softmax` says `no code logprobs to
-normalize` where the shared Python helper says `no letter logprobs`, the same
-DE-2 rewording as the slot message.
+`explain` has no DE-1 branch, so a tokenizer under which `<channel|>` is not one
+token is the one failing run where the two command lines' text can differ.
+
+On the image path one message is Python's sentence with one clause reworded:
+`checkImageBoundary` names the boundary token it resolved rather than the first
+key of the position's dict, which is the difference `boundaryEntry` records
+above. Everything else there is Python's text verbatim, including the terminator
+message in `AnswerPrefixID` and the other two `checkImageBoundary` messages. And
+`Softmax` says `no code logprobs to normalize` where the shared Python helper
+says `no letter logprobs`, the same DE-2 rewording as the slot message.
 
 The rest of what the readout raises is Python's sentence with Python's `!r`
 quoting, including the boundary check's three messages, which reach `doctor`'s
@@ -765,9 +795,12 @@ checkpoint, and says so where it appears.
   The rest of the live suite is the DE-2 half of the Python `tests/test_live.py`:
   the endpoint report and its probe, an obvious classification, three heads in
   one call with the request accounting, a JSON round trip, the 27/128/256-option
-  read at one request and two, and the thinking read. The DE-1 overflow case, the
-  model card's 161-token example and the image case are absent because this port
-  has no DE-1 read and no image path.
+  read at one request and two, and the thinking read. The DE-1 overflow case and
+  the model card's 161-token example are absent because this port has no DE-1
+  read. The image case is absent for a different reason: it needs an image file
+  and a server with vision enabled, so it is a manual check rather than a gate,
+  and the read itself is covered offline by the recorded chat replay in
+  `testdata/readout_parity.json`.
 
   The Python suite's `test_de2_thinks_when_the_repeated_read_is_unsure` ends with
   `assert answer.calibrated is False`, which was written before the DE-2 record

@@ -44,14 +44,17 @@ Three layers, one contract. This is the target layout: M1 and M2 landed the
 codebook, the tokenizer, the renderer, family resolution, the question types and
 the Python-JSON writer; M3 landed the DE-2 readout itself; M4 landed the policy,
 the calibration records and the friendly layer; M5 landed the command line; M6
-landed the live suite and its parity gate. The Key Files table below says what is
-in the tree.
+landed the live suite and its parity gate; M7 landed the image read. The Key
+Files table below says what is in the tree.
 
 - `readout.go` — the raw reads: render the repeated prompt, request every
   option's code by token id, softmax over the codes, optionally generate a
-  bounded thought and read the codes again after it.
-- `endpoint.go` — the HTTP layer under those reads: the two completion request
-  shapes, the response shapes, and the error conventions.
+  bounded thought and read the codes again after it, and read one image question
+  through `/v1/chat/completions`.
+- `images.go` — the image reference: a local PNG/JPEG/WebP file, an HTTP(S) URL
+  or a data URL becomes the `image_url` content part, and nothing else does.
+- `endpoint.go` — the HTTP layer under those reads: the completion and chat
+  request shapes, the response shapes, and the error conventions.
 - `policy.go` — sequences the reads: twice, then think when unsure.
 - `calibration.go` — temperature scaling, the confidence statistic, record
   selection, and `Calibration.Applicability`.
@@ -71,6 +74,9 @@ What must not change casually:
   repeated-turn separator, the thinking system line, and the DE-2 request bodies
   (`max_tokens: 1`, `temperature: 0`, `logprobs: 20`, `logprob_token_ids`,
   `return_tokens_as_token_ids`). These are the measured scaffold.
+- The image read's shape: the `image_url` content part before the text part, one
+  direct read with no policy, the letter limit (26), the absence of a letter
+  fallback, and no calibration. `docs/READOUT-DE2.md` section 6 specifies it.
 - The codebook and its order, the gate (0.7), the option cap (26), the budget
   (1,024), the candidate-id block size (128), and the rule that the client
   writes the closing `<channel|>` after a thought.
@@ -90,8 +96,9 @@ What must not change casually:
 | `docs/READOUT.md` | The DE-1 contract, copied for the shared scaffold. Not implemented here |
 | `docs/PORT.md` | How the Go port maps onto the Python reference, and where it deliberately differs |
 | `README.md` | The API surface users see first |
-| `readout.go` | Rendering, code resolution, boundary checks, requests, thought generation, softmax, readout versions |
-| `endpoint.go` | The completion request and response shapes, the JSON POST/GET helpers, and `ReadoutHTTPError` |
+| `readout.go` | Rendering, code resolution, boundary checks, requests, thought generation, image reads, softmax, readout versions |
+| `images.go` | `PrepareImage` and `ValidateImageURL`: a local file, an HTTP(S) URL or a data URL into the `image_url` a chat request carries |
+| `endpoint.go` | The completion and chat request and response shapes, the JSON POST/GET helpers, and `ReadoutHTTPError` |
 | `render.go` | The pinned Gemma chat-template renderer for the two DE-2 message shapes |
 | `pyjson.go` | `json.dumps(value, ensure_ascii=False)` and `json.loads` equivalents, because the user turn is serialized into the prompt |
 | `questions.go` | `Noul`, `Choice`, `Score` and their wire shapes |
@@ -104,6 +111,7 @@ What must not change casually:
 | `policy.go` | The DE-2 policy: repeated read, gate, thought, read after it; `ReadOptions` and the settings that select a read |
 | `calibration.go` | Temperature scaling, the confidence statistic, record selection, and `Calibration.Applicability` |
 | `client.go` | `DecisionModel.Classify`, `DecisionModel.Decide`, `SystemOne`, `Health`, `Decision`, `Answer`, `HeadSpec` |
+| `scripts/gen_images_parity.py` | Records the Python client's verdict for every image reference this port accepts, and the Go test replays it |
 | `scripts/gen_client_parity.py` | Records live Python `DecisionModel` exchanges against the hosted endpoint and writes the fixture the parity test replays |
 | `example_test.go` | The README's snippets as `Example*` functions `go test` runs, against a stub endpoint, so a signature or behaviour change breaks them |
 | `readme_test.go` | The documentation rot check: every `shisade.X` in `README.md` and `docs/PORT.md` is an exported identifier, the Go blocks parse, and the README's sections are present |
@@ -172,7 +180,8 @@ What must not change casually:
 | Documented examples | `go test . -run Example` (runs the `Example*` functions in `example_test.go`, whose `// Output:` blocks are the README's snippets) |
 | Documentation rot | `go test . -run TestReadme` (every `shisade.X` the README and `PORT.md` name has to be an exported identifier; the blocks also have to parse) |
 | Tokenizer parity | `go test ./tokenizer/` (reads the pinned tokenizer from the hub cache or `SHISA_DE_TOKENIZER_JSON`; `SHISA_DE_TOKENIZER_REQUIRE=1` fails instead of skipping) |
-| Readout replay | `go test . -run TestReadout` (replays recorded Python request/response pairs through an `httptest` stub; offline) |
+| Readout replay | `go test . -run TestReadout` (replays recorded Python request/response pairs, text and image, through an `httptest` stub; offline) |
+| Image reference replay | `go test . -run TestImagesParity` (replays recorded Python `prepare_image`/`validate_image_url` verdicts and error text; offline) |
 | Client replay | `go test . -run TestClientParity` (replays recorded live Python `DecisionModel` exchanges through an `httptest` stub; offline) |
 | Race detector | `go test -race ./...` (the concurrency claim for `Readout` rests on this) |
 | Live suite, hosted DE-2 | `SHISA_DE_LIVE=1 go test . -run Live` (spends real requests; the parity gate also runs the Python client, so it needs the `shisa-de` checkout, `SHISA_DE_PYTHON_REPO` to point elsewhere) |

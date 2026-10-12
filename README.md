@@ -16,12 +16,9 @@ The contract this port implements is
 repository, which remains the reference implementation. What the Go port maps
 onto, and where it deliberately differs, is in [`docs/PORT.md`](docs/PORT.md).
 
-**This port reads DE-2's text readout.** It does not read **DE-1**, and it does
-not implement DE-2's **image** read either: that is a scope decision, not a
-family limitation, and the image read is specified in
-[`docs/READOUT-DE2.md`](docs/READOUT-DE2.md#6-images) like the text one. It also
-has no text-choice **overflow** path, because DE-1's wide-choice handling is the
-only thing that needs one. Each absence is explained under
+**This port reads DE-2, text and images.** It does not read **DE-1**, and it has
+no text-choice **overflow** path, because DE-1's wide-choice handling is the only
+thing that needs one. Both absences are explained under
 [What this port does not have](#what-this-port-does-not-have).
 
 ## Install
@@ -159,6 +156,59 @@ into one option and the distribution would not sum to one, so it is refused
 before anything is sent. The same goes for a repeated label in a multi-label
 head.
 
+## Classify images
+
+Pass a local image path, an HTTP(S) image URL, or a base64 image data URL as
+`Image`:
+
+```go
+decision, err := model.Classify(ctx, map[string]any{},
+	map[string]shisade.HeadSpec{"animal": {Options: []shisade.Option{
+		{Key: "cat"}, {Key: "dog"}, {Key: "bird"},
+	}}},
+	shisade.ClassifyOptions{
+		IncludeProbabilities: true,
+		CallOptions:          shisade.CallOptions{Image: "photo.jpg"},
+	})
+if err != nil {
+	return err
+}
+
+view := decision.Values["animal"].(map[string]any)
+fmt.Println(view["label"])
+fmt.Println(decision.Answers["animal"].Probabilities)
+```
+
+```bash
+shisa-de ask --image photo.jpg --labels cat,dog,bird --prompt 'What animal is shown?'
+```
+
+`Decide(..., CallOptions{Image: "photo.jpg"})` asks typed questions about an
+image too. Local files are uploaded; URLs are fetched by the server. Supported
+formats are PNG, JPEG, and WebP.
+
+Image questions take at most 26 options and return uncalibrated probabilities.
+If the server does not return a logprob for every option, the client returns an
+error rather than guessing. On your own server, raise `--max-logprobs` and set
+`DecisionModelConfig{ImageTopLogprobs: ...}` to match for label sets above 20.
+
+An image question is not read the way a text question is. An image cannot travel
+through the text readout at all, because the client renders that prompt itself
+with the checkpoint's chat template and only the server can expand an image
+placeholder into the image tokens the checkpoint expects. So it posts to
+`/v1/chat/completions`, lets the server render the prompt, and takes one direct
+read: no repeat, no thinking step, at most 26 options, no fallback for a code
+outside the returned top-k, and no calibration. The readout version is still
+`de2-codebook-v1`.
+
+vLLM hands the chat template every message of an image request as content parts,
+and the template then writes a space after a system message that arrives that way,
+so the image prompt carries one token the text prompt does not. DE-2 was trained
+on the string rendering, without images. This port records the difference in
+`Answer.SystemRender` and answers anyway, which is what the Python client does;
+`doctor --probe` reports it. [`docs/READOUT-DE2.md`](docs/READOUT-DE2.md#6-images)
+section 6 has the measurement.
+
 ## Large label sets
 
 DE-2 reads up to 256 options in one question and returns an ordinary probability
@@ -202,6 +252,7 @@ in `answer.Calibrated` and `answer.Temperature`.
 
 | Call | Probabilities returned |
 | --- | --- |
+| Images | Raw |
 | DE-2 text | Calibrated by default, with a separate fit for each read; pass `Calibrated` to get raw |
 | A checkpoint the shipped record does not cover | Raw, with a warning in `DecisionModel.Warnings` |
 
@@ -300,7 +351,11 @@ shisa-de ask --model shisa-ai/shisa-de-2 --labels refund_request,order_status
   which family the alias is, so a DE-2 alias keeps the DE-2 calibration.
 - The server needs `/v1/completions` with `logprobs` and `logprob_token_ids`, and
   `doctor` needs `/v1/models`. vLLM supports both; `docs/READOUT-DE2.md` has the
-  exact request shapes.
+  exact request shapes. An image question also needs `/v1/chat/completions` with
+  vision enabled, and a logprob limit at least as high as the option count:
+  raise vLLM's `--max-logprobs` and match it with `ImageTopLogprobs`. Leave
+  `--chat-template-content-format` at its default; setting it to `string` makes
+  vLLM 0.30.0 reject image requests.
 
 For a checkpoint your server names differently, say the family out loud and name
 a tokenizer, because the family decides how the model is asked and the tokenizer
@@ -411,8 +466,8 @@ Things to know:
 | Command | What it does |
 | --- | --- |
 | `shisa-de doctor` | Checks the endpoint, the model id, the tokenizer, the answer boundary, and whether the calibration belongs to the served model. Exits non-zero on a problem |
-| `shisa-de doctor --probe` | Also spends one question on the read |
-| `shisa-de ask` | Classifies `--state` (text or JSON) against `--labels` |
+| `shisa-de doctor --probe` | Also spends one question on the read, and reports how the server renders the image path |
+| `shisa-de ask` | Classifies `--state` (text or JSON) against `--labels`, optionally with `--image` |
 | `shisa-de explain` | Prints the prompt, the answer slots, the one request with the answer codes by token id, the distribution, and a `curl` line that reproduces the request without Python |
 
 ```bash
@@ -421,6 +476,7 @@ export SHISA_DE_API_KEY=...
 
 shisa-de doctor   --model shisa-ai/shisa-de-2
 shisa-de ask      --model shisa-ai/shisa-de-2 --labels billing,shipping
+shisa-de ask      --model shisa-ai/shisa-de-2 --image photo.jpg --labels cat,dog,bird
 shisa-de explain  --model shisa-ai/shisa-de-2 --labels billing,shipping
 ```
 
@@ -428,15 +484,15 @@ All of them accept `--base-url`, `--model`, `--tokenizer`, `--family`,
 `--calibration`, `--policy` and `--timeout`. The read settings are `--reads`,
 `--reasoning` / `--no-reasoning`, `--reasoning-prob`, `--reasoning-len`, and
 `--compound` / `--no-compound`, which this port refuses when it is turned on:
-DE-2 reads up to 256 options in one prompt, so there is nothing to compound. The
-endpoint comes
+DE-2 reads up to 256 options in one prompt, so there is nothing to compound.
+`ask` also takes `--image` and `--image-top-logprobs`, and nothing else does,
+because an image read is the only read that uses them. The endpoint comes
 from `SHISA_DE_ENDPOINT` and the key from `SHISA_DE_API_KEY`, then
 `SHISA_API_KEY`; the command line's `--model` defaults to `shisa-ai/shisa-de-2`
 rather than the library's DE-1 default, because this port has no DE-1 read and a
 command whose zero-config form can only fail is not a command.
 
-`PORT.md` records what else differs from the Python command line, including the
-one `chat system` line `doctor --probe` does not print.
+`PORT.md` records what else differs from the Python command line.
 
 ## Performance
 
@@ -475,38 +531,8 @@ comparison against `daulet/tokenizers` that the tokenizer was written against.
 
 ## What this port does not have
 
-The Python client has four things this port does not. Two of them are about a
-model family this port does not read, and two are not:
-
-**The image read, which DE-2 does have.** DE-2 is not a text-only model: it has
-an image read, specified in [`docs/READOUT-DE2.md`](docs/READOUT-DE2.md#6-images)
--- a page this repository ships -- and implemented by the Python client for both
-families. It is a third read alongside the text one: an image cannot travel
-through the text readout at all, because the client renders that prompt itself
-with the checkpoint's chat template and only the server can expand an image
-placeholder into the image tokens the checkpoint expects. So an image question
-posts to `/v1/chat/completions`, lets the server render the prompt, and takes one
-direct read: no repeat, no thinking step, at most 26 options, no fallback for a
-code outside the returned top-k, and no calibration. The readout version is
-still `de2-codebook-v1`.
-
-**This port does not implement that read.** That is a scope decision and not a
-family limitation -- it was left out rather than found impossible, and the
-[Python client](https://github.com/shisa-ai/shisa-de) is the way to ask a
-question about an image today. Concretely, what is missing is
-`shisa_de/images.py` (161 lines: media-type sniffing by file signature, base64
-data URLs for local files, URL validation), a `read_image` on the readout, an
-image argument on `Classify` and `Decide`, the `chat_system_render` probe in
-`Health`, and `--image` on the command line.
-
-The part that needs care is not the plumbing. vLLM hands Gemma 4's chat template
-every message of an image request as content parts, and the template then writes
-a space after a system message that arrives that way, so the image prompt carries
-one token the text prompt does not. DE-2 was trained on the string rendering,
-without images. The Python client records the difference in
-`result.raw[head]["system_render"]` and answers anyway, and
-`doctor --probe` reports it. Any port has to decide the same thing: record it, or
-refuse. `docs/READOUT-DE2.md` section 6 has the measurement.
+The Python client reads two families. This port reads one of them, and the two
+things it is missing are both consequences of that:
 
 **DE-1.** The Python client reads DE-1 and DE-2. This port implements
 `de2-codebook-v1` only, and a checkpoint that resolves to DE-1 is an error rather
