@@ -188,8 +188,11 @@ image too. Local files are uploaded; URLs are fetched by the server. Supported
 formats are PNG, JPEG, and WebP.
 
 Image questions take at most 26 options and return uncalibrated probabilities.
-If the server does not return a logprob for every option, the client returns an
-error rather than guessing. On your own server, raise `--max-logprobs` and set
+That is the default rather than a rule: `Calibrated` is off for an image because
+the shipped record was fitted on the text path, and a record with an `image` fit
+is the only thing that would temper one. If the server does not return a logprob
+for every option, the client returns an error rather than guessing. On your own
+server, raise `--max-logprobs` and set
 `DecisionModelConfig{ImageTopLogprobs: ...}` to match for label sets above 20.
 
 An image question is not read the way a text question is. An image cannot travel
@@ -204,10 +207,13 @@ outside the returned top-k, and no calibration. The readout version is still
 vLLM hands the chat template every message of an image request as content parts,
 and the template then writes a space after a system message that arrives that way,
 so the image prompt carries one token the text prompt does not. DE-2 was trained
-on the string rendering, without images. This port records the difference in
-`Answer.SystemRender` and answers anyway, which is what the Python client does;
-`doctor --probe` reports it. [`docs/READOUT-DE2.md`](docs/READOUT-DE2.md#6-images)
-section 6 has the measurement.
+on the string rendering, without images. This port records the difference and
+answers anyway, which is what the Python client does: the verdict is
+`CodeRead.SystemRender` on the read, and
+`Decision.Raw[head]["system_render"]` on the answer. `doctor --probe` reports it
+as `chat_system_render`.
+[`docs/READOUT-DE2.md`](docs/READOUT-DE2.md#6-images) section 6 has the
+measurement.
 
 ## Large label sets
 
@@ -252,7 +258,7 @@ in `answer.Calibrated` and `answer.Temperature`.
 
 | Call | Probabilities returned |
 | --- | --- |
-| Images | Raw |
+| Images | Raw by default: `Calibrated` is off with an image, and no shipped fit covers that read |
 | DE-2 text | Calibrated by default, with a separate fit for each read; pass `Calibrated` to get raw |
 | A checkpoint the shipped record does not cover | Raw, with a warning in `DecisionModel.Warnings` |
 

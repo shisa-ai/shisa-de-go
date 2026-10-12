@@ -169,7 +169,14 @@ What must not change casually:
   record's `readout_version` to make it match: it records what the fit was made
   against.
 - Any number added to a doc was measured, and the doc says when and against
-  which serving fingerprint.
+  which serving fingerprint. The fixture counts in `docs/PORT.md` come from
+  `testdata/*.meta.json`, and `TestReadoutFixtureProvenance` fails when they
+  disagree, so a regenerated fixture and its paragraph move together.
+- A field named in the docs' prose is checked against the package by
+  `TestReadmeProseNamesRealFields`, which resolves a backticked `Type.Field`
+  whenever `Type` is an exported type here. The Go-block check cannot see prose,
+  which is how `Answer.SystemRender` was documented in two files while `Answer`
+  had no such field.
 
 ## Verification
 

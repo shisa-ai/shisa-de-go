@@ -41,11 +41,12 @@ an image read, specified in `docs/READOUT-DE2.md` section 6 -- a page this
 repository ships -- and this port implements it. `images.go` builds the
 `image_url` content part from a local path, an HTTP(S) URL or a data URL;
 `Readout.ReadImage` posts to `/v1/chat/completions` and reads the option letters
-from the returned top-k; `Classify` and `Decide` take the image on `CallOptions`;
-`Answer.SystemRender` records what the server did with the system turn; `Health`
-reports it as `chat_system_render`; and `ask` takes `--image` and
-`--image-top-logprobs`. The readout version stays `de2-codebook-v1`, because the
-image read is part of that contract rather than a new one.
+from the returned top-k; `Classify` and `Decide` take the image on `CallOptions`; `CodeRead.SystemRender`
+records what the server did with the system turn, and the client copies it to
+`Decision.Raw[head]["system_render"]`; `Health` reports it as
+`chat_system_render`; and `ask` takes `--image` and `--image-top-logprobs`. The
+readout version stays `de2-codebook-v1`, because the image read is part of that
+contract rather than a new one.
 
 It is a third read beside the text one, not a variant of it: an image cannot
 travel through the text readout at all, because the client renders that prompt
@@ -60,17 +61,21 @@ follow a rule. vLLM hands Gemma 4's chat template every message of an image
 request as content parts, and the template writes a space after a system message
 that arrives that way, so the image prompt carries one token the text prompt does
 not. DE-2 was trained on the string rendering, without images. This port records
-the difference in `Answer.SystemRender` (`string`, `differs` or `unverified`) and
-answers anyway, which is what the Python client does, and exposes
+the difference in `CodeRead.SystemRender` (`string`, `differs` or `unverified`),
+which the client copies to `Decision.Raw[head]["system_render"]`, and answers
+anyway, which is what the Python client does; it exposes
 `ImageReadOptions.RequireStringSystem` for a server whose template has been
 fixed. Section 6 of the DE-2 page has the measurement the judgement rests on.
 
 The reference API is otherwise Python's, message for message:
-`testdata/images_parity.json` replays 51 references through both clients and
-compares the verdicts and the error text. Two differences are language rather
-than behaviour: Python's `prepare_image` also accepts a `pathlib.Path` and
-rejects other types by name, which a Go `string` parameter cannot express, and
-`ImageError` is its own type here where Python's subclasses `ValueError`.
+`testdata/images_parity.json` replays 55 references through both clients and
+compares the verdicts and the error text, including the four rooted-`~` cases
+that pin pathlib's `not (self.drive or self.root)` guard. Two differences are
+language rather than behaviour: Python's `prepare_image` also accepts a
+`pathlib.Path` and rejects other types by name, which a Go `string` parameter
+cannot express, and `ImageError` is its own type here where Python's subclasses
+`ValueError` (Python's `~user` lookup raises a bare `RuntimeError`, which is not
+an error the image API promises to return).
 
 ## Deliberate differences
 
@@ -298,9 +303,23 @@ one entry at the boundary; a position carrying several is ambiguous and both
 clients refuse it. Before refusing, the Python client takes the dict's first key,
 which is insertion order there. A Go map has none, so `boundaryEntry` looks for
 the terminator by id and otherwise reports the lowest id: the same answer twice
-rather than a different one each run. `checkImageBoundary`'s refusal names the
-token it resolved, which is the one image-path message that differs in wording
-from Python's.
+rather than a different one each run. The refusal text is Python's, including
+`None` for an entry with no `decoded_token` and the raw key for one that is not a
+token id; only the token it names can differ, and only when the boundary position
+is ambiguous.
+
+**An image read reports no elapsed time.** Python's `read_image` stamps
+`LetterRead.elapsed_ms`; the `CodeRead` an image read returns has no such field,
+and nothing reads one: it is not in `Raw`, not in the fixture, and not in
+`Usage`. The policy layer's `PolicyRead.ElapsedMS` is the counterpart that does
+exist, for the text path.
+
+**The chat probe prefixes every failure with `unavailable:`.** Python's
+`probe_chat_render` converts a `ReadoutError` to `unavailable: ...` and lets a
+`QuestionError` from `_payload` propagate. Go's returns a `string` with no error
+channel, so both get the prefix. The case cannot arise from `Health`, which asks
+a Noul, and the same prefix is what the Python command line prints for the other
+one.
 
 **The image path reads the extension the way Python 3.14 reads it.**
 `pathlib.Path.suffix` changed in 3.14, and `..png` and `a.` are the whole of the
@@ -403,13 +422,12 @@ server this client cannot read that way from scoring a token nobody asked about.
 `explain` has no DE-1 branch, so a tokenizer under which `<channel|>` is not one
 token is the one failing run where the two command lines' text can differ.
 
-On the image path one message is Python's sentence with one clause reworded:
-`checkImageBoundary` names the boundary token it resolved rather than the first
-key of the position's dict, which is the difference `boundaryEntry` records
-above. Everything else there is Python's text verbatim, including the terminator
-message in `AnswerPrefixID` and the other two `checkImageBoundary` messages. And
-`Softmax` says `no code logprobs to normalize` where the shared Python helper
-says `no letter logprobs`, the same DE-2 rewording as the slot message.
+On the image path the messages are Python's verbatim, including the terminator
+message in `AnswerPrefixID` and all four `checkImageBoundary` refusals; the one
+case where the text can differ is an ambiguous boundary position, where the token
+named is the one `boundaryEntry` resolved. And `Softmax` says `no code logprobs
+to normalize` where the shared Python helper says `no letter logprobs`, the same
+DE-2 rewording as the slot message.
 
 The rest of what the readout raises is Python's sentence with Python's `!r`
 quoting, including the boundary check's three messages, which reach `doctor`'s
@@ -641,7 +659,7 @@ checkpoint, and says so where it appears.
   records the interpreter that produced it so a regeneration on a different
   Unicode version is a diff rather than a mystery. Regenerate both with
   `scripts/gen_python_printable.py`.
-- **Readout.** 22 scenarios, 62 recorded exchanges, replayed request for request
+- **Readout.** 38 scenarios, 77 recorded exchanges, replayed request for request
   and field for field. Each exchange records the method, the path and the
   headers the client set itself -- `Content-Type`, and `Authorization` for the
   one scenario that configures a key -- and the replay server compares all of
@@ -658,15 +676,31 @@ checkpoint, and says so where it appears.
   rather than as text), and four failures: a server whose `usage.prompt_tokens`
   disagrees with the client's tokenization, a fallback that returns nothing, a
   thinking response with no `token_ids`, and a prompt that does not end on the
-  terminator (which sends no request at all). Every request body the Go client
+  terminator (which sends no request at all).
+
+  Thirteen of the scenarios are the image read and three are the chat probe. The
+  image read has no local prompt to tokenize, so its scenarios are what pins the
+  server-rendered side: the plain read, the debug read, a stock vLLM whose system
+  turn carries one extra space (answered, with `differs` recorded), the same
+  server under `require_string_system` (refused), a response too short to compare
+  (so `unverified`), one with no assistant message, one whose top-k is all
+  options, and four failures: a code missing from the top-k, more options than
+  the returned top-k can hold, a malformed top-logprob entry, and the three ways
+  the answer boundary can fail -- a last prompt token that is not the terminator,
+  one with no `decoded_token` at all, and a response with no `prompt_logprobs`.
+  The probe scenarios record the three verdicts it can return. Every request body
+  the Go client
   sends is compared to the Python client's after JSON decoding, and every result
   -- logprobs, probabilities, request and prompt-token counts, missing codes,
-  ranks, sampled text, debug top-logprobs, thought ids and closure -- is compared
+  ranks, sampled text, debug top-logprobs, messages, system render, thought ids
+  and closure -- is compared
   to the Python client's. The stub tokenizer is rebuilt from the fixture's
   recorded word list, so a divergence in the two implementations surfaces as a
   wrong token count rather than passing. `testdata/readout_parity.meta.json`
-  records the Python revision, the readout version, the limits, the counts and a
-  sha256 of the fixture; the test fails if the fixture disagrees with it.
+  records the Python revision, the readout version, the limits, the counts, a
+  per-operation step count and a sha256 of the fixture; the test fails if the
+  fixture disagrees with any of them, so a regeneration that silently dropped the
+  image read's refusals fails rather than only shrinking a total.
 - **Readout behaviour outside the replay.** The response shapes the fixture does
   not carry have their own tests: a completion with no choices, a server that
   reports no `usage`, a null or fractional `token_ids` element, a null
@@ -737,6 +771,15 @@ checkpoint, and says so where it appears.
   the provenance's own shape, so an endpoint label in the fingerprint field
   fails; `TestFixtureIntegrityChecksCanFail` runs that check against mutated
   copies of the provenance, because a check nobody has shown to fail is not one.
+
+  This fixture has no image case, and it cannot gain one from the same endpoint:
+  the image read needs a vision-enabled server, which is also why the image path
+  has no live coverage. What covers the image path instead is the readout replay
+  above (the read itself, request for request) plus Go-only tests for the
+  client-level parts the replay cannot see: the flat `Raw` shape, its debug form,
+  the one-read accounting, the `Calibrated` default, and the 26-option refusal.
+  That is a weaker check than a recording, and it is where the raw block's
+  `prompt` and `top_logprobs` shapes went unnoticed until a review found them.
 - **Command line.** `explain`'s output, `doctor`'s text report and `doctor
   --json` were each compared line for line against the Python command line
   against the hosted endpoint, and are identical apart from the numbers a fresh
