@@ -1,0 +1,275 @@
+{
+  "files": {
+    "red.png": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==",
+    "green.png": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJklEQVR4nO3NsQkAAAjAsP7/tF7hIASyp6ZbAoFAIBAIBAKB4EuwNof8LkGrxSIAAAAASUVORK5CYII=",
+    "blue.png": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAJklEQVR4nO3NsQkAAAjAsP7/tF7hIASyp5pjAoFAIBAIBAKB4EmwOkv8Lm7+zY4AAAAASUVORK5CYII=",
+    "shot.jpg": "/9j/4HByZXRlbmQganBlZyBieXRlcw==",
+    "shot.webp": "UklGRgAAAABXRUJQcHJldGVuZCB3ZWJwIGJ5dGVz",
+    "mislabelled.jpg": "iVBORw0KGgpwbmcgYnl0ZXMgdW5kZXIgYSBqcGcgbmFtZQ==",
+    "upper.PNG": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==",
+    "empty.png": "",
+    "fake.png": "dGhpcyBpcyBub3QgYW4gaW1hZ2U=",
+    "a/b.png": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==",
+    "a/nested/deep.png": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==",
+    "dir.d/a": "bm90IGFuIGltYWdl",
+    ".hidden.png": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==",
+    "a..png": "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+  },
+  "cases": [
+    {
+      "func": "prepare_image",
+      "input": "https://example.com/cat.png",
+      "result": "https://example.com/cat.png"
+    },
+    {
+      "func": "prepare_image",
+      "input": "http://example.com/cat.jpg",
+      "result": "http://example.com/cat.jpg"
+    },
+    {
+      "func": "prepare_image",
+      "input": "data:image/webp;base64,AAAA",
+      "result": "data:image/webp;base64,AAAA"
+    },
+    {
+      "func": "prepare_image",
+      "input": "  https://example.com/cat.png  ",
+      "result": "https://example.com/cat.png"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/red.png",
+      "result": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/shot.jpg",
+      "result": "data:image/jpeg;base64,/9j/4HByZXRlbmQganBlZyBieXRlcw=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/shot.webp",
+      "result": "data:image/webp;base64,UklGRgAAAABXRUJQcHJldGVuZCB3ZWJwIGJ5dGVz"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/mislabelled.jpg",
+      "result": "data:image/png;base64,iVBORw0KGgpwbmcgYnl0ZXMgdW5kZXIgYSBqcGcgbmFtZQ=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/upper.PNG",
+      "result": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/a/b.png",
+      "result": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/a/nested/deep.png",
+      "result": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/.hidden.png",
+      "result": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/a..png",
+      "result": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/a//b.png",
+      "result": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/a/./b.png",
+      "result": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/a/../b.png",
+      "error": "image file not found: {tmp}/a/../b.png"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/a///b.png",
+      "result": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/a/b.png/",
+      "result": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/./red.png",
+      "result": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
+    },
+    {
+      "func": "prepare_image",
+      "input": "~/shisa-de-no-such-image.png",
+      "error": "image file not found: {home}/shisa-de-no-such-image.png"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{home}/shisa-de-no-such-image.png",
+      "error": "image file not found: {home}/shisa-de-no-such-image.png"
+    },
+    {
+      "func": "prepare_image",
+      "input": "",
+      "error": "image is empty"
+    },
+    {
+      "func": "prepare_image",
+      "input": "   ",
+      "error": "image is empty"
+    },
+    {
+      "func": "prepare_image",
+      "input": "photo.gif",
+      "error": "unsupported image extension '.gif'; supported extensions are .png, .jpg, .jpeg, .webp"
+    },
+    {
+      "func": "prepare_image",
+      "input": "photo.bmp",
+      "error": "unsupported image extension '.bmp'; supported extensions are .png, .jpg, .jpeg, .webp"
+    },
+    {
+      "func": "prepare_image",
+      "input": "ftp://example.com/cat.png",
+      "error": "image scheme 'ftp' is not supported; pass a local file, an http(s) URL, or a data URL"
+    },
+    {
+      "func": "prepare_image",
+      "input": "file:///tmp/cat.png",
+      "error": "image scheme 'file' is not supported; pass a local file, an http(s) URL, or a data URL"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/missing.png",
+      "error": "image file not found: {tmp}/missing.png"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/empty.png",
+      "error": "image file is empty: {tmp}/empty.png"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/fake.png",
+      "error": "image file is not a PNG, JPEG, or WebP image: {tmp}/fake.png"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/dir.d/a",
+      "error": "unsupported image extension '(none)'; supported extensions are .png, .jpg, .jpeg, .webp"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/no-extension",
+      "error": "unsupported image extension '(none)'; supported extensions are .png, .jpg, .jpeg, .webp"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/.png",
+      "error": "unsupported image extension '(none)'; supported extensions are .png, .jpg, .jpeg, .webp"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/..png",
+      "error": "unsupported image extension '(none)'; supported extensions are .png, .jpg, .jpeg, .webp"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/a.",
+      "error": "unsupported image extension '.'; supported extensions are .png, .jpg, .jpeg, .webp"
+    },
+    {
+      "func": "prepare_image",
+      "input": "{tmp}/.bashrc",
+      "error": "unsupported image extension '(none)'; supported extensions are .png, .jpg, .jpeg, .webp"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "https://example.com/cat.png",
+      "result": "https://example.com/cat.png"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "http://example.com/cat.jpg",
+      "result": "http://example.com/cat.jpg"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "data:image/png;base64,AAAA",
+      "result": "data:image/png;base64,AAAA"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "  data:image/png;base64,AAAA  ",
+      "result": "data:image/png;base64,AAAA"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "{tmp}/red.png",
+      "error": "image_url '{tmp}/red.png' is a local path, not a URL; call prepare_image() first so the server receives image bytes rather than a file name"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "red.png",
+      "error": "image_url 'red.png' is a local path, not a URL; call prepare_image() first so the server receives image bytes rather than a file name"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "",
+      "error": "image_url is empty"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "   ",
+      "error": "image_url is empty"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "data:text/plain;base64,AAAA",
+      "error": "image_url is a data URL that is not an image: 'data:text/plain;base64,AAAA'"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "data:image/png;base64,",
+      "error": "image_url is a data URL with no payload"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "data:image/png;base64",
+      "error": "image_url is a data URL with no payload"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "https://",
+      "error": "image_url has no host: 'https://'"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "http://",
+      "error": "image_url has no host: 'http://'"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "ftp://example.com/cat.png",
+      "error": "image_url scheme 'ftp' is not supported; use http://, https://, or a data URL"
+    },
+    {
+      "func": "validate_image_url",
+      "input": "file:///tmp/cat.png",
+      "error": "image_url scheme 'file' is not supported; use http://, https://, or a data URL"
+    }
+  ]
+}

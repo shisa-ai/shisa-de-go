@@ -29,3 +29,17 @@ type QuestionError struct {
 }
 
 func (e *QuestionError) Error() string { return "shisade: " + e.Message }
+
+// ImageError reports an image reference that cannot be turned into a request the
+// server accepts: an empty value, an unsupported extension or URL scheme, a
+// missing file, an empty file, or a file whose bytes are not a supported image.
+//
+// It is raised before any request is sent. The Python class it replaces
+// subclasses ValueError, and the Python client's callers do not catch it, so it
+// is its own type here too rather than a ReadoutError: a caller that handles a
+// failed read is not also handling a bad image path.
+type ImageError struct {
+	Message string
+}
+
+func (e *ImageError) Error() string { return "shisade: " + e.Message }
