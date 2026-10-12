@@ -1,0 +1,268 @@
+{
+  "finishedAt": "2026-10-12T16:17:50.323Z",
+  "results": [
+    {
+      "reviewerId": "openai-codex-gpt-6-astra-jouzu-cli",
+      "kind": "jouzu-cli",
+      "requestedModel": "openai-codex/gpt-6-astra",
+      "reportPath": "/home/morpheus/data/dev/shisa/shisa-de/docs/reviews/m7-image-live-coverage/round-1/round-1/reports/openai-codex-gpt-6-astra-jouzu-cli.md",
+      "promptPath": "/home/morpheus/data/dev/shisa/shisa-de/docs/reviews/m7-image-live-coverage/round-1/round-1/prompts/openai-codex-gpt-6-astra-jouzu-cli.md",
+      "exitCode": 0,
+      "durationMs": 146766,
+      "highOrCriticalCount": 0,
+      "timedOut": false,
+      "aborted": false,
+      "alias": "astra",
+      "attempts": [
+        "shisa-gpt-6-astra-jouzu-cli",
+        "openai-codex-gpt-6-astra-jouzu-cli"
+      ],
+      "ranVia": "openai-codex-gpt-6-astra-jouzu-cli",
+      "failoverUsed": true,
+      "failoverSummaryPath": "/home/morpheus/data/dev/shisa/shisa-de/docs/reviews/m7-image-live-coverage/round-1/round-1/reports/astra-failover-summary.md"
+    },
+    {
+      "reviewerId": "shisa-deepseek-v4.1-flash-jouzu-cli",
+      "kind": "jouzu-cli",
+      "requestedModel": "catalog:ai.shisa.api-router:shisa:57024af9495fc6b0/DeepSeek-V4.1-Flash",
+      "reportPath": "/home/morpheus/data/dev/shisa/shisa-de/docs/reviews/m7-image-live-coverage/round-1/round-1/reports/shisa-deepseek-v4.1-flash-jouzu-cli.md",
+      "promptPath": "/home/morpheus/data/dev/shisa/shisa-de/docs/reviews/m7-image-live-coverage/round-1/round-1/prompts/shisa-deepseek-v4.1-flash-jouzu-cli.md",
+      "exitCode": 0,
+      "durationMs": 259232,
+      "highOrCriticalCount": 0,
+      "timedOut": false,
+      "aborted": false
+    },
+    {
+      "reviewerId": "shisa-glm-5.3-jouzu-cli",
+      "kind": "jouzu-cli",
+      "requestedModel": "catalog:ai.shisa.api-router:shisa:57024af9495fc6b0/glm-5.3",
+      "reportPath": "/home/morpheus/data/dev/shisa/shisa-de/docs/reviews/m7-image-live-coverage/round-1/round-1/reports/shisa-glm-5.3-jouzu-cli.md",
+      "promptPath": "/home/morpheus/data/dev/shisa/shisa-de/docs/reviews/m7-image-live-coverage/round-1/round-1/prompts/shisa-glm-5.3-jouzu-cli.md",
+      "exitCode": 0,
+      "durationMs": 643508,
+      "highOrCriticalCount": 0,
+      "timedOut": false,
+      "aborted": false,
+      "alias": "glm",
+      "attempts": [
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "ranVia": "shisa-glm-5.3-jouzu-cli",
+      "failoverUsed": false,
+      "failoverSummaryPath": "/home/morpheus/data/dev/shisa/shisa-de/docs/reviews/m7-image-live-coverage/round-1/round-1/reports/glm-failover-summary.md"
+    }
+  ],
+  "fallbackAliases": {
+    "glm": {
+      "chain": [
+        "shisa-glm-5.3-jouzu-cli",
+        "glm-zai-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        }
+      ],
+      "lastSuccessfulReviewerId": "shisa-glm-5.3-jouzu-cli",
+      "lastSuccessfulAt": "2026-10-12T15:56:07.135Z",
+      "lastSwitchAt": "2026-10-12T02:37:01.318Z",
+      "lastErrors": {}
+    },
+    "codex": {
+      "chain": [
+        "shisa-gpt-5.5-jouzu-cli",
+        "openai-codex-gpt-5.5-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli",
+        "glm-zai-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        }
+      ],
+      "lastErrors": {}
+    },
+    "gpt-5.5": {
+      "chain": [
+        "shisa-gpt-5.5-jouzu-cli",
+        "openai-codex-gpt-5.5-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli",
+        "glm-zai-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        }
+      ],
+      "lastSuccessfulReviewerId": "shisa-gpt-5.5-jouzu-cli",
+      "lastSuccessfulAt": "2026-10-11T12:49:31.176Z",
+      "lastErrors": {}
+    },
+    "astra": {
+      "chain": [
+        "shisa-gpt-6-astra-jouzu-cli",
+        "openai-codex-gpt-6-astra-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli",
+        "glm-zai-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        }
+      ],
+      "lastSuccessfulReviewerId": "openai-codex-gpt-6-astra-jouzu-cli",
+      "lastSuccessfulAt": "2026-10-12T16:17:50.320Z",
+      "lastSwitchAt": "2026-10-12T16:17:50.320Z",
+      "lastErrors": {
+        "shisa-gpt-6-astra-jouzu-cli": {
+          "at": "2026-10-12T16:15:23.550Z",
+          "error": "(node:2539994) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)",
+          "exitCode": 143
+        }
+      }
+    },
+    "gpt-6-astra": {
+      "chain": [
+        "shisa-gpt-6-astra-jouzu-cli",
+        "openai-codex-gpt-6-astra-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli",
+        "glm-zai-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        }
+      ],
+      "lastErrors": {}
+    },
+    "luna": {
+      "chain": [
+        "shisa-gpt-5.6-luna-jouzu-cli",
+        "openai-codex-gpt-5.6-luna-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli",
+        "glm-zai-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        }
+      ],
+      "lastErrors": {}
+    },
+    "gpt-5.6-luna": {
+      "chain": [
+        "shisa-gpt-5.6-luna-jouzu-cli",
+        "openai-codex-gpt-5.6-luna-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli",
+        "glm-zai-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        }
+      ],
+      "lastErrors": {}
+    },
+    "sol": {
+      "chain": [
+        "shisa-gpt-6.1-sol-jouzu-cli",
+        "openai-codex-gpt-6.1-sol-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli",
+        "glm-zai-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        }
+      ],
+      "lastSuccessfulReviewerId": "shisa-gpt-6.1-sol-jouzu-cli",
+      "lastSuccessfulAt": "2026-10-12T15:05:07.698Z",
+      "lastSwitchAt": "2026-10-05T22:38:56.197Z",
+      "lastErrors": {
+        "openai-codex-gpt-6.1-sol-jouzu-cli": {
+          "at": "2026-10-05T22:37:09.858Z",
+          "error": "(node:1412831) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)\nError: Unknown provider \"no-such-provider-b\". Use --list-models to see available providers/models.",
+          "exitCode": 1
+        }
+      }
+    },
+    "sol56": {
+      "chain": [
+        "shisa-gpt-5.6-sol-jouzu-cli",
+        "openai-codex-gpt-5.6-sol-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli",
+        "glm-zai-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        }
+      ],
+      "lastErrors": {}
+    },
+    "gpt-5.6-sol": {
+      "chain": [
+        "shisa-gpt-5.6-sol-jouzu-cli",
+        "openai-codex-gpt-5.6-sol-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli",
+        "glm-zai-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        }
+      ],
+      "lastErrors": {}
+    },
+    "terra": {
+      "chain": [
+        "shisa-gpt-5.6-terra-jouzu-cli",
+        "openai-codex-gpt-5.6-terra-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli",
+        "glm-zai-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        }
+      ],
+      "lastErrors": {}
+    },
+    "gpt-5.6-terra": {
+      "chain": [
+        "shisa-gpt-5.6-terra-jouzu-cli",
+        "openai-codex-gpt-5.6-terra-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli",
+        "glm-zai-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        }
+      ],
+      "lastErrors": {}
+    }
+  },
+  "totalHighOrCritical": 0,
+  "failedReviewerCount": 0,
+  "successfulReviewerCount": 3,
+  "allReviewerExecutionsFailed": false,
+  "round": 1,
+  "maxCycles": 3,
+  "beyondMaxCycles": false,
+  "overLimitApproved": false,
+  "hasExecutionErrors": false
+}
