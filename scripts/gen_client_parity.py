@@ -110,6 +110,13 @@ def serving_fingerprint(recorded: list[dict]) -> str:
 STATE = {"evidence": "The customer was charged twice for one order and asked for a refund."}
 STATE_URGENT = {"evidence": "The customer says the site is down and they cannot take orders."}
 
+#: A 32x32 solid red PNG as a data URL. The image read needs a file or a URL and
+#: a server with vision enabled; a data URL keeps the bytes in the fixture so the
+#: replay sends the same request without a file beside it.
+IMAGE = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAA"
+         "KElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6Q"
+         "kAAAAABJRU5ErkJggg==")
+
 
 class Recorder:
     """A transport that forwards to the real endpoint and keeps every exchange."""
@@ -176,6 +183,16 @@ def multi_label(head: str, instructions: str, names: list[str]) -> dict:
             "options": [{"key": name} for name in names]}
 
 
+def described(head: str, instructions: str, names: list[str]) -> dict:
+    """A label set with its own prompt, which the bare `labels` shorthand has not.
+
+    `classify` reads `{"labels": [...], "prompt": ...}`; a bare list of labels
+    would use the client's default question for the head instead.
+    """
+    return {"head": head, "type": "described", "instructions": instructions,
+            "labels": names}
+
+
 def python_question(spec: dict):
     if spec["type"] == "noul":
         return Noul(spec["instructions"])
@@ -201,6 +218,9 @@ def python_heads(specs: list[dict]) -> dict:
             heads[spec["head"]] = {"labels": [option["key"] for option in spec["options"]],
                                     "multi_label": True,
                                     "prompt": spec["instructions"]}
+        elif kind == "described":
+            heads[spec["head"]] = {"labels": list(spec["labels"]),
+                                    "prompt": spec["instructions"]}
         else:
             heads[spec["head"]] = python_question(spec)
     return heads
@@ -216,6 +236,8 @@ def python_options(spec: dict, kind: str) -> dict:
         options["calibrated"] = spec["calibrated"]
     if spec.get("debug"):
         options["debug"] = True
+    # `image` is a keyword argument of both entry points rather than a read
+    # setting, so it is passed separately; it is not an option.
     if kind == "classify":
         # `decide` has no such arguments; only `classify` returns a view.
         if spec.get("include_confidence"):
@@ -247,6 +269,8 @@ def run_case(case: dict) -> dict:
             api_key=api_key(), transport=httpx.MockTransport(recorder.handler))
     model = DecisionModel(**model_options)
     options = python_options(case["options"], case["kind"])
+    if case.get("image"):
+        options["image"] = case["image"]
     if case["kind"] == "classify":
         heads = python_heads(case["heads"])
         result = model.classify(case["state"], heads, **options)
@@ -258,6 +282,9 @@ def run_case(case: dict) -> dict:
     return {
         "name": case["name"],
         "state": case["state"],
+        # The image is carried as a data URL, so the replay sends the same bytes
+        # the Python client did without either side needing a file.
+        "image": case.get("image"),
         **spec,
         "model": {"id": MODEL,
                   "declared_model": case.get("declared_model"),
@@ -376,6 +403,18 @@ def cases() -> list[dict]:
          "heads": [queue], "options": {"include_probabilities": True}},
         {"name": "classify-mixed", "kind": "classify", "state": STATE,
          "heads": [queue, levels], "options": {"include_confidence": True}},
+        # The image read: a different endpoint path, a server-rendered prompt, one
+        # direct read, no calibration, and a `Raw` block whose shape the text path
+        # does not have. It is a recorded exchange like the rest, which is what
+        # covers the client-level parts the offline chat replay cannot see.
+        {"name": "classify-image", "kind": "classify", "state": {},
+         "heads": [described("color", "What is the dominant color in this image?",
+                              ["red", "blue"])],
+         "image": IMAGE, "options": {"include_probabilities": True}},
+        {"name": "decide-image", "kind": "decide", "state": {},
+         "questions": [choice("color", "What is the dominant color in this image?",
+                              [("red", "Red"), ("blue", "Blue")])],
+         "image": IMAGE, "options": {"debug": True}},
     ]
 
 

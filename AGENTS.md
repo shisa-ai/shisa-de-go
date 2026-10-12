@@ -270,8 +270,11 @@ version, and the test fails when the fixture disagrees with it.
   server's `system_fingerprint` and not an endpoint label. The fingerprint in
   `docs/READOUT-DE2.md` (`vllm-0.30.0-709530de`) is the local DE-2 server the
   page's numbers came from. The client parity fixture's responses carried
-  `vllm-0.30.0-tp2-ca69195e` on 2026-10-10. Logprobs move between serving shapes;
-  a number without its fingerprint is not reproducible.
+  `vllm-0.30.0-tp2-ca69195e` on 2026-10-12. Logprobs move between serving shapes;
+  a number without its fingerprint is not reproducible. They also move between
+  sessions against one unchanged serving shape, which is why the fixture's
+  numbers changed when it was regenerated two days after it was first recorded,
+  with the fingerprint the same.
 - The research repository's numbers are its own, not this repo's. Cite them with
   their source and say they were not reproduced here.
 - The model card's published numbers are the card's, not this repo's. When a
@@ -300,16 +303,15 @@ version, and the test fails when the fixture disagrees with it.
   where the record does not apply. `docs/PORT.md` records both sides. The Go test
   derives the expectation from the model's own applicability rather than writing
   the temperature down; do not replace it with a literal.
-- There is no live measurement of the image read, here or in the Python suite.
-  It needs a vision-enabled server, and the servers every other number here came
-  from are text-only, so every image number in these docs is either the DE-2
-  page's own (measured in the research repository, with its fingerprint) or a
-  replay of the Python client's recorded verdicts. The readout replay is request
-  for request against an `httptest` stub and the client-level parts are Go-only
-  tests, which is weaker than a recording: the raw block's `prompt` and
-  `top_logprobs` shapes went unnoticed until a review found them. Say which of
-  those a claim rests on rather than writing it as if this code had been measured
-  against a server.
+- The image read is live-covered by the gate's `image-color` question, which
+  compares both clients on one image against the hosted endpoint, and by the two
+  image cases in the client parity fixture. Both need a server that will accept an
+  image content part: the gate measures that rather than assuming it and skips the
+  question with the server's own answer as the reason when it will not, and the
+  recorder leaves the image questions out of the fixture for the same reason,
+  recording `images` and `images_reason`. Do not turn either into a silent pass:
+  a skip here is a statement about the deployment, and the claim it supports has
+  to say so.
 
 ## Git Discipline
 

@@ -37,8 +37,11 @@ type clientFixture struct {
 }
 
 type clientCase struct {
-	Name      string            `json:"name"`
-	State     json.RawMessage   `json:"state"`
+	Name  string          `json:"name"`
+	State json.RawMessage `json:"state"`
+	// Image is a data URL when the case is an image case, and empty otherwise. It
+	// is on the call rather than among the options, the way both clients take it.
+	Image     string            `json:"image"`
 	Kind      string            `json:"kind"`
 	Questions []questionFixture `json:"questions"`
 	Heads     []questionFixture `json:"heads"`
@@ -425,6 +428,7 @@ func runParityCase(t *testing.T, model *DecisionModel, one clientCase) *Decision
 			Probability: one.Options.Probability,
 			Calibrated:  one.Options.Calibrated,
 			Debug:       one.Options.Debug,
+			Image:       one.Image,
 			Overrides:   overrides,
 		})
 		if err != nil {
@@ -441,6 +445,7 @@ func runParityCase(t *testing.T, model *DecisionModel, one clientCase) *Decision
 				Probability: one.Options.Probability,
 				Calibrated:  one.Options.Calibrated,
 				Debug:       one.Options.Debug,
+				Image:       one.Image,
 				Overrides:   overrides,
 			},
 			IncludeConfidence:    one.Options.IncludeConfidence,
@@ -485,6 +490,15 @@ func parityHead(t *testing.T, spec questionFixture) HeadSpec {
 			options = append(options, Option{Key: label})
 		}
 		return HeadSpec{Options: options}
+	case "described":
+		// The same label set as `labels`, with the head's own prompt. Without this
+		// branch the default would read `Options`, which a `described` head does not
+		// carry, and the head would be sent with no options at all.
+		options := make([]Option, 0, len(spec.Labels))
+		for _, label := range spec.Labels {
+			options = append(options, Option{Key: label})
+		}
+		return HeadSpec{Options: options, Instructions: spec.Instructions}
 	case "mapping":
 		return HeadSpec{Options: parityOptions(t, spec.Options)}
 	case "levels":

@@ -16,6 +16,7 @@ script against a real endpoint and reads what it wrote.
 
 from __future__ import annotations
 
+import base64
 import json
 import pathlib
 import sys
@@ -91,6 +92,36 @@ class EndpointCase(EnvCase):
         self.assertIn('os.environ.get("SHISA_DE_MODEL"', source)
 
 
+class ApiUrlCase(EnvCase):
+    """The capability probe's URL, which has to be the client's own.
+
+    Appending `/chat/completions` to the base directly 404s against the default
+    endpoint, whose base does not end in `/v1`. That 404 was reported as "the
+    endpoint does not serve images", which is a false negative that reads as a
+    verdict about the server.
+    """
+
+    def test_a_base_without_v1(self):
+        self.setenv("SHISA_DE_ENDPOINT", "https://api.shisa.ai/openai")
+        self.assertEqual(live_parity.api_url("/v1/chat/completions"),
+                         "https://api.shisa.ai/openai/v1/chat/completions")
+
+    def test_a_base_ending_in_v1_does_not_double_it(self):
+        self.setenv("SHISA_DE_ENDPOINT", "http://127.0.0.1:8021/v1")
+        self.assertEqual(live_parity.api_url("/v1/chat/completions"),
+                         "http://127.0.0.1:8021/v1/chat/completions")
+
+    def test_a_trailing_slash_is_dropped(self):
+        self.setenv("SHISA_DE_ENDPOINT", "http://127.0.0.1:8021/")
+        self.assertEqual(live_parity.api_url("/v1/models"),
+                         "http://127.0.0.1:8021/v1/models")
+
+    def test_the_default_endpoint_is_the_one_the_probe_hits(self):
+        self.unsetenv("SHISA_DE_ENDPOINT")
+        self.assertEqual(live_parity.api_url("/v1/chat/completions"),
+                         live_parity.BASE_URL + "/v1/chat/completions")
+
+
 # -- the tokenizer pin --------------------------------------------------------
 
 
@@ -136,9 +167,10 @@ class TokenizerRevisionCase(EnvCase):
 # -- the drift arithmetic -----------------------------------------------------
 
 
-def answer(value, probabilities, strategy="repeat2", requests=2):
+def answer(value, probabilities, strategy="repeat2", requests=2, **extra):
+    """One recorded answer, plus anything a particular question adds to it."""
     return {"value": value, "probabilities": probabilities,
-            "strategy": strategy, "requests": requests}
+            "strategy": strategy, "requests": requests, **extra}
 
 
 class DriftCase(unittest.TestCase):
@@ -229,7 +261,24 @@ class DriftCase(unittest.TestCase):
         self.assertEqual(
             set(live_parity.drift([one, one])["q"]),
             {"max_probability_delta", "value_delta", "same_value",
-             "same_strategy", "same_requests"})
+             "same_strategy", "same_requests", "same_system_render"})
+
+    def test_notices_a_system_render_that_flipped(self):
+        """An image question's verdict on the system turn, not a measurement.
+
+        Two passes that disagree on it are the server being unstable in the one
+        place the image read makes a judgement, so it belongs in the same report
+        as a moved value even though it has no delta.
+        """
+        one = {"q": answer("a", {"a": 1.0}, system_render="differs")}
+        two = {"q": answer("a", {"a": 1.0}, system_render="string")}
+        report = live_parity.drift([one, two])
+        self.assertFalse(report["q"]["same_system_render"])
+        self.assertTrue(report["q"]["same_value"])
+        # A text question has no such key on either side, and that is agreement.
+        self.assertTrue(
+            live_parity.drift([{"q": answer("a", {"a": 1.0})},
+                               {"q": answer("a", {"a": 1.0})}])["q"]["same_system_render"])
 
     def test_handles_a_key_the_other_pass_lacks(self):
         first = {"q": answer("a", {"a": 0.75, "b": 0.25})}
@@ -279,6 +328,32 @@ class QuestionSetCase(unittest.TestCase):
     def test_every_type_the_recorder_builds_is_used(self):
         kinds = {spec["type"] for spec in self.document()["questions"]}
         self.assertEqual(kinds, {"noul", "choice", "score"})
+
+    def test_the_set_covers_the_image_read(self):
+        """The image read is the one read that needs a different endpoint path.
+
+        Without a question carrying `image`, nothing in the live suite ever sends
+        an image, and a change to the chat request would be compared against
+        nothing.
+        """
+        images = [spec for spec in self.document()["questions"] if spec.get("image")]
+        self.assertTrue(images, "no question in the set carries an image")
+        for spec in images:
+            # A data URL, so both clients send the same bytes with no shared file.
+            self.assertTrue(spec["image"].startswith("data:image/png;base64,"), spec["id"])
+            payload = base64.b64decode(spec["image"].split(",", 1)[1])
+            self.assertTrue(payload.startswith(b"\x89PNG\r\n\x1a\n"),
+                            f"{spec['id']} is not a PNG")
+            # Two options, so the answer carries a distribution to compare rather
+            # than a single code whose top-k has nothing to disagree about.
+            self.assertEqual(len(spec["options"]), 2, spec["id"])
+
+    def test_the_image_probe_is_a_png(self):
+        """The capability probe has to carry a real image, or a text-only server
+        would answer it 200 and the gate would report vision it does not have."""
+        payload = base64.b64decode(live_parity._PROBE_IMAGE.split(",", 1)[1])
+        self.assertTrue(payload.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual(live_parity._PROBE_IMAGE.split(",", 1)[0], "data:image/png;base64")
 
 
 if __name__ == "__main__":

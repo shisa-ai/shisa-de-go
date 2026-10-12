@@ -35,10 +35,12 @@ import (
 // Two things live here. `TestLiveParityAgainstPython` is the M6 gate: the fixed
 // question set in `testdata/live_questions.json`, asked of the same endpoint by
 // both clients, has to produce the same chosen value and the same distribution.
-// The rest are the DE-2 half of the Python `tests/test_live.py`; the DE-1 case
-// is absent because this port has no DE-1 read, and the image case because it
-// needs an image file and a server with vision enabled. `docs/PORT.md` records
-// both.
+// The set includes an image question, so the gate covers the one read that goes
+// to a different endpoint path; a server that will not answer an image request
+// skips that case with the server's own answer as the reason rather than failing
+// on a capability the rest of the gate does not use. The rest are the DE-2 half
+// of the Python `tests/test_live.py`; the DE-1 case is absent because this port
+// has no DE-1 read. `docs/PORT.md` records both.
 //
 // These tests spend real requests and are not deterministic in the way an
 // offline test is: a server that changes its mind between two runs makes them
@@ -172,12 +174,16 @@ type liveQuestion struct {
 	// one-read view, so the set covers more than the family's default read.
 	Policy      *string `json:"policy"`
 	Probability bool    `json:"probability"`
+	// Image makes the question an image question. It is a data URL so both clients
+	// send the same bytes and neither needs a file the other can see.
+	Image string `json:"image"`
 }
 
 // call is the per-call settings this question asks for.
 func (q liveQuestion) call() CallOptions {
 	return CallOptions{
 		Probability: q.Probability,
+		Image:       q.Image,
 		Overrides:   OptionOverrides{Policy: q.Policy},
 	}
 }
@@ -264,23 +270,34 @@ type livePythonAnswer struct {
 	ThoughtTokens  int                `json:"thought_tokens"`
 	ThoughtClosed  *bool              `json:"thought_closed"`
 	MissingFromTop []string           `json:"missing_from_top"`
+	// SystemRender is recorded for an image question only: whether the server
+	// rendered the system turn as the string form or with the space vLLM's
+	// content-part template writes. The text read has no such field, so a text
+	// question leaves it empty and nothing compares it.
+	SystemRender string `json:"system_render"`
 }
 
 // livePythonMeta is the provenance written beside it.
 type livePythonMeta struct {
-	Endpoint           string   `json:"endpoint"`
-	Model              string   `json:"model"`
-	ServingFingerprint string   `json:"serving_fingerprint"`
-	Recorded           string   `json:"recorded"`
-	PythonRepo         string   `json:"python_repo"`
-	ReadoutVersion     string   `json:"readout_version"`
-	TokenizerRevision  string   `json:"tokenizer_revision"`
-	Questions          int      `json:"questions"`
-	Passes             int      `json:"passes"`
-	Requests           int      `json:"requests"`
-	SelfDelta          float64  `json:"self_delta"`
-	Unstable           []string `json:"unstable"`
-	SHA256             string   `json:"sha256"`
+	Endpoint           string `json:"endpoint"`
+	Model              string `json:"model"`
+	ServingFingerprint string `json:"serving_fingerprint"`
+	Recorded           string `json:"recorded"`
+	PythonRepo         string `json:"python_repo"`
+	ReadoutVersion     string `json:"readout_version"`
+	TokenizerRevision  string `json:"tokenizer_revision"`
+	Questions          int    `json:"questions"`
+	Passes             int    `json:"passes"`
+	Requests           int    `json:"requests"`
+	// Images is whether the endpoint answered an image request, and ImagesReason
+	// why not when it did not. The recorder leaves the image questions out when it
+	// is false, so the Go side skips the same case for the same measured reason
+	// rather than failing on a capability the text gate does not use.
+	Images       bool     `json:"images"`
+	ImagesReason string   `json:"images_reason"`
+	SelfDelta    float64  `json:"self_delta"`
+	Unstable     []string `json:"unstable"`
+	SHA256       string   `json:"sha256"`
 }
 
 // livePythonRepo is the Python client the answers come from.
@@ -433,8 +450,25 @@ func TestLiveParityAgainstPython(t *testing.T) {
 
 	recorded, meta := recordPythonAnswers(t)
 	set := loadLiveQuestions(t)
-	if meta.Questions != len(set.Questions) {
-		t.Fatalf("the recording holds %d questions and the set has %d", meta.Questions, len(set.Questions))
+	// The recorder leaves the image questions out when the endpoint will not answer
+	// an image request, so the count it should have recorded depends on that.
+	asked := 0
+	for _, question := range set.Questions {
+		if question.Image != "" && !meta.Images {
+			continue
+		}
+		asked++
+	}
+	if meta.Questions != asked {
+		t.Fatalf("the recording holds %d questions and the set asks for %d of them",
+			meta.Questions, asked)
+	}
+	if !meta.Images && meta.ImagesReason == "" {
+		t.Fatal("the recording left the image questions out without saying why")
+	}
+	if meta.Images && meta.ImagesReason != "" {
+		t.Fatalf("the endpoint served an image and the recording also gives a reason it could not: %s",
+			meta.ImagesReason)
 	}
 	if meta.Model != liveModelID() {
 		t.Fatalf("the recording is of %s and the suite is pointed at %s", meta.Model, liveModelID())
@@ -493,6 +527,12 @@ func TestLiveParityAgainstPython(t *testing.T) {
 
 	for _, question := range set.Questions {
 		t.Run(question.ID, func(t *testing.T) {
+			if question.Image != "" && !meta.Images {
+				// The endpoint would not answer an image request. That is a property
+				// of the deployment, not of the port, and the reason is the server's
+				// own answer rather than this test's assumption.
+				t.Skipf("the endpoint does not serve images: %s", meta.ImagesReason)
+			}
 			want, ok := recorded.Questions[question.ID]
 			if !ok {
 				t.Fatalf("the recording has no %s", question.ID)
@@ -518,7 +558,7 @@ func TestLiveParityAgainstPython(t *testing.T) {
 			if !ok {
 				t.Fatalf("no answer for %s", question.Head)
 			}
-			compareLiveAnswer(t, got, want)
+			compareLiveAnswer(t, got, want, decision.Raw[question.Head])
 		})
 	}
 
@@ -532,10 +572,41 @@ func TestLiveParityAgainstPython(t *testing.T) {
 	}
 }
 
+// liveSystemRenderProblem is the image read's one judgement compared against the
+// recording, as a string rather than an error so it can be tested directly.
+//
+// An empty want means the question was not an image question, and the text read
+// has no such key to compare. A recorded verdict with nothing in `raw` is a
+// problem too: it means the Go client stopped recording the judgement, which is
+// the failure a comparison against a missing key would otherwise pass.
+func liveSystemRenderProblem(want string, raw map[string]any) string {
+	if want == "" {
+		return ""
+	}
+	rendered, ok := raw["system_render"].(string)
+	if !ok {
+		return fmt.Sprintf("the recording says the server rendered the system turn as %q "+
+			"and the answer carries no system_render at all", want)
+	}
+	if rendered != want {
+		return fmt.Sprintf("the server rendered the system turn as %q and the recording is "+
+			"%q; the image read answers either way, so this is the judgement rather than "+
+			"the verdict", rendered, want)
+	}
+	return ""
+}
+
 // compareLiveAnswer requires one answer to be the recorded one.
-func compareLiveAnswer(t *testing.T, got Answer, want livePythonAnswer) {
+//
+// `raw` is the head's entry in `Decision.Raw`, which is where the image read's
+// `system_render` verdict lives; a text answer has no such key and none is
+// expected.
+func compareLiveAnswer(t *testing.T, got Answer, want livePythonAnswer, raw map[string]any) {
 	t.Helper()
 
+	if problem := liveSystemRenderProblem(want.SystemRender, raw); problem != "" {
+		t.Error(problem)
+	}
 	if got.Type != want.Type {
 		t.Errorf("the type is %s and the recording is %s", got.Type, want.Type)
 	}
@@ -663,8 +734,9 @@ func liveNumber(value any) (float64, bool) {
 //
 // The DE-2 half of the Python `tests/test_live.py`. The DE-1 overflow case and
 // the model card's 161-token example are absent because this port has no DE-1
-// read, and the image case because it needs an image file and a server with
-// vision enabled; `docs/PORT.md` records both.
+// read; the Python suite's image case is the gate's `image-color` question rather
+// than a test here, so that the two clients are compared on it. `docs/PORT.md`
+// records both.
 
 // liveSpam is the Python suite's obvious case.
 var liveSpam = map[string]any{
@@ -966,6 +1038,68 @@ func TestLiveModelIsTheRecordedCheckpoint(t *testing.T) {
 // recorder run whose own passes disagreed is a usable recording or a failure.
 // It was unreachable when any non-zero exit was a plain error, which made the
 // "the server moved, so this run is inconclusive" reporting dead code.
+// TestLiveSystemRenderComparison pins the image read's one judgement against the
+// recording, including the case that would otherwise pass: a recorded verdict
+// and an answer that carries none.
+func TestLiveSystemRenderComparison(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		want    string
+		raw     map[string]any
+		problem bool
+	}{
+		{"a text answer has nothing to compare", "",
+			map[string]any{"probabilities": map[string]any{}}, false},
+		{"the same verdict", "differs",
+			map[string]any{"system_render": "differs"}, false},
+		{"the string form", "string",
+			map[string]any{"system_render": "string"}, false},
+		{"a different verdict", "differs",
+			map[string]any{"system_render": "string"}, true},
+		{"no verdict recorded at all", "differs",
+			map[string]any{"probabilities": map[string]any{}}, true},
+		{"a verdict that is not a string", "differs",
+			map[string]any{"system_render": 7}, true},
+		{"a nil raw entry", "differs", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			problem := liveSystemRenderProblem(tc.want, tc.raw)
+			if tc.problem && problem == "" {
+				t.Errorf("want %q against %v reported no problem", tc.want, tc.raw)
+			}
+			if !tc.problem && problem != "" {
+				t.Errorf("want %q against %v reported %s", tc.want, tc.raw, problem)
+			}
+		})
+	}
+}
+
+// TestLiveQuestionSetHasAnImageCase keeps the live gate covering the one read
+// that needs a different endpoint path. Without it nothing in the live suite
+// ever sends an image, and the chat request would be compared against nothing.
+func TestLiveQuestionSetHasAnImageCase(t *testing.T) {
+	set := loadLiveQuestions(t)
+	images := 0
+	for _, question := range set.Questions {
+		if question.Image == "" {
+			continue
+		}
+		images++
+		if !strings.HasPrefix(question.Image, "data:image/png;base64,") {
+			t.Errorf("%s carries an image that is not a PNG data URL: %.40s...",
+				question.ID, question.Image)
+		}
+		// A data URL, so the two clients send the same bytes with no file either
+		// one has to see, and its own call is what selects the image read.
+		if call := question.call(); call.Image != question.Image {
+			t.Errorf("%s does not put its image on the call", question.ID)
+		}
+	}
+	if images == 0 {
+		t.Fatal("no question in the live set carries an image")
+	}
+}
+
 func TestLiveRecorderExitClassification(t *testing.T) {
 	for _, testCase := range []struct {
 		status   int

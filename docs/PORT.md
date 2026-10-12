@@ -634,7 +634,7 @@ hosted endpoint, and the results are checked in as fixtures. The Python client i
 The tokenizer, render, JSON and readout fixtures were produced with no served
 model, so they carry no serving fingerprint. The client fixture was recorded
 against the hosted endpoint and does: the responses carried
-`system_fingerprint: vllm-0.30.0-tp2-ca69195e`, on 2026-10-10, with the tokenizer
+`system_fingerprint: vllm-0.30.0-tp2-ca69195e`, on 2026-10-12, with the tokenizer
 pinned to `8f21734b27b3462471c4662d5638e52195b005a3`. Where a number below is a
 measurement of a served checkpoint, it says so.
 
@@ -776,9 +776,9 @@ checkpoint, and says so where it appears.
   panicking. A separate test pins the Go type in every map a caller reads,
   because the parity gate compares through JSON and cannot see a `*float64` where
   the Python client returns a number.
-- **Client.** 24 cases, 35 recorded exchanges, replayed request for request and
+- **Client.** 26 cases, 37 recorded exchanges, replayed request for request and
   answer for answer. The fixture was recorded live against the hosted endpoint
-  (`vllm-0.30.0-tp2-ca69195e`, 2026-10-10) through a forwarding transport, so the
+  (`vllm-0.30.0-tp2-ca69195e`, 2026-10-12) through a forwarding transport, so the
   responses are the server's and the answers are the Python client's; the Go test
   replays the recorded responses and makes no request of its own. The cases
   cover the gate from both sides (`decide-noul-sure` and
@@ -788,8 +788,9 @@ checkpoint, and says so where it appears.
   score, a 27-option head above the think cap, `direct`, an explicit `repeat`,
   `probability`, a checkpoint the shipped record does not cover, an aliased
   checkpoint, several heads in one call, the debug read, a debug read that
-  reaches the thought, and `classify` with label sets, levels, multi-label, the
-  mapping and levels shorthands, the probability view and mixed head types.
+  reaches the thought, the image read from both entry points, and `classify` with
+  label sets, levels, multi-label, the mapping and levels shorthands, the
+  probability view and mixed head types.
   Every request body the Go client sends is matched against a recorded one -- a
   body the Python client never sent fails the case, and every recorded exchange
   must be used -- and each answer is compared whole, three times over: the
@@ -804,14 +805,15 @@ checkpoint, and says so where it appears.
   fails; `TestFixtureIntegrityChecksCanFail` runs that check against mutated
   copies of the provenance, because a check nobody has shown to fail is not one.
 
-  This fixture has no image case, and it cannot gain one from the same endpoint:
-  the image read needs a vision-enabled server, which is also why the image path
-  has no live coverage. What covers the image path instead is the readout replay
-  above (the read itself, request for request) plus Go-only tests for the
-  client-level parts the replay cannot see: the flat `Raw` shape, its debug form,
-  the one-read accounting, the `Calibrated` default, and the 26-option refusal.
-  That is a weaker check than a recording, and it is where the raw block's
-  `prompt` and `top_logprobs` shapes went unnoticed until a review found them.
+  This fixture now has an image case, from both entry points, recorded through
+  `/v1/chat/completions` like the rest. It could not gain one until the endpoint's
+  vision support was checked: the read needs a server that will accept an image
+  content part, and the assumption that the endpoint here was text-only was wrong.
+  What the two image cases add over the offline chat replay is the client-level
+  `Raw` block -- the `prompt` and `top_logprobs` shapes under debug, and the
+  `system_render` verdict -- compared whole against a real exchange. That is the
+  block that went unnoticed until the M7 review found it, and the offline replay
+  cannot see it because it compares the read rather than the client's view of it.
 - **Command line.** `explain`'s output, `doctor`'s text report and `doctor
   --json` were each compared line for line against the Python command line
   against the hosted endpoint, and are identical apart from the numbers a fresh
@@ -891,10 +893,9 @@ checkpoint, and says so where it appears.
   one call with the request accounting, a JSON round trip, the 27/128/256-option
   read at one request and two, and the thinking read. The DE-1 overflow case and
   the model card's 161-token example are absent because this port has no DE-1
-  read. The image case is absent for a different reason: it needs an image file
-  and a server with vision enabled, so it is a manual check rather than a gate,
-  and the read itself is covered offline by the recorded chat replay in
-  `testdata/readout_parity.json`.
+  read. The Python suite's image case is the gate's `image-color` question rather
+  than a test of its own, so that the two clients are compared on it rather than
+  each being checked alone.
 
   The Python suite's `test_de2_thinks_when_the_repeated_read_is_unsure` ends with
   `assert answer.calibrated is False`, which was written before the DE-2 record

@@ -1,5 +1,5 @@
 {
-  "note": "The fixed question set the live parity harness runs through both clients. Each entry is one head: a Noul, a Choice, or a Score. `gate` overrides the think gate for that question, which is how the thinking read is exercised without sending every other question through a thought.",
+  "note": "The fixed question set the live parity harness runs through both clients. Each entry is one head: a Noul, a Choice, or a Score. `gate` overrides the think gate for that question, which is how the thinking read is exercised without sending every other question through a thought. `image` makes the question an image question: it is a data URL so both clients send the same bytes and neither needs a file the other can see. An endpoint that does not serve images skips that case rather than failing it; see docs/PORT.md.",
   "evidence_note": "`evidence` is the JSON value the readout serializes into the prompt, so it is the same bytes on both sides.",
   "questions": [
     {
@@ -1292,6 +1292,24 @@
       ],
       "evidence": "What is 17 * 23 - 111?",
       "gate": 1.0
+    },
+    {
+      "id": "image-color",
+      "head": "color",
+      "type": "choice",
+      "instructions": "What is the dominant color in this image?",
+      "options": [
+        {
+          "key": "red",
+          "description": null
+        },
+        {
+          "key": "blue",
+          "description": null
+        }
+      ],
+      "evidence": {},
+      "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg=="
     }
   ]
 }

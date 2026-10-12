@@ -121,6 +121,66 @@ def api_key() -> str:
     raise SystemExit("set one of " + ", ".join(API_KEY_ENVS) + " before recording")
 
 
+def api_url(path: str) -> str:
+    """A URL on the endpoint, resolved the way the client resolves one.
+
+    `DecisionModel` strips a trailing `/v1` from the base URL and then appends
+    `/v1/...`, so a base given either way lands on the same path. A probe that
+    appended `/chat/completions` to the base directly would 404 against the
+    default endpoint -- whose base does not end in `/v1` -- and report a
+    text-only server, which is a false negative that reads as a verdict.
+    """
+    base = endpoint().rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+    return base + path
+
+
+def serves_images() -> tuple[bool, str]:
+    """Whether the endpoint will answer a chat request that carries an image.
+
+    The image read is the only read that needs `/v1/chat/completions` with vision
+    enabled, and a text-only vLLM is a documented deployment for this client. So
+    the image question is asked when the endpoint can serve it and skipped when it
+    cannot, rather than making the text gate depend on a capability it does not
+    use.
+
+    The probe is one request and it is deliberately the real shape: an image
+    content part on a one-option question. It returns the reason as well as the
+    verdict so the skip says what the server answered.
+    """
+    httpx = http()
+    body = {
+        "model": model_id(),
+        "messages": [
+            {"role": "system", "content": "Answer with one option letter."},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": _PROBE_IMAGE}},
+                {"type": "text", "text": '{"options": ["red"]}'},
+            ]},
+        ],
+        "max_tokens": 1,
+        "temperature": 0,
+    }
+    try:
+        with httpx.Client(timeout=120.0) as client:
+            response = client.post(
+                api_url("/v1/chat/completions"),
+                json=body, headers={"Authorization": f"Bearer {api_key()}"})
+    except Exception as exc:  # noqa: BLE001 -- the reason is the point
+        return False, f"the probe could not be sent: {exc}"
+    if response.status_code == 200:
+        return True, ""
+    return False, (f"the endpoint answered {response.status_code} to an image request: "
+                   f"{response.text[:200]}")
+
+
+#: A 32x32 solid red PNG, the shape the Python live suite's image test builds.
+_PROBE_IMAGE = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAA"
+                "KElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6Q"
+                "kAAAAABJRU5ErkJggg==")
+
+
 def tokenizer_revision() -> str:
     """The revision of the checkpoint's cached tokenizer, or a reason there is none.
 
@@ -203,13 +263,23 @@ def build(spec: dict) -> object:
 
 
 def record(spec: dict, model: Any) -> dict:
-    """One head's answer, as the Go side has to reproduce it."""
+    """One head's answer, as the Go side has to reproduce it.
+
+    `image` is passed straight through, as the data URL the question set carries.
+    Both clients send the same bytes that way, with no file either one has to see.
+
+    `system_render` is recorded only for an image question, because it is the one
+    thing the image read decides rather than follows: whether the server rendered
+    the system turn as the string form or with the space vLLM's content-part
+    template writes. The text read has no such field.
+    """
     result = model.decide(
         spec["evidence"], {spec["head"]: build(spec)},
         policy=spec.get("policy"),
-        probability=spec.get("probability", False))
+        probability=spec.get("probability", False),
+        image=spec.get("image"))
     answer = result.answers[spec["head"]]
-    return {
+    recorded = {
         "type": answer.type,
         "value": answer.value,
         "label": answer.label,
@@ -224,6 +294,9 @@ def record(spec: dict, model: Any) -> dict:
         "thought_closed": answer.thought_closed,
         "missing_from_top": answer.missing_from_top,
     }
+    if spec.get("image"):
+        recorded["system_render"] = result.raw[spec["head"]].get("system_render")
+    return recorded
 
 
 def run_set(models: dict, questions: list[dict]) -> dict[str, dict]:
@@ -253,6 +326,10 @@ def _movement(one: dict, other: dict) -> dict:
         "same_value": same_value,
         "same_strategy": one["strategy"] == other["strategy"],
         "same_requests": one["requests"] == other["requests"],
+        # An image question's verdict on the system turn is not a measurement, so
+        # it has no delta; a flip between two passes is still the server being
+        # unstable, which is what the caller does with this.
+        "same_system_render": one.get("system_render") == other.get("system_render"),
     }
 
 
@@ -280,6 +357,8 @@ def drift(passes: list[dict[str, dict]]) -> dict[str, dict]:
             seen["same_value"] = seen["same_value"] and here["same_value"]
             seen["same_strategy"] = seen["same_strategy"] and here["same_strategy"]
             seen["same_requests"] = seen["same_requests"] and here["same_requests"]
+            seen["same_system_render"] = (
+                seen["same_system_render"] and here["same_system_render"])
     return report
 
 
@@ -302,6 +381,17 @@ def main(argv: list[str] | None = None) -> int:
     out = pathlib.Path(args.out)
     document = json.loads(QUESTIONS.read_text())
     questions = document["questions"]
+
+    # An image question needs a server with vision enabled, and a text-only vLLM is
+    # a documented deployment. The capability is measured rather than declared, and
+    # the meta carries it so the Go side can skip the same case for the same
+    # reason instead of failing on it.
+    images, why_not = serves_images()
+    if not images:
+        dropped = [spec["id"] for spec in questions if spec.get("image")]
+        questions = [spec for spec in questions if not spec.get("image")]
+        print(f"not recording {', '.join(dropped) or 'nothing'}: {why_not}", file=sys.stderr)
+
     recorder = Recorder()
     transport = recorder.http.MockTransport(recorder.handler)
 
@@ -327,7 +417,8 @@ def main(argv: list[str] | None = None) -> int:
     movement = drift(passes)
     self_delta = max((entry["max_probability_delta"] for entry in movement.values()), default=0.0)
     unstable = [name for name, entry in movement.items()
-                if not (entry["same_value"] and entry["same_strategy"] and entry["same_requests"])]
+                if not (entry["same_value"] and entry["same_strategy"]
+                        and entry["same_requests"] and entry["same_system_render"])]
 
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(
@@ -345,6 +436,8 @@ def main(argv: list[str] | None = None) -> int:
         "questions": len(questions),
         "passes": len(passes),
         "requests": recorder.requests,
+        "images": images,
+        "images_reason": why_not,
         "self_delta": self_delta,
         "unstable": unstable,
         "sha256": hashlib.sha256(out.read_bytes()).hexdigest(),
@@ -353,7 +446,9 @@ def main(argv: list[str] | None = None) -> int:
                  "endpoint in TestLiveParityAgainstPython and has to agree on the chosen "
                  "value and on the distribution within tolerance. `self_delta` is how far "
                  "the Python client's own two passes are apart, which is the server's "
-                 "repeatability rather than the port's."),
+                 "repeatability rather than the port's. `images` is whether the endpoint "
+                 "answered an image request, and `images_reason` why not when it did not; "
+                 "the image questions are left out when it is false."),
     }
     out.with_name(out.stem + ".meta.json").write_text(json.dumps(meta, indent=2) + "\n")
 
