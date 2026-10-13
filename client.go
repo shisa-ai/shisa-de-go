@@ -31,13 +31,26 @@ import (
 // and every question in the call is asked about it, through a single read that
 // the server renders. Overflow is not, because DE-2 reads a wide text choice
 // natively and DE-1 is the only family that needs it. A DE-1 checkpoint is
-// refused outright rather than read through the other family's contract.
+// refused outright rather than read through the other family's contract, and
+// there is no DE-1 deployment to reach: the name is served as an alias for
+// `DefaultModel`, which is DE-2.
 
 // DefaultEndpoint is the hosted DE endpoint.
 const DefaultEndpoint = "https://api.shisa.ai/openai"
 
 // DefaultModel is the checkpoint a client reads when nothing names one.
-const DefaultModel = "shisa-ai/shisa-de-1"
+//
+// It is `shisa-ai/shisa-de-2`. DE-1 is retired: the name `shisa-ai/shisa-de-1`
+// is still served, but as an alias for this checkpoint, so there is no DE-1
+// deployment left to default to. `docs/PORT.md` records the measurement.
+const DefaultModel = "shisa-ai/shisa-de-2"
+
+// retiredDE1Model is the name DE-1 was served under. It is still listed by the
+// hosted endpoint and still answers, but it is an alias for `DefaultModel`: the
+// endpoint returns `shisa-ai/shisa-de-2` as the served model for it, from the
+// same serving fingerprint. It is unexported because only the refusal message
+// needs it; nothing in the API takes the retired name as a valid value.
+const retiredDE1Model = "shisa-ai/shisa-de-1"
 
 // EndpointEnv names the environment variable that overrides the endpoint.
 const EndpointEnv = "SHISA_DE_ENDPOINT"

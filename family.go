@@ -46,8 +46,10 @@ const (
 // returned instead of falling back to another contract, because the answers
 // would be unmeasured.
 //
-// The message carries the fix, because the default model id is DE-1: a zero
-// DecisionModelConfig reaches this error rather than a working client.
+// The message carries the fix. It used to say the default was DE-1, which was
+// true when a zero DecisionModelConfig reached this error; DE-1 is retired and
+// the default is DE-2 now, so the message says what happened to the DE-1 name
+// instead.
 type UnsupportedFamilyError struct {
 	Family Family
 	Model  string
@@ -57,9 +59,11 @@ type UnsupportedFamilyError struct {
 func (e *UnsupportedFamilyError) Error() string {
 	return fmt.Sprintf(
 		"shisade: %s is a %s model (%s), and this client implements the %s contract only; "+
-			"reading it as %s would return answers nobody has measured. Pass a DE-2 "+
-			"checkpoint as Model (the default is the DE-1 one), or use the Python client",
-		e.Model, e.Family, e.Source, FamilyDE2, FamilyDE2)
+			"reading it as %s would return answers nobody has measured. DE-1 is retired: the "+
+			"hosted endpoint still lists %s and still answers it, but as an alias for %s, so "+
+			"pass a DE-2 checkpoint as Model. A DE-1 checkpoint of your own needs the Python "+
+			"client",
+		e.Model, e.Family, e.Source, FamilyDE2, FamilyDE2, retiredDE1Model, DefaultModel)
 }
 
 // NormalizeFamily reads "de1", "DE-1", "de_2" and the like as a Family.

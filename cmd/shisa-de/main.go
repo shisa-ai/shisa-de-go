@@ -22,11 +22,12 @@ import (
 
 // defaultModel is the checkpoint the command line reads when nothing names one.
 //
-// It is not the library's `DefaultModel`, which is `shisa-ai/shisa-de-1` to
-// match the Python client's `DEFAULT_MODEL` and which this port refuses. A
-// command whose zero-config form can only fail is not a command, so the CLI
-// defaults to the one checkpoint it can read and says so in `--help`.
-const defaultModel = "shisa-ai/shisa-de-2"
+// It is the library's `DefaultModel` rather than a second copy of the id, so
+// the two cannot disagree. It used to differ: the library defaulted to
+// `shisa-ai/shisa-de-1` to match the Python client, which this port refuses, so
+// a command whose zero-config form could only fail needed its own. DE-1 is
+// retired now and the library defaults to DE-2, so the command line inherits.
+const defaultModel = shisade.DefaultModel
 
 // usageError is a bad invocation: the message is printed with the usage and the
 // exit status is 2, which is what `argparse`'s `parser.error` does.
