@@ -464,6 +464,39 @@ func TestNoStaleImageCoverageClaims(t *testing.T) {
 	}
 }
 
+// TestReadmeStatesTheRealDefaultModel keeps the stated default and the constant
+// together.
+//
+// The README's defaults table and `docs/PORT.md` both name the checkpoint a zero
+// config reads, and both still said `shisa-ai/shisa-de-1` after DE-1 was retired
+// and `DefaultModel` moved to DE-2. A default is a fact about the code; a page
+// stating a different one sends a reader to a checkpoint this port refuses.
+func TestReadmeStatesTheRealDefaultModel(t *testing.T) {
+	for _, tc := range []struct {
+		path    string
+		pattern string
+	}{
+		{"README.md", "\\| Model \\| `Model` \\| the field, otherwise `([^`]+)` \\|"},
+		{"docs/PORT.md", "`DefaultModel` is\\s+`([^`]+)`"},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.FromSlash(tc.path))
+			if err != nil {
+				t.Fatalf("reading %s: %v", tc.path, err)
+			}
+			match := regexp.MustCompile(tc.pattern).FindStringSubmatch(string(raw))
+			if match == nil {
+				t.Fatalf("%s no longer states the default model in the form %q, "+
+					"so this check reads nothing", tc.path, tc.pattern)
+			}
+			if match[1] != DefaultModel {
+				t.Errorf("%s says the default model is %s and DefaultModel is %s",
+					tc.path, match[1], DefaultModel)
+			}
+		})
+	}
+}
+
 // TestReadmeNamesTheDeliberateAbsences keeps the real absences stated rather
 // than silently missing, so a reader looking for one finds out why it is not
 // there.

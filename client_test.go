@@ -629,16 +629,39 @@ func TestDecisionModelRefusesDE1(t *testing.T) {
 		if unsupported.Family != FamilyDE1 {
 			t.Errorf("%s: the error names family %q", model, unsupported.Family)
 		}
-		// The message has to carry the fix: the default model id is DE-1, so a
-		// zero config lands here rather than on a working client.
-		if !strings.Contains(err.Error(), "Pass a DE-2") {
-			t.Errorf("%s: the error does not say what to do: %v", model, err)
+		// The message has to carry the fix. It named the default while the default
+		// was DE-1; DE-1 is retired, so it says what became of the name instead.
+		if !strings.Contains(err.Error(), retiredDE1Model) {
+			t.Errorf("%s: the error does not say what became of the DE-1 name: %v", model, err)
+		}
+		if !strings.Contains(err.Error(), DefaultModel) {
+			t.Errorf("%s: the error does not name the checkpoint to pass: %v", model, err)
 		}
 	}
-	// The default model id is DE-1, so the zero config is this error and not a
-	// working client.
-	if _, err := NewDecisionModel(DecisionModelConfig{}); err == nil {
-		t.Error("a zero config produced a client")
+}
+
+// TestDefaultModelIsReadable is the guard the zero config needs: the library's
+// default has to be a checkpoint this port can actually read.
+//
+// It could not be while the default was the Python client's DE-1 id, and the
+// test above asserted that failure rather than this fix. A default that cannot
+// be constructed is not a default. Construction is lazy, so this needs no
+// server and no tokenizer download.
+func TestDefaultModelIsReadable(t *testing.T) {
+	model, err := NewDecisionModel(DecisionModelConfig{})
+	if err != nil {
+		t.Fatalf("the zero config is not a working client: %v", err)
+	}
+	defer model.Close()
+	if model.Model != DefaultModel {
+		t.Errorf("the zero config reads %s, want %s", model.Model, DefaultModel)
+	}
+	if model.Family != FamilyDE2 {
+		t.Errorf("the default model resolves to family %q, want %q", model.Family, FamilyDE2)
+	}
+	if model.ReadoutVersion != ReadoutVersionFor(FamilyDE2) {
+		t.Errorf("the default readout is %s, want %s",
+			model.ReadoutVersion, ReadoutVersionFor(FamilyDE2))
 	}
 }
 
