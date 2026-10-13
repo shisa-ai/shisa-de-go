@@ -230,8 +230,11 @@ is the one comparison the design exists to prevent.
 
 `doctor` and `explain` also spend real requests. They read the endpoint from
 `SHISA_DE_ENDPOINT` and the key from `SHISA_DE_API_KEY`, then `SHISA_API_KEY`.
-The command line's `--model` defaults to `shisa-ai/shisa-de-2`, not the
-library's DE-1 `DefaultModel`, because this port has no DE-1 read.
+The command line's `--model` is the library's `DefaultModel`, which is
+`shisa-ai/shisa-de-2`; the two used to differ, because the library defaulted to
+the Python client's DE-1 id and this port has no DE-1 read. DE-1 is retired and
+the hosted `shisa-ai/shisa-de-1` is an alias for the DE-2 checkpoint, so both
+defaults name the one checkpoint this port can read.
 
 The tokenizer parity suite compares this package's ids against
 `transformers`-derived golden vectors checked into `testdata/`, and its decode

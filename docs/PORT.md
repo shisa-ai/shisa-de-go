@@ -303,13 +303,33 @@ one load and a failed load leaves nothing behind to be retried.
 pool, and the heads are sorted before they are dispatched, so the work order is
 fixed rather than dependent on Go's map iteration.
 
-**The default model id is still DE-1, so a zero config fails.** `DefaultModel` is
-`shisa-ai/shisa-de-1`, matching the Python client's `DEFAULT_MODEL`, because
-quietly substituting a different checkpoint would be a worse difference than an
-error. This port cannot read DE-1, so `NewDecisionModel(DecisionModelConfig{})`
-returns an `UnsupportedFamilyError` rather than a working client, and that
-error's message says to pass a DE-2 checkpoint. The Python client with the same
-empty config works; this one does not.
+**The default model id is DE-2, and DE-1 is retired.** `DefaultModel` is
+`shisa-ai/shisa-de-2`, so `NewDecisionModel(DecisionModelConfig{})` returns a
+working DE-2 client against the hosted endpoint. It used to be
+`shisa-ai/shisa-de-1`, matching the Python client's `DEFAULT_MODEL`, which made a
+zero config an `UnsupportedFamilyError` here: this port cannot read DE-1, and
+quietly substituting a different checkpoint was a worse difference than an error.
+
+DE-1 was retired as a model after that. Measured 2026-10-13 against
+`https://api.shisa.ai/openai`: both `shisa-ai/shisa-de-1` and
+`shisa-ai/shisa-de-2` are listed by `/v1/models`, and a chat request naming either
+comes back with `"model": "shisa-ai/shisa-de-2"` from the same
+`system_fingerprint`, `vllm-0.30.0-tp2-ca69195e`. So the DE-1 name is an alias for
+the DE-2 checkpoint and there is no DE-1 deployment left to default to, which is
+why the two clients' defaults now name the same model again. A zero config was
+re-run against that endpoint after the change: `shisa-de doctor --probe` reports
+`shisa-ai/shisa-de-2`, `de2-codebook-v1`, `boundary check passed` and `read probe
+passed`, and `shisa-de ask` with no flags answers the built-in support ticket with
+`order_status` at 0.977.
+
+The family *resolution* rule is unchanged, and deliberately: a model id or
+tokenizer naming `de-1` still resolves to the DE-1 contract and is still refused.
+The client cannot tell the retired alias from a DE-1 fine-tune of someone's own at
+resolution time, and resolving the latter to DE-2 would be the unmeasured read the
+refusal exists to prevent. What changed is that the refusal now says what became
+of the name -- it is an alias for `shisa-ai/shisa-de-2` -- rather than telling the
+caller to pass a DE-2 checkpoint because the default is DE-1, which stopped being
+true.
 
 **The image path resolves an ambiguous answer boundary by token id.** The image
 readout cannot render its prompt locally, so it confirms the answer position from

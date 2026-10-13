@@ -18,8 +18,9 @@ onto, and where it deliberately differs, is in [`docs/PORT.md`](docs/PORT.md).
 
 **This port reads DE-2, text and images.** It does not read **DE-1**, and it has
 no text-choice **overflow** path, because DE-1's wide-choice handling is the only
-thing that needs one. Both absences are explained under
-[What this port does not have](#what-this-port-does-not-have).
+thing that needs one. DE-1 is retired as a model, so nothing is served through
+that contract any more: the hosted name is an alias for DE-2. Both absences are
+explained under [What this port does not have](#what-this-port-does-not-have).
 
 ## Install
 
@@ -411,14 +412,15 @@ an error, not a fallback, because this port cannot read it.
 | --- | --- | --- |
 | Endpoint | `BaseURL` | the field, then `SHISA_DE_ENDPOINT`, then `https://api.shisa.ai/openai` |
 | API key | `APIKey` | the field (an empty string disables auth), then `SHISA_DE_API_KEY`, then `SHISA_API_KEY` |
-| Model | `Model` | the field, otherwise `shisa-ai/shisa-de-1` |
+| Model | `Model` | the field, otherwise `shisa-ai/shisa-de-2` |
 | Tokenizer | `Tokenizer` | the field, otherwise the model id |
 | Family | `Family` | the field, then `de-1` or `de-2` in the model id, then in the tokenizer name, otherwise DE-2 with a warning |
 | Read | `Overrides` | the family's default read |
 
-The library's zero-config model id is the Python client's DE-1 one, which this
-port cannot read, so `Model` is required in practice. The command line defaults
-to `shisa-ai/shisa-de-2` instead.
+The zero-config model id is `shisa-ai/shisa-de-2`, so `NewDecisionModel` with an
+empty config reads the hosted DE-2 checkpoint. It used to be the Python client's
+DE-1 one, which this port cannot read; DE-1 is retired, the hosted name is an
+alias for DE-2, and the two clients' defaults are the same checkpoint again.
 
 ## Read settings
 
@@ -513,9 +515,11 @@ DE-2 reads up to 256 options in one prompt, so there is nothing to compound.
 `ask` also takes `--image` and `--image-top-logprobs`, and nothing else does,
 because an image read is the only read that uses them. The endpoint comes
 from `SHISA_DE_ENDPOINT` and the key from `SHISA_DE_API_KEY`, then
-`SHISA_API_KEY`; the command line's `--model` defaults to `shisa-ai/shisa-de-2`
-rather than the library's DE-1 default, because this port has no DE-1 read and a
-command whose zero-config form can only fail is not a command.
+`SHISA_API_KEY`; the command line's `--model` defaults to the library's
+`DefaultModel`, which is `shisa-ai/shisa-de-2` and is the only checkpoint this
+port reads. It used to have a default of its own, because the library's was the
+DE-1 one and a command whose zero-config form can only fail is not a command;
+DE-1 is retired and the two defaults are the same value now.
 
 `PORT.md` records what else differs from the Python command line.
 
@@ -562,8 +566,10 @@ things it is missing are both consequences of that:
 **DE-1.** The Python client reads DE-1 and DE-2. This port implements
 `de2-codebook-v1` only, and a checkpoint that resolves to DE-1 is an error rather
 than an assumption, because reading a checkpoint through the other family's
-contract returns answers nobody has measured. Use the
-[Python client](https://github.com/shisa-ai/shisa-de) for DE-1.
+contract returns answers nobody has measured. DE-1 is retired as a model: the
+hosted `shisa-ai/shisa-de-1` is still listed and still answers, but it is an alias
+for `shisa-ai/shisa-de-2`, which is this port's default. A DE-1 checkpoint of your
+own needs the [Python client](https://github.com/shisa-ai/shisa-de).
 
 **Wide-choice overflow.** DE-1 caps a text choice at 26 options and the Python
 client splits anything larger into chunks with a finalist round. DE-2 reads up to
