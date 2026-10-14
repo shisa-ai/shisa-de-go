@@ -15,13 +15,16 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           # The version the module declares, so CI tests the minimum supported
           # one rather than whatever the runner happens to ship.
           go-version-file: go.mod
+          # There is no go.sum, because the module has no dependencies. The
+          # built-in cache keys on one and reports a failed restore without it.
+          cache: false
 
       - name: gofmt
         run: |
@@ -38,7 +41,7 @@ jobs:
       # suite skips and CI passes while checking nothing about the tokenizer.
       # The key is hub.go's hash because that file holds the pinned repo and
       # revision, so a re-pin invalidates the cache.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/shisa-de/tokenizer
           key: tokenizer-${{ hashFiles('tokenizer/hub.go') }}

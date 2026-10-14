@@ -4,10 +4,15 @@
     python3 -m unittest discover -s scripts -p 'test_*.py'
 
 These need no network, no API key and no `shisa_de` checkout: they cover the
-endpoint and model resolution, the tokenizer pin, and the drift arithmetic that
-tells "the server moved" from "the port differs". The client and `httpx` are
-imported lazily for exactly this reason, so `python3` and the standard library
-are the whole dependency.
+endpoint and model resolution, the capability probe's classification, the
+tokenizer pin, and the drift arithmetic that tells "the server moved" from "the
+port differs". The client and `httpx` are imported lazily for exactly this
+reason, so `python3` and the standard library are the whole dependency.
+
+The one place a request header is built sets a placeholder key rather than
+reading the environment. That is deliberate: these tests passed on a machine
+that happened to have a real `SHISA_API_KEY` and failed on the CI runner that
+did not, so the suite now proves it runs with the key variables unset.
 
 The rest of the recorder -- the requests, the recording, the provenance -- is
 exercised by `TestLiveParityAgainstPython` in `live_test.go`, which runs the
@@ -27,9 +32,12 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 import live_parity  # noqa: E402
 
-# The two variables both halves of the gate resolve. Set by a test, cleared by
-# its teardown.
-ENV_VARS = ("SHISA_DE_ENDPOINT", "SHISA_DE_MODEL", "HF_HUB_CACHE")
+# The two variables both halves of the gate resolve, plus the key variables a
+# test that builds a request header has to set. Set by a test, cleared by its
+# teardown: a test that leaks a key into the next one would hide exactly the
+# failure the CI run found, where these tests passed on a machine that happened
+# to have a key and failed on one that did not.
+ENV_VARS = ("SHISA_DE_ENDPOINT", "SHISA_DE_MODEL", "HF_HUB_CACHE") + live_parity.API_KEY_ENVS
 
 
 class EnvCase(unittest.TestCase):
@@ -154,7 +162,21 @@ class ProbeImagesCase(EnvCase):
     the deployment; "I could not ask" is a fact about the run, and recording the
     second as the first drops the gate's image coverage while the run passes.
     Only a refusal that names images is allowed to be a verdict.
+
+    The probe builds its `Authorization` header through `api_key()`, so these
+    cases set a placeholder key. They passed on a machine that had a real one and
+    failed on the CI runner that did not, which is the failure this class now
+    cannot have.
     """
+
+    #: Not a credential. It is here so `api_key()` has something to return, and
+    #: the header assertion checks this exact value, which is what makes the
+    #: dependency explicit rather than incidental.
+    PLACEHOLDER_KEY = "placeholder-key"
+
+    def setUp(self):
+        super().setUp()
+        self.setenv("SHISA_DE_API_KEY", self.PLACEHOLDER_KEY)
 
     def probe(self, response=None, raises=None):
         client = _FakeClient(response=response, raises=raises)
@@ -203,7 +225,7 @@ class ProbeImagesCase(EnvCase):
         parts = body["messages"][1]["content"]
         self.assertEqual(parts[0]["type"], "image_url")
         self.assertTrue(parts[0]["image_url"]["url"].startswith("data:image/png;base64,"))
-        self.assertIn("Authorization", headers)
+        self.assertEqual(headers["Authorization"], f"Bearer {self.PLACEHOLDER_KEY}")
 
     def test_an_injected_client_is_not_closed(self):
         # The caller owns the client it passed in; the probe only closes its own.
