@@ -603,6 +603,13 @@ go vet ./...
 go test ./...
 ```
 
+[`.github/workflows/tests.yml`](.github/workflows/tests.yml) runs `gofmt -l .`,
+`go vet ./...`, the suite with and without `-race`, the recorder's Python tests
+and a build of the command. It sets `SHISA_DE_TOKENIZER_DOWNLOAD=1` and
+`SHISA_DE_TOKENIZER_REQUIRE=1`, so the parity suite downloads the pinned
+tokenizer and fails rather than skipping, and caches it between runs. It never
+sets `SHISA_DE_LIVE`, so no CI run needs an API key.
+
 The tokenizer parity tests compare against golden vectors derived from
 `transformers`; they skip when the vectors are absent, and
 `SHISA_DE_TOKENIZER_REQUIRE=1` turns that skip into a failure.

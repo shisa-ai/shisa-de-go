@@ -1,0 +1,73 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          # The version the module declares, so CI tests the minimum supported
+          # one rather than whatever the runner happens to ship.
+          go-version-file: go.mod
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - run: go vet ./...
+
+      # The 32 MB tokenizer.json is not checked in, so without this the parity
+      # suite skips and CI passes while checking nothing about the tokenizer.
+      # The key is hub.go's hash because that file holds the pinned repo and
+      # revision, so a re-pin invalidates the cache.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/shisa-de/tokenizer
+          key: tokenizer-${{ hashFiles('tokenizer/hub.go') }}
+
+      - name: The Go suite, with the pinned tokenizer
+        env:
+          SHISA_DE_TOKENIZER_DOWNLOAD: "1"
+          SHISA_DE_TOKENIZER_REQUIRE: "1"
+        run: go test ./... -count=1
+
+      # The client fans questions out over a bounded worker pool and the readout
+      # caches tokenizer slots behind a lock, so the race detector is checking
+      # the parts most likely to be wrong. It reuses the tokenizer downloaded
+      # above.
+      - name: The Go suite under the race detector
+        env:
+          SHISA_DE_TOKENIZER_DOWNLOAD: "1"
+          SHISA_DE_TOKENIZER_REQUIRE: "1"
+        run: go test -race ./... -count=1
+
+      # The recorder's own logic is Python and needs only the standard library:
+      # httpx is imported lazily, so no install step.
+      - name: The recorder's offline tests
+        run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+      - name: Build and smoke-test the command
+        run: |
+          go build -o "$RUNNER_TEMP/shisa-de" ./cmd/shisa-de
+          "$RUNNER_TEMP/shisa-de" --help
+
+      # The live suite is opt-in behind SHISA_DE_LIVE=1 and spends real requests
+      # against a served checkpoint, so it is not run here and needs no key.
