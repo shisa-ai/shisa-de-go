@@ -171,6 +171,13 @@ What must not change casually:
   error handling that leave the contract unchanged. Track those with the package
   version. Editing `readout.go` alone is never a reason to bump a readout
   version.
+- The package version is the git tag (`v0.1.0` and up), which is the only place a
+  Go module's version lives: nothing in the source declares it, and a consumer
+  resolves `github.com/shisa-ai/shisa-de-go` to the newest tag. It is versioned
+  on its own rather than following the Python package's, because the two clients
+  do not have the same surface; the readout versions are the cross-language
+  contract and the package versions are not. Creating or pushing a tag is a
+  release, so ask first, as with a push.
 - When you bump a version, decide its `calibrationCompatible` entry in the same
   commit. List the predecessors only if the direct text read is answer-identical
   to theirs; otherwise leave them out, which stops every record fitted against
