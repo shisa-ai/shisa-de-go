@@ -24,11 +24,13 @@ import (
 //     temperatures shipped here were fitted on dev splits of the committed
 //     suites.
 //
-// One record ships per family, because a temperature fitted on one checkpoint
-// provides no evidence about another. Every answer says which calibration was
-// applied, including the model it was fitted on, because a threshold fitted
-// against one readout, one serving shape, or one checkpoint does not transfer to
-// another.
+// One record ships per released checkpoint, because a temperature fitted on one
+// checkpoint provides no evidence about another. A served model whose id (or
+// tokenizer source) names a released checkpoint gets that checkpoint's record;
+// any other model gets its family's record, which is reported but not applied.
+// Every answer says which calibration was applied, including the model it was
+// fitted on, because a threshold fitted against one readout, one serving shape,
+// or one checkpoint does not transfer to another.
 //
 // A record is applied on its own only to the checkpoint it was fitted on, read
 // through a readout its fit still describes (`Calibration.Applicability`). The
@@ -37,14 +39,84 @@ import (
 
 // CalibrationFiles names the shipped record for each family that has one.
 //
-// This port implements DE-2 only, so only the DE-2 record is embedded; asking
-// for another family is an error rather than a silent fallback.
+// This port implements DE-2 only, so only DE-2 records are embedded; asking for
+// another family is an error rather than a silent fallback. A family record is
+// what a served model gets when its id names no released checkpoint, and
+// `Calibration.Applicability` reports it without applying it.
 var CalibrationFiles = map[Family]string{
 	FamilyDE2: "data/calibration-de2.json",
 }
 
-//go:embed data/calibration-de2.json
+// CheckpointCalibrationFiles names the shipped record for each released
+// checkpoint, keyed by its model id in lower case.
+//
+// The Python client's table also lists `shisa-ai/shisa-de-1`, which this port
+// has no record for and does not read, so it is absent here rather than
+// present and unusable.
+var CheckpointCalibrationFiles = map[string]string{
+	"shisa-ai/shisa-de-2":   "data/calibration-de2.json",
+	"shisa-ai/shisa-de-2.1": "data/calibration-de2.1.json",
+}
+
+//go:embed data/calibration-de2.json data/calibration-de2.1.json
 var calibrationFS embed.FS
+
+// ReleasedCheckpoint is the released checkpoint a model id or tokenizer name
+// refers to, or "" when it names none.
+//
+// An exact id, or a name that contains a released checkpoint's name as its own
+// token, is that checkpoint: `shisa-ai/shisa-de-2.1-FP8-dynamic` and a local
+// `/models/shisa-de-2.1` are DE-2.1, and `shisa-de-2.1` is never read as
+// `shisa-de-2`. A training arm such as `de2-v4-lr5e5-e3-s7` names no released
+// checkpoint, and neither does a version this package has no record for
+// (`shisa-de-2.2`, `shisa-de-2.10`).
+func ReleasedCheckpoint(name string) string {
+	text := strings.ToLower(name)
+	if text == "" {
+		return ""
+	}
+	if _, ok := CheckpointCalibrationFiles[text]; ok {
+		return text
+	}
+	checkpoints := make([]string, 0, len(CheckpointCalibrationFiles))
+	for checkpoint := range CheckpointCalibrationFiles {
+		checkpoints = append(checkpoints, checkpoint)
+	}
+	// Longest first, so `shisa-de-2.1` is tried before `shisa-de-2`.
+	sort.Slice(checkpoints, func(i, j int) bool {
+		if len(checkpoints[i]) != len(checkpoints[j]) {
+			return len(checkpoints[i]) > len(checkpoints[j])
+		}
+		return checkpoints[i] < checkpoints[j]
+	})
+	for _, checkpoint := range checkpoints {
+		slug := checkpoint[strings.Index(checkpoint, "/")+1:]
+		for start := 0; start+len(slug) <= len(text); start++ {
+			if text[start:start+len(slug)] != slug {
+				continue
+			}
+			if start > 0 && continuesCheckpointName(text[start-1]) {
+				continue
+			}
+			if end := start + len(slug); end < len(text) && continuesCheckpointName(text[end]) {
+				continue
+			}
+			return checkpoint
+		}
+	}
+	return ""
+}
+
+// continuesCheckpointName reports whether b would make a matched checkpoint
+// name part of a longer one.
+//
+// Python writes this as the lookaround pair `(?<![a-z0-9.])` and
+// `(?![a-z0-9.])`. Go's regexp has no lookaround, so the boundary is tested
+// directly. The class is ASCII, as Python's is, so a byte at or above 0x80
+// (part of a multi-byte rune) is a boundary in both.
+func continuesCheckpointName(b byte) bool {
+	return b == '.' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
 
 // TemperBinary is binary temperature scaling: `p^(1/T) / (p^(1/T) + (1-p)^(1/T))`.
 //
@@ -262,9 +334,16 @@ func (c Calibration) Applicability(model, readoutVersion string, options Applica
 	}
 	names := make([]string, 0, 2)
 	for _, name := range []string{model, options.Tokenizer} {
-		if name != "" {
-			names = append(names, strings.ToLower(name))
+		if name == "" {
+			continue
 		}
+		// A quantized repo or a local directory named after a release is that
+		// checkpoint, so it reaches the record fitted on it.
+		if checkpoint := ReleasedCheckpoint(name); checkpoint != "" {
+			names = append(names, checkpoint)
+			continue
+		}
+		names = append(names, strings.ToLower(name))
 	}
 	for _, name := range names {
 		if strings.ToLower(c.Model) == name {
@@ -414,7 +493,11 @@ func flattenTemperatures(values map[string]*float64, origin string) (map[string]
 	return flattened, nil
 }
 
-// CalibrationFor is the shipped record for a family.
+// CalibrationFor is the shipped record for a family, which is what a served
+// model whose id names no released checkpoint gets.
+//
+// Use CalibrationForCheckpoint to select the record of the checkpoint actually
+// served.
 func CalibrationFor(family Family) (Calibration, error) {
 	name, ok := CalibrationFiles[family]
 	if !ok {
@@ -425,14 +508,41 @@ func CalibrationFor(family Family) (Calibration, error) {
 	return LoadCalibration(name)
 }
 
+// CalibrationForCheckpoint is the shipped record for a served model.
+//
+// The record of the released checkpoint that model, or else tokenizer, names,
+// when that checkpoint is of family; otherwise the family's record, which
+// `Calibration.Applicability` reports and does not apply.
+func CalibrationForCheckpoint(family Family, model, tokenizer string) (Calibration, error) {
+	for _, name := range []string{model, tokenizer} {
+		path, ok := CheckpointCalibrationFiles[ReleasedCheckpoint(name)]
+		if !ok {
+			continue
+		}
+		record, err := LoadCalibration(path)
+		if err != nil {
+			return Calibration{}, err
+		}
+		if record.Family == family {
+			return record, nil
+		}
+	}
+	return CalibrationFor(family)
+}
+
 // ResolveCalibration resolves a `--calibration` argument.
 //
-// Accepts a family name in any common spelling (`de1`, `DE-2`) or a path to a
-// record. An empty spec or "auto" means "let the client pick from the served
-// model", and returns ok=false.
+// Accepts a family name in any common spelling (`de1`, `DE-2`), a released
+// checkpoint id (`shisa-ai/shisa-de-2.1`) or a path to a record. An empty spec
+// or "auto" means "let the client pick from the served model", and returns
+// ok=false.
 func ResolveCalibration(spec string) (Calibration, bool, error) {
 	if spec == "" || spec == "auto" {
 		return Calibration{}, false, nil
+	}
+	if path, ok := CheckpointCalibrationFiles[ReleasedCheckpoint(spec)]; ok {
+		record, err := LoadCalibration(path)
+		return record, true, err
 	}
 	if family, err := NormalizeFamily(spec); err == nil {
 		record, err := CalibrationFor(family)
@@ -444,10 +554,20 @@ func ResolveCalibration(spec string) (Calibration, bool, error) {
 	record, err := LoadCalibrationFile(spec)
 	if err != nil {
 		return Calibration{}, false, fmt.Errorf(
-			"calibration %q is neither a family (%s) nor a record file: %w",
-			spec, familyNames(), err)
+			"calibration %q is neither a family (%s), a released checkpoint (%s) nor a record file: %w",
+			spec, familyNames(), checkpointNames(), err)
 	}
 	return record, true, nil
+}
+
+// checkpointNames lists the released checkpoints this package has a record for.
+func checkpointNames() string {
+	names := make([]string, 0, len(CheckpointCalibrationFiles))
+	for checkpoint := range CheckpointCalibrationFiles {
+		names = append(names, checkpoint)
+	}
+	sort.Strings(names)
+	return strings.Join(names, ", ")
 }
 
 func familyNames() string {

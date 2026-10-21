@@ -685,7 +685,7 @@ func NewDecisionModel(config DecisionModelConfig) (*DecisionModel, error) {
 	if supplied {
 		model_.Calibration = *config.Calibration
 	} else {
-		record, err := CalibrationFor(family)
+		record, err := CalibrationForCheckpoint(family, model, tokenizerSource)
 		if err != nil {
 			return nil, err
 		}

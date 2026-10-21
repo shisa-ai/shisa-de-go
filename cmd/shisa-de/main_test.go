@@ -535,12 +535,15 @@ func TestDoctorText(t *testing.T) {
 	// client's rule, where `matched = level != "mismatch"`.
 	//
 	// The id has to name DE-2 or the family resolution refuses it first, and it
-	// has to differ from the record's model: `Applicability` accepts either the
+	// has to name no released checkpoint: `Applicability` accepts either the
 	// model id or the tokenizer source as the checkpoint's name, so a different
-	// `--tokenizer` does not make a covered model uncovered.
-	uncovered := newCLIServer(t, "shisa-ai/shisa-de-2-preview")
+	// `--tokenizer` does not make a covered model uncovered, and a suffix such as
+	// `-preview` or `-FP8-dynamic` does not either, because a name that contains a
+	// released checkpoint's name as its own token is that checkpoint. A version
+	// this package has no record for is what leaves the record uncovered.
+	uncovered := newCLIServer(t, "shisa-ai/shisa-de-2.2")
 	installCLIModel(t, uncovered)
-	status, stdout, _ = invoke(t, "doctor", "--model", "shisa-ai/shisa-de-2-preview")
+	status, stdout, _ = invoke(t, "doctor", "--model", "shisa-ai/shisa-de-2.2")
 	if status != 0 {
 		t.Errorf("a same-family record exited %d, want 0:\n%s", status, stdout)
 	}
@@ -560,7 +563,7 @@ func TestDoctorText(t *testing.T) {
 	// command line has to agree on byte for byte.
 	if !strings.Contains(stdout,
 		"                fitted on 'shisa-ai/shisa-de-2', not on "+
-			"'shisa-ai/shisa-de-2-preview': same family, another checkpoint") {
+			"'shisa-ai/shisa-de-2.2': same family, another checkpoint") {
 		t.Errorf("the uncovered report does not explain the mismatch the way Python does:\n%s", stdout)
 	}
 }
@@ -1022,11 +1025,11 @@ func TestReportOrderCoversHealth(t *testing.T) {
 	// `calibration_note` a same-family record that does not cover the
 	// checkpoint, and `calibration_mismatch` a record from the other family.
 	// Between them the union is the whole key set.
-	server := newCLIServer(t, "shisa-ai/shisa-de-2", "my-adapter", "shisa-ai/shisa-de-2-preview")
+	server := newCLIServer(t, "shisa-ai/shisa-de-2", "my-adapter", "shisa-ai/shisa-de-2.2")
 	for _, argv := range [][]string{
 		{"--model", "shisa-ai/shisa-de-2", "--probe"},
 		{"--model", "my-adapter", "--probe"},
-		{"--model", "shisa-ai/shisa-de-2-preview", "--probe"},
+		{"--model", "shisa-ai/shisa-de-2.2", "--probe"},
 	} {
 		parsed, err := parse("doctor", argv)
 		if err != nil {

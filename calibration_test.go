@@ -476,3 +476,172 @@ func TestLoadCalibrationUnknownName(t *testing.T) {
 		t.Error("LoadCalibrationFile of a missing path succeeded")
 	}
 }
+
+// TestReleasedCheckpointRecognisesReleasedNames pins the name rule that selects
+// a checkpoint's record.
+//
+// A name that contains a released checkpoint's name as its own token is that
+// checkpoint, which is what makes a quantized repo or a local directory work
+// without passing the tokenizer. The rule is Python's, including its
+// boundaries: `shisa-de-2.10` and `shisa-de-21` are not DE-2, because `.` and a
+// digit continue a name rather than ending one.
+func TestReleasedCheckpointRecognisesReleasedNames(t *testing.T) {
+	cases := []struct {
+		name       string
+		checkpoint string
+	}{
+		{"shisa-ai/shisa-de-2.1", "shisa-ai/shisa-de-2.1"},
+		{"shisa-ai/shisa-de-2.1-FP8-dynamic", "shisa-ai/shisa-de-2.1"},
+		{"/models/shisa-de-2.1", "shisa-ai/shisa-de-2.1"},
+		{"shisa-de-2.1", "shisa-ai/shisa-de-2.1"},
+		{"SHISA-AI/Shisa-DE-2.1", "shisa-ai/shisa-de-2.1"},
+		{"shisa-ai/shisa-de-2", "shisa-ai/shisa-de-2"},
+		{"shisa-ai/shisa-de-2-FP8-dynamic", "shisa-ai/shisa-de-2"},
+		// Not a released checkpoint: training arms, later versions, look-alikes.
+		{"de2-v4-lr5e5-e3-s7", ""},
+		{"de2-some-arm", ""},
+		{"shisa-ai/shisa-de-2.2", ""},
+		{"shisa-ai/shisa-de-21", ""},
+		{"shisa-ai/shisa-de-2.10", ""},
+		{"my-shisa-de-2.1x", ""},
+		{"", ""},
+		// The Python client ships a DE-1 record and so recognises DE-1 names.
+		// This port has none and does not read the family, so a DE-1 name is not
+		// a checkpoint it can select.
+		{"shisa-ai/shisa-de-1-FP8-dynamic", ""},
+	}
+	for _, tc := range cases {
+		if got := ReleasedCheckpoint(tc.name); got != tc.checkpoint {
+			t.Errorf("ReleasedCheckpoint(%q) = %q, want %q", tc.name, got, tc.checkpoint)
+		}
+	}
+}
+
+// TestEachReleasedCheckpointGetsItsOwnRecord pins that every checkpoint in the
+// table has a record whose model is that checkpoint and that the record reaches
+// `checkpoint` level for it, which is what makes the client apply it.
+func TestEachReleasedCheckpointGetsItsOwnRecord(t *testing.T) {
+	for checkpoint, path := range CheckpointCalibrationFiles {
+		record, err := LoadCalibration(path)
+		if err != nil {
+			t.Fatalf("LoadCalibration(%s): %v", path, err)
+		}
+		if strings.ToLower(record.Model) != checkpoint {
+			t.Errorf("%s holds a record for %q, want %q", path, record.Model, checkpoint)
+		}
+		if got := ModelFamily(checkpoint); got != record.Family {
+			t.Errorf("%s resolves to family %s, its record is %s", checkpoint, got, record.Family)
+		}
+		selected, err := CalibrationForCheckpoint(record.Family, checkpoint, "")
+		if err != nil {
+			t.Fatalf("CalibrationForCheckpoint(%s): %v", checkpoint, err)
+		}
+		if selected.Model != record.Model {
+			t.Errorf("serving %s selected the record for %s", checkpoint, selected.Model)
+		}
+		level, reasons := record.Applicability(checkpoint, ReadoutVersionFor(record.Family),
+			ApplicabilityOptions{Family: record.Family})
+		if level != ApplicabilityCheckpoint || len(reasons) != 0 {
+			t.Errorf("%s applies to its own checkpoint at %q, not %q (%v)",
+				checkpoint, ApplicabilityCheckpoint, level, reasons)
+		}
+	}
+
+	// The two DE-2 records are different fits. A test that only checked they
+	// load would pass with the same file under both names.
+	de21, err := CalibrationForCheckpoint(FamilyDE2, "shisa-ai/shisa-de-2.1", "")
+	if err != nil {
+		t.Fatalf("CalibrationForCheckpoint(2.1): %v", err)
+	}
+	de2, err := CalibrationForCheckpoint(FamilyDE2, "shisa-ai/shisa-de-2", "")
+	if err != nil {
+		t.Fatalf("CalibrationForCheckpoint(de2): %v", err)
+	}
+	if de21.Model == de2.Model {
+		t.Fatalf("both DE-2 checkpoints selected the record for %s", de21.Model)
+	}
+	if de21.Reads["direct"]["noul"] == de2.Reads["direct"]["noul"] {
+		t.Error("the two records hold the same direct noul temperature")
+	}
+	if got := de21.TemperatureFor("noul", "think"); got != 5.23 {
+		t.Errorf("DE-2.1's think temperature is %v, want 5.23", got)
+	}
+	if de21.Temperatures["noul"] != de21.Reads["repeat2"]["noul"] {
+		t.Error("the DE-2.1 record's temperatures are not its repeat2 entry")
+	}
+}
+
+// TestCalibrationForCheckpointFallsBackToTheFamilyRecord pins the two ways a
+// served model reaches a record: by its id, and by the tokenizer source when a
+// server aliases the id.
+func TestCalibrationForCheckpointFallsBackToTheFamilyRecord(t *testing.T) {
+	// Another DE-2 checkpoint gets the family record, which names DE-2 and is
+	// reported rather than applied to it.
+	record, err := CalibrationForCheckpoint(FamilyDE2, "de2-some-arm", "")
+	if err != nil {
+		t.Fatalf("CalibrationForCheckpoint: %v", err)
+	}
+	if record.Model != "shisa-ai/shisa-de-2" {
+		t.Errorf("an uncovered checkpoint selected the record for %s", record.Model)
+	}
+	level, reasons := record.Applicability("de2-some-arm", ReadoutVersionFor(FamilyDE2),
+		ApplicabilityOptions{Family: FamilyDE2})
+	if level != ApplicabilityFamily || len(reasons) == 0 {
+		t.Errorf("an uncovered checkpoint is %q with %v, want %q with a reason",
+			level, reasons, ApplicabilityFamily)
+	}
+
+	// A server that aliases the id is recognised by its tokenizer source.
+	record, err = CalibrationForCheckpoint(FamilyDE2, "alias", "shisa-ai/shisa-de-2.1")
+	if err != nil {
+		t.Fatalf("CalibrationForCheckpoint(alias): %v", err)
+	}
+	if record.Model != "shisa-ai/shisa-de-2.1" {
+		t.Errorf("an aliased DE-2.1 selected the record for %s", record.Model)
+	}
+	level, reasons = record.Applicability("alias", ReadoutVersionFor(FamilyDE2),
+		ApplicabilityOptions{Family: FamilyDE2, Tokenizer: "shisa-ai/shisa-de-2.1"})
+	if level != ApplicabilityCheckpoint || len(reasons) != 0 {
+		t.Errorf("an aliased DE-2.1 is %q with %v, want %q", level, reasons, ApplicabilityCheckpoint)
+	}
+
+	// A checkpoint of another family does not lend its record.
+	if record, err = CalibrationForCheckpoint(FamilyDE1, "shisa-ai/shisa-de-2.1", ""); err == nil {
+		t.Errorf("a DE-1 request got the record for %s", record.Model)
+	}
+}
+
+// TestResolveCalibrationAcceptsAReleasedCheckpoint pins the `--calibration`
+// spellings, including a checkpoint id, which is how a caller reading an alias
+// says which checkpoint is really behind it.
+func TestResolveCalibrationAcceptsAReleasedCheckpoint(t *testing.T) {
+	cases := []struct{ spec, model string }{
+		{"shisa-ai/shisa-de-2.1", "shisa-ai/shisa-de-2.1"},
+		{"shisa-ai/shisa-de-2.1-FP8-dynamic", "shisa-ai/shisa-de-2.1"},
+		{"shisa-ai/shisa-de-2", "shisa-ai/shisa-de-2"},
+		{"de2", "shisa-ai/shisa-de-2"},
+		{"DE-2", "shisa-ai/shisa-de-2"},
+	}
+	for _, tc := range cases {
+		record, ok, err := ResolveCalibration(tc.spec)
+		if err != nil {
+			t.Errorf("ResolveCalibration(%q): %v", tc.spec, err)
+			continue
+		}
+		if !ok || record.Model != tc.model {
+			t.Errorf("ResolveCalibration(%q) = %q, ok=%v; want %q", tc.spec, record.Model, ok, tc.model)
+		}
+	}
+	if _, ok, err := ResolveCalibration("auto"); err != nil || ok {
+		t.Errorf(`ResolveCalibration("auto") = ok=%v, err=%v; want ok=false`, ok, err)
+	}
+	// A version this package has no record for is an error that names what it
+	// does ship, rather than silently falling back to DE-2's fit.
+	_, _, err := ResolveCalibration("shisa-ai/shisa-de-2.2")
+	if err == nil {
+		t.Fatal("a checkpoint with no record was accepted")
+	}
+	if !strings.Contains(err.Error(), "shisa-ai/shisa-de-2.1") {
+		t.Errorf("the error does not name the checkpoints that ship: %v", err)
+	}
+}

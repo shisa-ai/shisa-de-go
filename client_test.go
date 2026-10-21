@@ -1805,3 +1805,83 @@ func TestOrderedProbabilities(t *testing.T) {
 		t.Errorf("a stale key produced %v", members)
 	}
 }
+
+// TestTheClientAppliesTheRecordOfTheCheckpointItServes pins that the record is
+// chosen from the served checkpoint rather than from the family, and that a
+// checkpoint with no record is reported and left raw rather than tempered with
+// another checkpoint's fit.
+func TestTheClientAppliesTheRecordOfTheCheckpointItServes(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     string
+		tokenizer string
+		want      string
+		level     ApplicabilityLevel
+		applied   bool
+	}{
+		{"DE-2", "shisa-ai/shisa-de-2", "", "shisa-ai/shisa-de-2", ApplicabilityCheckpoint, true},
+		{"DE-2.1", "shisa-ai/shisa-de-2.1", "", "shisa-ai/shisa-de-2.1", ApplicabilityCheckpoint, true},
+		{"a quantized DE-2.1 repo", "shisa-ai/shisa-de-2.1-FP8-dynamic", "",
+			"shisa-ai/shisa-de-2.1", ApplicabilityCheckpoint, true},
+		{"a local DE-2.1 directory", "/models/shisa-de-2.1", "",
+			"shisa-ai/shisa-de-2.1", ApplicabilityCheckpoint, true},
+		{"an alias with a DE-2.1 tokenizer", "alias", "shisa-ai/shisa-de-2.1",
+			"shisa-ai/shisa-de-2.1", ApplicabilityCheckpoint, true},
+		{"a training arm", "de2-some-arm", "",
+			"shisa-ai/shisa-de-2", ApplicabilityFamily, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			readout, _ := newPolicyReadout(t, 1)
+			model, err := NewDecisionModel(DecisionModelConfig{
+				BaseURL: "http://stub.invalid", Model: tc.model, Tokenizer: tc.tokenizer,
+				Readout: readout, MaxWorkers: 1,
+			})
+			if err != nil {
+				t.Fatalf("NewDecisionModel: %v", err)
+			}
+			defer model.Close()
+			if model.Calibration.Model != tc.want {
+				t.Errorf("serving %s selected the record for %s, want %s",
+					tc.model, model.Calibration.Model, tc.want)
+			}
+			if model.CalibrationLevel != tc.level {
+				t.Errorf("serving %s is %q, want %q", tc.model, model.CalibrationLevel, tc.level)
+			}
+			if model.CalibrationApplied != tc.applied {
+				t.Errorf("serving %s applied=%v, want %v", tc.model, model.CalibrationApplied, tc.applied)
+			}
+			// A record that is not applied is reported, never silent.
+			warned := len(model.Warnings) != 0
+			if warned == tc.applied {
+				t.Errorf("serving %s warned=%v with applied=%v", tc.model, warned, tc.applied)
+			}
+		})
+	}
+}
+
+// TestDE21IsTemperedWithItsOwnFit pins the number a caller actually gets: the
+// same raw probability read from DE-2 and from DE-2.1 comes back different,
+// because the records differ and DE-2's fit over-corrects DE-2.1.
+func TestDE21IsTemperedWithItsOwnFit(t *testing.T) {
+	de21, err := CalibrationForCheckpoint(FamilyDE2, "shisa-ai/shisa-de-2.1", "")
+	if err != nil {
+		t.Fatalf("CalibrationForCheckpoint(2.1): %v", err)
+	}
+	de2, err := CalibrationForCheckpoint(FamilyDE2, "shisa-ai/shisa-de-2", "")
+	if err != nil {
+		t.Fatalf("CalibrationForCheckpoint(de2): %v", err)
+	}
+	raw := map[string]float64{"A": 0.8, "B": 0.2}
+	withDE21 := TemperDistribution(raw, de21.TemperatureFor("choice", "direct"))
+	withDE2 := TemperDistribution(raw, de2.TemperatureFor("choice", "direct"))
+	if math.Abs(withDE21["A"]-withDE2["A"]) < 1e-6 {
+		t.Fatalf("both records temper 0.8 to %v", withDE21["A"])
+	}
+	// DE-2.1 is less overconfident, so its temperature is closer to 1 and its
+	// tempered probability is closer to the raw one.
+	if withDE21["A"] <= withDE2["A"] || withDE21["A"] > raw["A"] {
+		t.Errorf("DE-2.1 tempers 0.8 to %v and DE-2 to %v; want the DE-2.1 value between 0.8 and the DE-2 value",
+			withDE21["A"], withDE2["A"])
+	}
+}

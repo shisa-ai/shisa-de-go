@@ -105,6 +105,36 @@ a declaration, then a slug in the model id, then a slug in the tokenizer source,
 otherwise assumed DE-2 -- and the source is kept on the readout so an assumption
 is reported as one.
 
+**Calibration is selected per released checkpoint, in two functions.** Python's
+`calibration_for(family, model=, tokenizer=)` takes the served model through
+keyword arguments. Go has none, and changing `CalibrationFor(family)` would break
+a caller that only wants a family's record, so the port keeps it and adds
+`CalibrationForCheckpoint(family, model, tokenizer)`; the client calls the
+second. `CalibrationFor` is what a model whose id names no released checkpoint
+gets, which is Python's `CALIBRATION_FILES` case.
+
+**`CheckpointCalibrationFiles` has no DE-1 entry.** Python's table lists
+`shisa-ai/shisa-de-1` because it ships that record. This port ships none and does
+not read the family, so `ReleasedCheckpoint` does not recognise a DE-1 name and
+the table lists only what can be loaded. A caller who needs a DE-1 name matched
+needs the Python client.
+
+**`ReleasedCheckpoint` tests its boundaries directly.** Python writes the rule as
+the lookaround pair `(?<![a-z0-9.])shisa-de-2.1(?![a-z0-9.])`. Go's `regexp` is
+RE2 and has no lookaround, so the port scans for each slug and tests the bytes on
+either side against the same ASCII class. The class matters: `.` and a digit
+continue a name, so `shisa-de-2.10`, `shisa-de-2.2` and `shisa-de-21` are not
+DE-2, and `TestReleasedCheckpointRecognisesReleasedNames` pins the same table the
+Python test does. A name that extends a release with a suffix --
+`shisa-de-2-FP8-dynamic`, and equally `shisa-de-2-preview` -- is that release.
+
+**No `strip_state_quotes`.** Python's `DecisionModel(strip_state_quotes=True)`
+and `--strip-state-quotes` remove delimiter quote characters from the edges of a
+state string before rendering. This port renders the state verbatim, as the
+contract specifies, and has no counterpart, so the normalisation is the caller's
+to apply. It is off by default in Python, so the two clients read the same prompt
+unless a caller asks for the other behaviour.
+
 **No Jinja.** The Python client renders with
 `tokenizer.apply_chat_template(...)`, which runs the checkpoint's own Jinja
 template. This port renders the two message shapes the readout uses with a
@@ -906,6 +936,13 @@ checkpoint, and says so where it appears.
   content part and ignored it would produce agreement about nothing. That test
   asks the same question of a red and a blue image and requires the answer to
   follow, which is the Python suite's `test_image_classification_reads_pixels_not_filenames`.
+
+  `TestLiveCalibrationMatchesTheServedCheckpoint` is the check to run when an
+  endpoint changes what it serves. It requires the applied record to be the one
+  fitted on the checkpoint the model id names, and an uncovered checkpoint to be
+  reported and left raw. It cannot see through an alias, so it is pointed at the
+  checkpoint's own id, or at the alias with `SHISA_DE_TOKENIZER` naming the
+  checkpoint behind it.
 
   The Python side is recorded by `scripts/live_parity.py` during the run rather
   than read from a checked-in file, and the reason is a measurement. The served

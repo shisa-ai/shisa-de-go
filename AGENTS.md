@@ -27,9 +27,23 @@ through the other family's contract.
   implemented here.
 - Source of truth for readout identities: `readout.go` (`ReadoutVersionFor`, one
   current version per family, and `calibrationCompatible`).
+- Source of truth for which checkpoint a calibration record covers:
+  `CheckpointCalibrationFiles` and `ReleasedCheckpoint` in `calibration.go`. A
+  name that contains a released checkpoint's name as its own token is that
+  checkpoint, so a quantized repo or a local directory gets the record fitted on
+  the checkpoint it was built from, and `shisa-de-2.1` is never read as
+  `shisa-de-2`. A name that is not a released checkpoint gets the family record,
+  which is reported and not applied.
 - A calibration record is applied on its own only to the checkpoint it was
-  fitted on, under a readout its fit still describes. The DE-2 record holds one
+  fitted on, under a readout its fit still describes. The DE-2 records hold one
   fit per read (`direct`, `repeat2`, `think`), each applied only to that read.
+  `shisa-ai/shisa-de-2` and `shisa-ai/shisa-de-2.1` have separate records whose
+  temperatures differ enough that applying one to the other is measurably worse
+  than leaving the answers raw.
+- An alias that outlives the weights it named cannot be detected from a
+  response. When a server serves one checkpoint under another's id, the caller
+  has to say so through `Tokenizer` or `Calibration`; the docs say this where a
+  user meets it, and no code guesses.
 - Every answer records its provenance (`Family`, `ReadoutVersion`, `Policy`,
   `Strategy`, `Calibration`, `Temperature`, `Calibrated`, `Requests`) so a
   caller can tell which read produced it. `Answer` and `Decision` carry them;
@@ -57,7 +71,7 @@ Files table below says what is in the tree.
   request shapes, the response shapes, and the error conventions.
 - `policy.go` — sequences the reads: twice, then think when unsure.
 - `calibration.go` — temperature scaling, the confidence statistic, record
-  selection, and `Calibration.Applicability`.
+  selection per released checkpoint, and `Calibration.Applicability`.
 - `client.go` — the friendly layer. `Classify` for label sets, `Decide` for
   typed questions.
 - `cmd/shisa-de/` — the command line, and the only place that prints. It is a
@@ -106,6 +120,7 @@ What must not change casually:
 | `tokenizer/` | The pure-Go Hugging Face BPE tokenizer. No cgo. `LoadWith`/`ResolveWith` take a local-only policy |
 | `data/codebook-de2.json` | The 256 DE-2 answer codes, in order, with the audit they came from |
 | `data/calibration-de2.json` | The DE-2 record: temperatures per read with the fit's provenance, and one withheld earlier fit |
+| `data/calibration-de2.1.json` | The DE-2.1 record: temperatures per read, fitted on the release candidate's merged weights before upload. Copied byte for byte from the Python client, which fitted it |
 | `data/python-printable.json` | Python's `str.isprintable()` over every code point, as 736 ranges, with the interpreter's Unicode version. `client.go`'s `pythonQuote` reads it instead of Go's `strconv.IsPrint`, which is the same rule against a different Unicode version |
 | `pythonprintable.go` | The embedded table, its validation, and the binary-search lookup |
 | `policy.go` | The DE-2 policy: repeated read, gate, thought, read after it; `ReadOptions` and the settings that select a read |

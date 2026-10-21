@@ -1,7 +1,9 @@
 # shisa-de-go
 
 A Go client for [Shisa DE-2](https://huggingface.co/shisa-ai/shisa-de-2), a model
-for classification and typed decisions.
+for classification and typed decisions. It reads DE-2 and
+[DE-2.1](https://huggingface.co/shisa-ai/shisa-de-2.1), which is DE-2's prompt,
+readout and policy over new weights.
 
 Give it text and a set of labels or questions. It returns answers, probabilities,
 and request usage, not generated prose. The client loads only a tokenizer; the
@@ -282,10 +284,46 @@ in `answer.Calibrated` and `answer.Temperature`.
 | DE-2 text | Calibrated by default, with a separate fit for each read; pass `Calibrated` to get raw |
 | A checkpoint the shipped record does not cover | Raw, with a warning in `DecisionModel.Warnings` |
 
-Each bundled calibration is applied only to the checkpoint it was fitted on,
-`shisa-ai/shisa-de-2`. DE-2 has three reads and each has its own fit: a question
-read once, read twice, and read after a thinking step are tempered differently,
-and `answer.Temperature` says which was used.
+One record ships per released checkpoint: `shisa-ai/shisa-de-2` and
+`shisa-ai/shisa-de-2.1`. Each is applied only to the checkpoint it was fitted on.
+DE-2 has three reads and each has its own fit: a question read once, read twice,
+and read after a thinking step are tempered differently, and `answer.Temperature`
+says which was used.
+
+The two fits differ enough to matter. DE-2.1 is less overconfident than DE-2, so
+DE-2's temperatures over-correct it:
+
+| Read | DE-2 (noul / choice) | DE-2.1 (noul / choice) |
+| --- | ---: | ---: |
+| once (`direct`) | 2.69 / 1.81 | 1.98 / 1.53 |
+| twice (`repeat2`) | 2.76 / 1.89 | 2.11 / 1.64 |
+| after a thought (`think`) | 6.8 / 6.8 | 5.23 / 5.23 |
+
+The record is chosen from the served model id, or from the tokenizer source when
+a server aliases the id. A name that contains a released checkpoint's name as its
+own token counts as that checkpoint, so `shisa-ai/shisa-de-2.1-FP8-dynamic` and a
+local `/models/shisa-de-2.1` both get DE-2.1's record without passing `Tokenizer`.
+A name that is not a released checkpoint — a training arm such as
+`de2-v4-lr5e5-e3-s7`, or a version this package has no record for — gets the
+family's record, which is reported and not applied.
+
+**An alias that outlives the weights it named is the one case a client cannot
+detect.** If a server serves DE-2.1 behind the id `shisa-ai/shisa-de-2`, the id
+still says DE-2, so DE-2's fit is chosen and applied to DE-2.1's answers — the
+over-correction in the table above. Nothing in a response distinguishes the two.
+Say which checkpoint is really behind the alias:
+
+```go
+model, err := shisade.NewDecisionModel(shisade.DecisionModelConfig{
+	Model:     "shisa-ai/shisa-de-2", // the alias the server serves
+	Tokenizer: "shisa-ai/shisa-de-2.1", // the checkpoint behind it
+})
+```
+
+or pass `Calibration: &record` from
+`shisade.LoadCalibration("data/calibration-de2.1.json")`. `shisa-de doctor`
+prints the record it chose and the checkpoint it was fitted on, so the answer is
+visible before it is trusted.
 
 Calibration depends on the model, the way it is read, and how it is served.
 Refit before using these probabilities to drive a threshold on your own
@@ -516,10 +554,12 @@ DE-2 reads up to 256 options in one prompt, so there is nothing to compound.
 because an image read is the only read that uses them. The endpoint comes
 from `SHISA_DE_ENDPOINT` and the key from `SHISA_DE_API_KEY`, then
 `SHISA_API_KEY`; the command line's `--model` defaults to the library's
-`DefaultModel`, which is `shisa-ai/shisa-de-2` and is the only checkpoint this
-port reads. It used to have a default of its own, because the library's was the
-DE-1 one and a command whose zero-config form can only fail is not a command;
-DE-1 is retired and the two defaults are the same value now.
+`DefaultModel`, which is `shisa-ai/shisa-de-2` and is the checkpoint the hosted
+endpoint serves. It used to have a default of its own, because the library's was
+the DE-1 one and a command whose zero-config form can only fail is not a command;
+DE-1 is retired and the two defaults are the same value now. Reading DE-2.1 from
+your own server takes `--model shisa-ai/shisa-de-2.1`, which also selects that
+checkpoint's calibration.
 
 `PORT.md` records what else differs from the Python command line.
 
@@ -567,9 +607,11 @@ things it is missing are both consequences of that:
 `de2-codebook-v1` only, and a checkpoint that resolves to DE-1 is an error rather
 than an assumption, because reading a checkpoint through the other family's
 contract returns answers nobody has measured. DE-1 is retired as a model: the
-hosted `shisa-ai/shisa-de-1` is still listed and still answers, but it is an alias
-for `shisa-ai/shisa-de-2`, which is this port's default. A DE-1 checkpoint of your
-own needs the [Python client](https://github.com/shisa-ai/shisa-de).
+hosted `shisa-ai/shisa-de-1` is still listed and still answers, but it is an
+alias, not a DE-1 checkpoint. If what is behind it is a DE-2 checkpoint, declare
+`Family: "de2"` (or `--family de2`) and this port reads it; without the
+declaration the id names DE-1 and the client refuses it. A DE-1 checkpoint of
+your own needs the [Python client](https://github.com/shisa-ai/shisa-de).
 
 **Wide-choice overflow.** DE-1 caps a text choice at 26 options and the Python
 client splits anything larger into chunks with a finalist round. DE-2 reads up to
@@ -580,8 +622,15 @@ name rather than accepted and ignored.
 machinery is the only read selection this port has, and `Policy: "direct"` is
 what a single DE-2 read is called here.
 
+**Quote-delimiter normalisation.** The Python client can strip quote characters
+from the edges of a state string before rendering
+(`strip_state_quotes=True`, `--strip-state-quotes`), and exports
+`strip_quote_delimiters` for callers that render their own prompts. It is off by
+default. This port renders the state verbatim and has no counterpart, so the
+normalisation is yours to apply before the call.
+
 Everything else in the Python client's API has a Go counterpart, and
-[`docs/PORT.md`](docs/PORT.md) maps them file by file.
+[`docs/PORT.md`](docs/PORT.md) maps them file by file and records the rest.
 
 ## How it works
 

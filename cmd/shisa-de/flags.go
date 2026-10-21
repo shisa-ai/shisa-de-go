@@ -156,7 +156,8 @@ func commonFlags(command string) string {
 		"  --base-url URL          endpoint (default: $SHISA_DE_ENDPOINT, then the hosted endpoint)",
 		"  --model ID              served model id (default: " + defaultModel + ")",
 		"  --tokenizer SOURCE      tokenizer source (defaults to --model)",
-		"  --calibration SPEC      a family (" + calibrationFamilies() + ") or a record file",
+		"  --calibration SPEC      a family (" + calibrationFamilies() + "), a released checkpoint (" +
+			checkpointNames() + ") or a record file",
 		"  --family NAME           the contract the served model is read through",
 		"  --policy NAME           " + strings.Join(shisade.Policies, " | "),
 		"  --reads NAME            " + strings.Join(shisade.ReadCounts, " | "),

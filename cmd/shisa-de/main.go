@@ -163,7 +163,8 @@ func (a *args) modelConfig() (shisade.DecisionModelConfig, error) {
 	if a.calibrationSet && a.calibration != "auto" {
 		if a.calibration == "" {
 			return shisade.DecisionModelConfig{}, &usageError{fmt.Sprintf(
-				"--calibration '' is neither a family (%s) nor a record file", familyNames())}
+				"--calibration '' is neither a family (%s), a released checkpoint (%s) nor a record file",
+				familyNames(), checkpointNames())}
 		}
 		record, _, err := shisade.ResolveCalibration(a.calibration)
 		if err != nil {
@@ -238,7 +239,8 @@ func parse(command string, argv []string) (*args, error) {
 	flags.StringVar(&parsed.modelID, "model", defaultModel, "served model id")
 	flags.StringVar(&parsed.tokenizer, "tokenizer", "", "tokenizer source (defaults to --model)")
 	flags.Var(&calibration, "calibration",
-		"calibration record: a family ("+calibrationFamilies()+") or a path to a record. "+
+		"calibration record: a family ("+calibrationFamilies()+"), a released checkpoint ("+
+			checkpointNames()+") or a path to a record. "+
 			"Default: chosen from the served model id")
 	flags.Var(&family, "family", "the contract the served model is read through. "+
 		"Default: taken from the model id, then the tokenizer, otherwise assumed to be de2")
@@ -308,6 +310,16 @@ func calibrationFamilies() string {
 	names := make([]string, 0, len(shisade.CalibrationFiles))
 	for family := range shisade.CalibrationFiles {
 		names = append(names, string(family))
+	}
+	sortStrings(names)
+	return strings.Join(names, ", ")
+}
+
+// checkpointNames is the released checkpoints a calibration record ships for.
+func checkpointNames() string {
+	names := make([]string, 0, len(shisade.CheckpointCalibrationFiles))
+	for checkpoint := range shisade.CheckpointCalibrationFiles {
+		names = append(names, checkpoint)
 	}
 	sortStrings(names)
 	return strings.Join(names, ", ")

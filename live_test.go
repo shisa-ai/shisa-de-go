@@ -1282,3 +1282,47 @@ func TestLiveRecorderRefusesASinglePass(t *testing.T) {
 		t.Errorf("the refusal does not say why: %q", stderr.String())
 	}
 }
+
+// TestLiveCalibrationMatchesTheServedCheckpoint pins that the record the client
+// applies belongs to the checkpoint the endpoint serves.
+//
+// This is the check to run when an endpoint changes what it serves. It cannot
+// see through an alias: a server that answers to `shisa-ai/shisa-de-2` while
+// serving DE-2.1's weights is indistinguishable from one serving DE-2, so point
+// it at the checkpoint's own id, or at the alias with `SHISA_DE_TOKENIZER` set
+// to the checkpoint behind it.
+func TestLiveCalibrationMatchesTheServedCheckpoint(t *testing.T) {
+	model, _ := liveModel(t, OptionOverrides{})
+	checkpoint := ReleasedCheckpoint(liveModelID())
+	if checkpoint == "" {
+		// Not a released checkpoint, so the record must be held and not
+		// applied, and the caller has to be told.
+		if model.CalibrationApplied {
+			t.Errorf("a record was applied to %s, which names no released checkpoint", liveModelID())
+		}
+		if len(model.Warnings) == 0 {
+			t.Error("an unapplied record was not reported")
+		}
+		t.Logf("%s names no released checkpoint; the record for %s is reported and not applied",
+			liveModelID(), model.Calibration.Model)
+		return
+	}
+	if got := model.Calibration.Model; got != checkpoint {
+		t.Errorf("serving %s applied the record fitted on %s, want %s",
+			liveModelID(), got, checkpoint)
+	}
+	if !model.CalibrationApplied || model.CalibrationLevel != ApplicabilityCheckpoint {
+		t.Errorf("serving %s is %q applied=%v, want %q applied",
+			liveModelID(), model.CalibrationLevel, model.CalibrationApplied, ApplicabilityCheckpoint)
+	}
+	// The temperatures are the record's, not the other checkpoint's.
+	for _, read := range []string{"direct", "repeat2", "think"} {
+		want := model.Calibration.Reads[read]
+		for questionType, temperature := range want {
+			if got := model.Calibration.TemperatureFor(questionType, read); got != temperature {
+				t.Errorf("%s/%s is %v, the record holds %v", read, questionType, got, temperature)
+			}
+		}
+	}
+	t.Logf("%s applies the record for %s: %s", liveModelID(), checkpoint, model.Calibration.ID())
+}
