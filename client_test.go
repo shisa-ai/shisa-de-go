@@ -1885,3 +1885,100 @@ func TestDE21IsTemperedWithItsOwnFit(t *testing.T) {
 			withDE21["A"], withDE2["A"])
 	}
 }
+
+// TestADisagreeingTokenizerIsReported pins the rule for two names that name
+// different checkpoints: the model id decides, because a tokenizer is not a
+// statement about weights -- DE-2.1 is served with DE-2's tokenizer, so the
+// reverse disagreement is a correct configuration -- and the disagreement is
+// said out loud rather than resolved silently.
+//
+// This is the case the alias deployment creates. The model id is the only
+// in-band signal a client has, so a server serving one checkpoint under
+// another's id is indistinguishable from a server serving what it says; the
+// warning is what tells a caller to pass Calibration instead.
+func TestADisagreeingTokenizerIsReported(t *testing.T) {
+	cases := []struct {
+		name      string
+		model     string
+		tokenizer string
+		want      string
+		warns     bool
+	}{
+		{"the alias case", "shisa-ai/shisa-de-2", "shisa-ai/shisa-de-2.1",
+			"shisa-ai/shisa-de-2", true},
+		{"2.1 served with DE-2's tokenizer", "shisa-ai/shisa-de-2.1", "shisa-ai/shisa-de-2",
+			"shisa-ai/shisa-de-2.1", true},
+		{"the same checkpoint twice", "shisa-ai/shisa-de-2.1", "shisa-ai/shisa-de-2.1-FP8-dynamic",
+			"shisa-ai/shisa-de-2.1", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			readout, _ := newPolicyReadout(t, 1)
+			model, err := NewDecisionModel(DecisionModelConfig{
+				BaseURL: "http://stub.invalid", Model: tc.model, Tokenizer: tc.tokenizer,
+				Readout: readout, MaxWorkers: 1,
+			})
+			if err != nil {
+				t.Fatalf("NewDecisionModel: %v", err)
+			}
+			defer model.Close()
+			if model.Calibration.Model != tc.want {
+				t.Errorf("serving %s with tokenizer %s chose %s, want %s",
+					tc.model, tc.tokenizer, model.Calibration.Model, tc.want)
+			}
+			// The model id decided, so the record is still applied.
+			if !model.CalibrationApplied || model.CalibrationLevel != ApplicabilityCheckpoint {
+				t.Errorf("%s is %q applied=%v", tc.model, model.CalibrationLevel, model.CalibrationApplied)
+			}
+			reported := false
+			for _, warning := range model.Warnings {
+				if strings.Contains(warning, "the model id names") {
+					reported = true
+				}
+			}
+			if reported != tc.warns {
+				t.Errorf("the disagreement was reported=%v, want %v: %v", reported, tc.warns, model.Warnings)
+			}
+		})
+	}
+}
+
+// TestAFamilyRecordOnACheckpointWithItsOwnRecordIsReported pins the second way a
+// wrong fit arrives: a caller passes a family's record, which was one fit before
+// a family had two. A supplied record is still applied as given -- it is the
+// caller's assertion -- but naming the family no longer names one fit, so the
+// answer says so.
+func TestAFamilyRecordOnACheckpointWithItsOwnRecordIsReported(t *testing.T) {
+	family, err := CalibrationFor(FamilyDE2)
+	if err != nil {
+		t.Fatalf("CalibrationFor: %v", err)
+	}
+	readout, _ := newPolicyReadout(t, 1)
+	model, err := NewDecisionModel(DecisionModelConfig{
+		BaseURL: "http://stub.invalid", Model: "shisa-ai/shisa-de-2.1",
+		Readout: readout, MaxWorkers: 1, Calibration: &family,
+	})
+	if err != nil {
+		t.Fatalf("NewDecisionModel: %v", err)
+	}
+	defer model.Close()
+	if model.Calibration.Model != "shisa-ai/shisa-de-2" {
+		t.Errorf("the supplied record is %s", model.Calibration.Model)
+	}
+	if !model.CalibrationApplied {
+		t.Error("a supplied record was not applied")
+	}
+	found := false
+	for _, warning := range model.Warnings {
+		if strings.Contains(warning, "shisa-ai/shisa-de-2.1") && strings.Contains(warning, "own record") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a family record on a checkpoint that has its own was not reported: %v", model.Warnings)
+	}
+	// The record for the served checkpoint is the one that should have been used.
+	if got, err := CalibrationForCheckpoint(FamilyDE2, "shisa-ai/shisa-de-2.1", ""); err != nil || got.Model != "shisa-ai/shisa-de-2.1" {
+		t.Fatalf("CalibrationForCheckpoint = %q, %v", got.Model, err)
+	}
+}

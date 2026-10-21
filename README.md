@@ -299,31 +299,49 @@ DE-2's temperatures over-correct it:
 | twice (`repeat2`) | 2.76 / 1.89 | 2.11 / 1.64 |
 | after a thought (`think`) | 6.8 / 6.8 | 5.23 / 5.23 |
 
-The record is chosen from the served model id, or from the tokenizer source when
-a server aliases the id. A name that contains a released checkpoint's name as its
-own token counts as that checkpoint, so `shisa-ai/shisa-de-2.1-FP8-dynamic` and a
-local `/models/shisa-de-2.1` both get DE-2.1's record without passing `Tokenizer`.
-A name that is not a released checkpoint — a training arm such as
-`de2-v4-lr5e5-e3-s7`, or a version this package has no record for — gets the
-family's record, which is reported and not applied.
+The record is chosen from the served model id. A name that contains a released
+checkpoint's name as its own token counts as that checkpoint, so
+`shisa-ai/shisa-de-2.1-FP8-dynamic` and a local `/models/shisa-de-2.1` both get
+DE-2.1's record without any extra setting. A name that is not a released
+checkpoint — a training arm such as `de2-v4-lr5e5-e3-s7`, or a version this
+package has no record for — gets the family's record, which is reported and not
+applied.
+
+The tokenizer source is consulted only when the model id names no released
+checkpoint, so it identifies a checkpoint for a server that answers to an
+invented id (`Model: "my-endpoint"`, `Tokenizer: "shisa-ai/shisa-de-2.1"`). It
+does not override a model id that does name one, and it could not do so reliably:
+DE-2.1 is served with DE-2's tokenizer, so the tokenizer is not a statement about
+weights. When the two names disagree the model id decides and a warning in
+`DecisionModel.Warnings` says so.
+
+The same rule cuts the other way for a fine-tune: a checkpoint whose directory is
+named after the release it was built from is treated as that release and gets its
+base's temperatures. Pass your own `Calibration` for a fine-tune, or a name that
+names no release.
 
 **An alias that outlives the weights it named is the one case a client cannot
 detect.** If a server serves DE-2.1 behind the id `shisa-ai/shisa-de-2`, the id
 still says DE-2, so DE-2's fit is chosen and applied to DE-2.1's answers — the
-over-correction in the table above. Nothing in a response distinguishes the two.
-Say which checkpoint is really behind the alias:
+over-correction in the table above. Nothing in a response distinguishes the two,
+so say which checkpoint is really behind the alias by passing its record:
 
 ```go
+record, err := shisade.CalibrationForCheckpoint(shisade.FamilyDE2, "shisa-ai/shisa-de-2.1", "")
+if err != nil {
+	return err
+}
 model, err := shisade.NewDecisionModel(shisade.DecisionModelConfig{
-	Model:     "shisa-ai/shisa-de-2", // the alias the server serves
-	Tokenizer: "shisa-ai/shisa-de-2.1", // the checkpoint behind it
+	Model:       "shisa-ai/shisa-de-2", // the alias the server serves
+	Calibration: &record,              // the fit for the weights behind it
 })
 ```
 
-or pass `Calibration: &record` from
-`shisade.LoadCalibration("data/calibration-de2.1.json")`. `shisa-de doctor`
-prints the record it chose and the checkpoint it was fitted on, so the answer is
-visible before it is trusted.
+`shisa-de doctor` prints the record it chose and the checkpoint it was fitted on,
+so the answer is visible before it is trusted. `--calibration shisa-ai/shisa-de-2.1`
+does the same on the command line, and naming the family (`--calibration de2`)
+means that family's record, which is DE-2's — not the fit for whichever checkpoint
+the endpoint happens to serve.
 
 Calibration depends on the model, the way it is read, and how it is served.
 Refit before using these probabilities to drive a threshold on your own

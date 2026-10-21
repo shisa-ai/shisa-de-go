@@ -1284,20 +1284,36 @@ func TestLiveRecorderRefusesASinglePass(t *testing.T) {
 }
 
 // TestLiveCalibrationMatchesTheServedCheckpoint pins that the record the client
-// applies belongs to the checkpoint the endpoint serves.
+// applies belongs to the checkpoint the endpoint serves, and that the answer
+// carries that record's temperature.
 //
-// This is the check to run when an endpoint changes what it serves. It cannot
-// see through an alias: a server that answers to `shisa-ai/shisa-de-2` while
-// serving DE-2.1's weights is indistinguishable from one serving DE-2, so point
-// it at the checkpoint's own id, or at the alias with `SHISA_DE_TOKENIZER` set
-// to the checkpoint behind it.
+// This is the check to run when an endpoint changes what it serves. It reads
+// through the endpoint, so it fails against a server that is not there. It
+// cannot see through an alias: a server that answers to `shisa-ai/shisa-de-2`
+// while serving DE-2.1's weights is indistinguishable from one serving DE-2, so
+// point it at the checkpoint's own id. When the id names no released checkpoint,
+// set `SHISA_DE_TOKENIZER` to the checkpoint behind it and this checks that
+// route instead.
 func TestLiveCalibrationMatchesTheServedCheckpoint(t *testing.T) {
 	model, _ := liveModel(t, OptionOverrides{})
+	// The expectation is the client's own rule, so the test does not disagree
+	// with the code about which name decides.
 	checkpoint := ReleasedCheckpoint(liveModelID())
+	if checkpoint == "" {
+		checkpoint = ReleasedCheckpoint(os.Getenv("SHISA_DE_TOKENIZER"))
+	}
+	result, err := model.Classify(context.Background(), liveSpam,
+		map[string]HeadSpec{"intent": {Options: []Option{
+			{Key: "spam", Description: "Unsolicited bulk or scam message"},
+			{Key: "ham", Description: "Ordinary message"}}}}, ClassifyOptions{})
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	answer := result.Answers["intent"]
 	if checkpoint == "" {
 		// Not a released checkpoint, so the record must be held and not
 		// applied, and the caller has to be told.
-		if model.CalibrationApplied {
+		if model.CalibrationApplied || answer.Calibrated {
 			t.Errorf("a record was applied to %s, which names no released checkpoint", liveModelID())
 		}
 		if len(model.Warnings) == 0 {
@@ -1315,14 +1331,32 @@ func TestLiveCalibrationMatchesTheServedCheckpoint(t *testing.T) {
 		t.Errorf("serving %s is %q applied=%v, want %q applied",
 			liveModelID(), model.CalibrationLevel, model.CalibrationApplied, ApplicabilityCheckpoint)
 	}
-	// The temperatures are the record's, not the other checkpoint's.
-	for _, read := range []string{"direct", "repeat2", "think"} {
-		want := model.Calibration.Reads[read]
-		for questionType, temperature := range want {
-			if got := model.Calibration.TemperatureFor(questionType, read); got != temperature {
-				t.Errorf("%s/%s is %v, the record holds %v", read, questionType, got, temperature)
-			}
+	// The answer's own provenance, not the record compared with itself: an
+	// empty per-read table would otherwise assert nothing at all.
+	if !answer.Calibrated {
+		t.Error("the answer is not marked calibrated")
+	}
+	if len(model.Calibration.Reads) == 0 {
+		t.Fatal("the applied record holds no per-read temperatures")
+	}
+	want := model.Calibration.TemperatureFor(answer.Type, answer.Strategy)
+	if answer.Temperature != want {
+		t.Errorf("the answer was tempered at %v, its record holds %v", answer.Temperature, want)
+	}
+	// The record's fit is the one thing this can distinguish: DE-2 and DE-2.1
+	// do not share a temperature, so a wrong record shows up here.
+	for _, other := range checkpointRecords {
+		if other.checkpoint == checkpoint {
+			continue
+		}
+		record, err := LoadCalibration(other.path)
+		if err != nil {
+			t.Fatalf("LoadCalibration(%s): %v", other.path, err)
+		}
+		if record.TemperatureFor(answer.Type, answer.Strategy) == want {
+			t.Errorf("%s and %s share a temperature for this read, so this check cannot tell them apart",
+				checkpoint, other.checkpoint)
 		}
 	}
-	t.Logf("%s applies the record for %s: %s", liveModelID(), checkpoint, model.Calibration.ID())
+	t.Logf("%s applies the record for %s at %v: %s", liveModelID(), checkpoint, want, model.Calibration.ID())
 }

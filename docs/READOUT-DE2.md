@@ -388,10 +388,10 @@ Limits of this fit, also recorded in the record's `note`:
 ### DE-2.1
 
 `shisa-ai/shisa-de-2.1` has its own record,
-`data/calibration-de2.1.json`, chosen when the model ID (or the
+`shisa_de/data/calibration-de2.1.json`, chosen when the model ID (or the
 tokenizer name) names it:
 
-| Read | `Answer.Strategy` | noul | choice and score |
+| Read | `Answer.strategy` | noul | choice and score |
 | --- | --- | ---: | ---: |
 | `direct` | `direct` | 1.98 | 1.53 |
 | `repeat2` | `repeat2` | 2.11 | 1.64 |
@@ -421,18 +421,18 @@ it was not reproduced here. 936 of the 1,298 thoughts were cut by the budget.
 ### Other checkpoints
 
 Each record is applied on its own only to the checkpoint it was fitted on.
-Another DE-2 checkpoint gets raw probabilities and a warning, as on DE-1. To
-calibrate one, fit on this readout and your serving shape with
+Another DE-2 checkpoint gets raw probabilities and a warning, as on DE-1. To calibrate one,
+fit on this readout and your serving shape with
 `scripts/calibrate_de2_collect.py` and `scripts/calibrate_de2_fit.py`, write a
 record whose `readout_version` is `de2-codebook-v1` with a `reads` table, and
-pass it as `Calibration: &record` or `--calibration path.json`. A
+pass it as `DecisionModel(calibration=...)` or `--calibration path.json`. A
 record without a `reads` table is one fit for the reads before any thought, and
 an answer read after a thought stays raw under it. A record fitted against a
 DE-1 readout does not apply; [the DE-1 page](READOUT.md#8-calibration) has the
 rule.
 
 An earlier fit on a candidate adapter is kept, not applied, under `withheld` in
-`data/calibration-de2.json`: it was made on the one-pass scaffold,
+`shisa_de/data/calibration-de2.json`: it was made on the one-pass scaffold,
 in-sample, through Transformers rather than a server.
 
 ## 8. Serving
@@ -542,11 +542,13 @@ are my balances currently?"` were classified differently in every read, and a
 stray trailing quote moved the answer further than a stray leading one.
 Brackets, braces and parentheses at the same positions did not move it.
 
-The Python client can remove those delimiters before serialization with
-`strip_state_quotes=True` (`--strip-state-quotes` on its CLI). It is off by
-default, so the reference implementation above is what runs unless a caller asks
-for it. This port renders the state verbatim and has no such option; a caller
-that wants the normalisation has to apply it to the state before the call.
+The SDK can remove those delimiters before serialization with
+`strip_state_quotes=True` (`--strip-state-quotes` on the CLI), which renders
+`"text"`, `"text`, `text"`, `""text` and `text""` as `text` while keeping
+interior quoting. It is off by default, so the client matches the reference
+implementation above unless a caller asks for it. A caller that renders prompts
+itself can apply `shisa_de.strip_quote_delimiters` to the state for the same
+result.
 
 ## 11. Verification
 

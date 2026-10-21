@@ -702,6 +702,27 @@ func NewDecisionModel(config DecisionModelConfig) (*DecisionModel, error) {
 			"the bundled %s calibration is not applied to %s: %s. Answers are raw probabilities; pass Calibration to apply a record you vouch for",
 			string(family), pythonQuote(model), strings.Join(reasons, "; ")))
 	}
+	// Two names that disagree about the checkpoint are worth saying out loud. The
+	// model id decides, because a tokenizer is not a statement about weights:
+	// DE-2.1 is served with DE-2's tokenizer, so the reverse disagreement is a
+	// correct configuration. Saying nothing leaves the alias case -- a server
+	// serving one checkpoint under another's id -- indistinguishable from a
+	// deployment that is exactly what it says.
+	if checkpoint, named := ReleasedCheckpoint(model), ReleasedCheckpoint(tokenizerSource); named != "" && checkpoint != "" && named != checkpoint {
+		model_.Warnings = append(model_.Warnings, fmt.Sprintf(
+			"the model id names %s and the tokenizer names %s; the model id chose the record. Pass Calibration to apply the other checkpoint's fit",
+			pythonQuote(checkpoint), pythonQuote(named)))
+	}
+	// A supplied record is the caller's assertion and is applied as given, which
+	// is right for a fit of their own and wrong for a family spelling: a family
+	// now has more than one record, so naming the family no longer names one fit.
+	if supplied && level == ApplicabilityFamily {
+		if own, err := CalibrationForCheckpoint(family, model, tokenizerSource); err == nil && own.Model != model_.Calibration.Model {
+			model_.Warnings = append(model_.Warnings, fmt.Sprintf(
+				"the record passed is fitted on %s and %s names %s, which has its own record; pass that record to calibrate it",
+				pythonQuote(model_.Calibration.Model), pythonQuote(model), pythonQuote(own.Model)))
+		}
+	}
 
 	maxWorkers := config.MaxWorkers
 	if maxWorkers == 0 {

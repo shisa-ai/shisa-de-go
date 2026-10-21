@@ -1,6 +1,7 @@
 package shisade
 
 import (
+	"encoding/json"
 	"math"
 	"os"
 	"path/filepath"
@@ -643,5 +644,153 @@ func TestResolveCalibrationAcceptsAReleasedCheckpoint(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "shisa-ai/shisa-de-2.1") {
 		t.Errorf("the error does not name the checkpoints that ship: %v", err)
+	}
+}
+
+// TestReleasedCheckpointIsConservativeAboutCase pins that the fold is ASCII, so
+// this port recognises a subset of what the Python client recognises and never a
+// name it does not.
+//
+// Python's `str.lower()` maps U+0130 to `i` plus U+0307 and U+017F to `s`; Go's
+// `strings.ToLower` maps U+0130 to `i` alone. Folding ASCII only means neither
+// becomes part of a match here, which is the safe direction: an unrecognised
+// name gets raw probabilities instead of a fit that may not describe it.
+func TestReleasedCheckpointIsConservativeAboutCase(t *testing.T) {
+	cases := []struct{ name, checkpoint string }{
+		{"SHISA-DE-2.1", "shisa-ai/shisa-de-2.1"},
+		// U+0130 would fold to `i` under strings.ToLower and match; it must not.
+		{"SH\u0130SA-DE-2.1", ""},
+		// U+017F would fold to `s` under Python's lower and match there.
+		{"SHI\u017fA-DE-2.1", ""},
+		// A multi-byte rune next to the slug is a boundary in both clients.
+		{"\u65e5\u672c\u8a9eshisa-de-2.1", "shisa-ai/shisa-de-2.1"},
+		{"shisa-de-2.1\u65e5\u672c\u8a9e", "shisa-ai/shisa-de-2.1"},
+		// Both slugs present: the longer one wins, as in Python.
+		{"shisa-de-2/shisa-de-2.1", "shisa-ai/shisa-de-2.1"},
+		{"shisa-de-2.1/shisa-de-2", "shisa-ai/shisa-de-2.1"},
+	}
+	for _, tc := range cases {
+		if got := ReleasedCheckpoint(tc.name); got != tc.checkpoint {
+			t.Errorf("ReleasedCheckpoint(%q) = %q, want %q", tc.name, got, tc.checkpoint)
+		}
+	}
+}
+
+// TestEveryShippedRecordCarriesItsProvenance pins the artifact this package
+// ships, not just the one it shipped first. A truncated copy of a record still
+// loads -- `source`, `test_ece` and `note` are optional -- so the provenance is
+// what a test has to hold.
+func TestEveryShippedRecordCarriesItsProvenance(t *testing.T) {
+	if len(checkpointRecords) != len(CheckpointCalibrationFiles) {
+		t.Fatalf("the match order has %d entries and the table has %d",
+			len(checkpointRecords), len(CheckpointCalibrationFiles))
+	}
+	for _, entry := range checkpointRecords {
+		record, err := LoadCalibration(entry.path)
+		if err != nil {
+			t.Fatalf("LoadCalibration(%s): %v", entry.path, err)
+		}
+		if !record.Fitted() {
+			t.Errorf("%s is not fitted", entry.path)
+		}
+		if record.FittedOn == "" || record.ServingShape == "" || record.Source == "" {
+			t.Errorf("%s lost its provenance: fitted_on=%q serving_shape=%q source=%q",
+				entry.path, record.FittedOn, record.ServingShape, record.Source)
+		}
+		if record.Note == "" {
+			t.Errorf("%s has no note, which is where the fit's limits are recorded", entry.path)
+		}
+		if len(record.TestECE) == 0 {
+			t.Errorf("%s carries no held-out measurements", entry.path)
+		}
+		if record.ReadoutVersion != ReadoutVersionFor(record.Family) {
+			t.Errorf("%s was fitted against %q, the readout is %q",
+				entry.path, record.ReadoutVersion, ReadoutVersionFor(record.Family))
+		}
+		for _, read := range []string{"direct", "repeat2", "think"} {
+			if len(record.Reads[read]) == 0 {
+				t.Errorf("%s has no temperatures for the %q read", entry.path, read)
+			}
+		}
+		if record.Temperatures["noul"] != record.Reads["repeat2"]["noul"] {
+			t.Errorf("%s: temperatures is not the repeat2 entry", entry.path)
+		}
+	}
+}
+
+// TestApplicabilityNormalisesTheRecordsOwnModel pins that both sides of the
+// comparison use one rule, so a record fitted on a suffixed repo name reaches
+// `checkpoint` level for that name instead of reporting "another checkpoint".
+func TestApplicabilityNormalisesTheRecordsOwnModel(t *testing.T) {
+	record, err := CalibrationForCheckpoint(FamilyDE2, "shisa-ai/shisa-de-2.1", "")
+	if err != nil {
+		t.Fatalf("CalibrationForCheckpoint: %v", err)
+	}
+	record.Model = "shisa-ai/shisa-de-2.1-FP8-dynamic"
+	for _, served := range []string{
+		"shisa-ai/shisa-de-2.1-FP8-dynamic",
+		"shisa-ai/shisa-de-2.1",
+	} {
+		level, reasons := record.Applicability(served, ReadoutVersionFor(FamilyDE2),
+			ApplicabilityOptions{Family: FamilyDE2})
+		if level != ApplicabilityCheckpoint || len(reasons) != 0 {
+			t.Errorf("a record fitted on a suffixed name is %q for %q (%v), want %q",
+				level, served, reasons, ApplicabilityCheckpoint)
+		}
+	}
+}
+
+// TestResolveCalibrationLoadsAPathBeforeMatchingAName pins that an explicit file
+// is opened even when a directory in its path is named after a checkpoint.
+//
+// The served-name matcher is permissive by design, so running it over a spec
+// first would turn a deployment's own fit into the bundled record and never open
+// the file the caller named.
+func TestResolveCalibrationLoadsAPathBeforeMatchingAName(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "shisa-de-2.1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	embedded, err := LoadCalibration("data/calibration-de2.1.json")
+	if err != nil {
+		t.Fatalf("LoadCalibration: %v", err)
+	}
+	// A record that is not the bundled one, so a fallback is visible.
+	raw, err := os.ReadFile("data/calibration-de2.1.json")
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	var record map[string]any
+	if err := json.Unmarshal(raw, &record); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	record["fitted_on"] = "a deployment's own fit"
+	record["serving_shape"] = "a-deployment"
+	path := filepath.Join(dir, "deployment.json")
+	body, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	loaded, ok, err := ResolveCalibration(path)
+	if err != nil {
+		t.Fatalf("ResolveCalibration(%s): %v", path, err)
+	}
+	if !ok || loaded.FittedOn != "a deployment's own fit" {
+		t.Errorf("the file under a checkpoint-named directory resolved to %q (ok=%v), want the file",
+			loaded.FittedOn, ok)
+	}
+
+	// A missing file is an error, not a silent fallback to the bundled record.
+	missing := filepath.Join(dir, "not-here.json")
+	if _, _, err := ResolveCalibration(missing); err == nil {
+		t.Errorf("%s resolved instead of failing", missing)
+	}
+	// The bundled record is still reachable by its checkpoint id.
+	if got, ok, err := ResolveCalibration("shisa-ai/shisa-de-2.1"); err != nil || !ok || got.Model != embedded.Model {
+		t.Errorf("ResolveCalibration(checkpoint) = %q ok=%v err=%v", got.Model, ok, err)
 	}
 }

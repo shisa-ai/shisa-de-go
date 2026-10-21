@@ -42,8 +42,11 @@ through the other family's contract.
   than leaving the answers raw.
 - An alias that outlives the weights it named cannot be detected from a
   response. When a server serves one checkpoint under another's id, the caller
-  has to say so through `Tokenizer` or `Calibration`; the docs say this where a
-  user meets it, and no code guesses.
+  has to say so by passing `Calibration`; the docs say this where a user meets
+  it, and no code guesses. `Tokenizer` is not that assertion: it is consulted
+  only when the model id names no released checkpoint, because DE-2.1 is served
+  with DE-2's tokenizer. A disagreement between the two names is reported, never
+  resolved silently in favour of the tokenizer.
 - Every answer records its provenance (`Family`, `ReadoutVersion`, `Policy`,
   `Strategy`, `Calibration`, `Temperature`, `Calibrated`, `Requests`) so a
   caller can tell which read produced it. `Answer` and `Decision` carry them;

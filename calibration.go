@@ -47,16 +47,34 @@ var CalibrationFiles = map[Family]string{
 	FamilyDE2: "data/calibration-de2.json",
 }
 
+// checkpointRecords is the shipped records in match order: longest slug first,
+// so `shisa-de-2.1` is tried before `shisa-de-2`.
+//
+// This slice is the source of truth. Python sorts its table by length, and its
+// stable sort keeps table order among equal lengths; a Go map has no order, so
+// the order is written down here instead of derived.
+var checkpointRecords = []struct {
+	checkpoint string
+	path       string
+}{
+	{"shisa-ai/shisa-de-2.1", "data/calibration-de2.1.json"},
+	{"shisa-ai/shisa-de-2", "data/calibration-de2.json"},
+}
+
 // CheckpointCalibrationFiles names the shipped record for each released
-// checkpoint, keyed by its model id in lower case.
+// checkpoint, keyed by its model id in lower case. It is derived from
+// `checkpointRecords`, which holds the match order.
 //
 // The Python client's table also lists `shisa-ai/shisa-de-1`, which this port
 // has no record for and does not read, so it is absent here rather than
 // present and unusable.
-var CheckpointCalibrationFiles = map[string]string{
-	"shisa-ai/shisa-de-2":   "data/calibration-de2.json",
-	"shisa-ai/shisa-de-2.1": "data/calibration-de2.1.json",
-}
+var CheckpointCalibrationFiles = func() map[string]string {
+	files := make(map[string]string, len(checkpointRecords))
+	for _, record := range checkpointRecords {
+		files[record.checkpoint] = record.path
+	}
+	return files
+}()
 
 //go:embed data/calibration-de2.json data/calibration-de2.1.json
 var calibrationFS embed.FS
@@ -70,26 +88,20 @@ var calibrationFS embed.FS
 // `shisa-de-2`. A training arm such as `de2-v4-lr5e5-e3-s7` names no released
 // checkpoint, and neither does a version this package has no record for
 // (`shisa-de-2.2`, `shisa-de-2.10`).
+//
+// A name that extends a release is that release, so a fine-tune whose directory
+// is named after its base is treated as the base. The alternative -- refusing a
+// suffix -- would break the quantized repos the rule exists for.
 func ReleasedCheckpoint(name string) string {
-	text := strings.ToLower(name)
+	text := asciiLower(name)
 	if text == "" {
 		return ""
 	}
 	if _, ok := CheckpointCalibrationFiles[text]; ok {
 		return text
 	}
-	checkpoints := make([]string, 0, len(CheckpointCalibrationFiles))
-	for checkpoint := range CheckpointCalibrationFiles {
-		checkpoints = append(checkpoints, checkpoint)
-	}
-	// Longest first, so `shisa-de-2.1` is tried before `shisa-de-2`.
-	sort.Slice(checkpoints, func(i, j int) bool {
-		if len(checkpoints[i]) != len(checkpoints[j]) {
-			return len(checkpoints[i]) > len(checkpoints[j])
-		}
-		return checkpoints[i] < checkpoints[j]
-	})
-	for _, checkpoint := range checkpoints {
+	for _, record := range checkpointRecords {
+		checkpoint := record.checkpoint
 		slug := checkpoint[strings.Index(checkpoint, "/")+1:]
 		for start := 0; start+len(slug) <= len(text); start++ {
 			if text[start:start+len(slug)] != slug {
@@ -105,6 +117,26 @@ func ReleasedCheckpoint(name string) string {
 		}
 	}
 	return ""
+}
+
+// asciiLower folds A-Z to a-z and leaves every other byte alone.
+//
+// Python's `str.lower()` applies the full Unicode mapping, and Go's
+// `strings.ToLower` applies the simple one, so the two disagree for a few code
+// points: U+0130 lowercases to `i` in Go and to `i` plus U+0307 in Python, which
+// would make `SH\u0130SA-DE-2.1` name DE-2.1 here and nothing there. Folding
+// ASCII only means a name matches only when the slug appears literally, so this
+// port recognises a subset of what Python recognises and never a name Python
+// does not. The slugs are ASCII, so the cost is a name that needs non-ASCII case
+// folding to match at all, which gets raw probabilities instead of a fit.
+func asciiLower(text string) string {
+	folded := []byte(text)
+	for i, c := range folded {
+		if c >= 'A' && c <= 'Z' {
+			folded[i] = c + ('a' - 'A')
+		}
+	}
+	return string(folded)
 }
 
 // continuesCheckpointName reports whether b would make a matched checkpoint
@@ -345,8 +377,14 @@ func (c Calibration) Applicability(model, readoutVersion string, options Applica
 		}
 		names = append(names, strings.ToLower(name))
 	}
+	// Both sides of the comparison use one rule: a record fitted on a suffixed
+	// repo name is still that checkpoint's record.
+	recordModel := ReleasedCheckpoint(c.Model)
+	if recordModel == "" {
+		recordModel = strings.ToLower(c.Model)
+	}
 	for _, name := range names {
-		if strings.ToLower(c.Model) == name {
+		if recordModel == name {
 			return ApplicabilityCheckpoint, nil
 		}
 	}
@@ -536,9 +574,21 @@ func CalibrationForCheckpoint(family Family, model, tokenizer string) (Calibrati
 // checkpoint id (`shisa-ai/shisa-de-2.1`) or a path to a record. An empty spec
 // or "auto" means "let the client pick from the served model", and returns
 // ok=false.
+//
+// A path is loaded as a path. The served-name matcher is permissive by design --
+// it matches a checkpoint anywhere in a name -- so running it over a spec first
+// would turn `/fits/shisa-de-2.1/deployment.json` into the bundled DE-2.1 record
+// and never open the file the caller named.
 func ResolveCalibration(spec string) (Calibration, bool, error) {
 	if spec == "" || spec == "auto" {
 		return Calibration{}, false, nil
+	}
+	if looksLikeRecordPath(spec) {
+		record, err := LoadCalibrationFile(spec)
+		if err != nil {
+			return Calibration{}, false, calibrationSpecError(spec, err)
+		}
+		return record, true, nil
 	}
 	if path, ok := CheckpointCalibrationFiles[ReleasedCheckpoint(spec)]; ok {
 		record, err := LoadCalibration(path)
@@ -553,11 +603,30 @@ func ResolveCalibration(spec string) (Calibration, bool, error) {
 	}
 	record, err := LoadCalibrationFile(spec)
 	if err != nil {
-		return Calibration{}, false, fmt.Errorf(
-			"calibration %q is neither a family (%s), a released checkpoint (%s) nor a record file: %w",
-			spec, familyNames(), checkpointNames(), err)
+		return Calibration{}, false, calibrationSpecError(spec, err)
 	}
 	return record, true, nil
+}
+
+// looksLikeRecordPath reports whether a spec names a file rather than a family
+// or a checkpoint.
+//
+// A `.json` suffix is a path even when the file is missing, so a typo in a path
+// is an error instead of a silent fallback to a bundled record. A checkpoint id
+// never ends in `.json`, so the two spellings cannot collide.
+func looksLikeRecordPath(spec string) bool {
+	if strings.HasSuffix(strings.ToLower(spec), ".json") {
+		return true
+	}
+	info, err := os.Stat(expandUser(spec))
+	return err == nil && !info.IsDir()
+}
+
+// calibrationSpecError reports a spec that resolved to nothing.
+func calibrationSpecError(spec string, cause error) error {
+	return fmt.Errorf(
+		"calibration %q is neither a family (%s), a released checkpoint (%s) nor a record file: %w",
+		spec, familyNames(), checkpointNames(), cause)
 }
 
 // checkpointNames lists the released checkpoints this package has a record for.

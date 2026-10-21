@@ -239,9 +239,9 @@ func parse(command string, argv []string) (*args, error) {
 	flags.StringVar(&parsed.modelID, "model", defaultModel, "served model id")
 	flags.StringVar(&parsed.tokenizer, "tokenizer", "", "tokenizer source (defaults to --model)")
 	flags.Var(&calibration, "calibration",
-		"calibration record: a family ("+calibrationFamilies()+"), a released checkpoint ("+
+		"calibration record: a family ("+calibrationFamilies()+", that family's record), a released checkpoint ("+
 			checkpointNames()+") or a path to a record. "+
-			"Default: chosen from the served model id")
+			"Default: the record of the checkpoint the served model id names")
 	flags.Var(&family, "family", "the contract the served model is read through. "+
 		"Default: taken from the model id, then the tokenizer, otherwise assumed to be de2")
 	flags.Var(&policy, "policy", "the DE-2 read. Default: repeat-think")

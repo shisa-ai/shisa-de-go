@@ -128,12 +128,47 @@ DE-2, and `TestReleasedCheckpointRecognisesReleasedNames` pins the same table th
 Python test does. A name that extends a release with a suffix --
 `shisa-de-2-FP8-dynamic`, and equally `shisa-de-2-preview` -- is that release.
 
+**The name match folds ASCII only, and its order is written down.** Python
+lowercases with `str.lower()`, whose full Unicode mapping differs from Go's
+`strings.ToLower` for a few code points: U+0130 becomes `i` in Go and `i` plus
+U+0307 in Python. Folding A-Z only means a name matches when the slug appears
+literally, so this port recognises a subset of what Python recognises and never a
+name Python does not; a name that needs non-ASCII folding to match gets raw
+probabilities. The match order is an ordered slice (`checkpointRecords`) rather
+than a sort over a map, because Python's stable sort keeps table order among
+slugs of equal length and a Go map has no order.
+
+**A tokenizer is not a statement about weights.** Python's `calibration_for`
+consults the tokenizer after the model id, which reads as "the tokenizer names
+the checkpoint the alias hides". It only works when the model id names no
+released checkpoint: an id that names one wins, and DE-2.1 is served with DE-2's
+tokenizer, so the tokenizer cannot be authoritative in either direction. This port
+keeps Python's order and reports the disagreement instead of resolving it
+silently -- a warning when the model id and the tokenizer name different released
+checkpoints, and another when a supplied record is the family's while the served
+checkpoint has its own. The alias case is answered by passing `Calibration`,
+which both clients apply as given.
+
+**`ResolveCalibration` loads a path before matching a name.** The served-name
+matcher is permissive by design, so Python's `resolve_calibration` turns
+`/fits/shisa-de-2.1/deployment.json` into the bundled DE-2.1 record without
+opening the file. This port treats a `.json` suffix, or an existing regular file,
+as a path and loads it, so a deployment's own fit is what a caller gets and a
+misspelt path is an error rather than a silent fallback.
+
 **No `strip_state_quotes`.** Python's `DecisionModel(strip_state_quotes=True)`
 and `--strip-state-quotes` remove delimiter quote characters from the edges of a
 state string before rendering. This port renders the state verbatim, as the
 contract specifies, and has no counterpart, so the normalisation is the caller's
 to apply. It is off by default in Python, so the two clients read the same prompt
 unless a caller asks for the other behaviour.
+
+**The measurements on the readout page are the Python client's.**
+`docs/READOUT-DE2.md` is copied verbatim, and its numbers were collected and
+fitted through the Python client with that repository's scripts, including the
+DE-2.1 temperatures in section 7. This port embeds the resulting records byte for
+byte and has not reproduced any of the fits; its own live suite measures answers,
+not calibration curves.
 
 **No Jinja.** The Python client renders with
 `tokenizer.apply_chat_template(...)`, which runs the checkpoint's own Jinja
