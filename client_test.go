@@ -1890,34 +1890,43 @@ func TestDE21IsTemperedWithItsOwnFit(t *testing.T) {
 // different checkpoints: the model id decides, because a tokenizer is not a
 // statement about weights -- DE-2.1 is served with DE-2's tokenizer, so the
 // reverse disagreement is a correct configuration -- and the disagreement is
-// said out loud rather than resolved silently.
+// said out loud when the choice was this client's to make.
 //
-// This is the case the alias deployment creates. The model id is the only
-// in-band signal a client has, so a server serving one checkpoint under
-// another's id is indistinguishable from a server serving what it says; the
-// warning is what tells a caller to pass Calibration instead.
+// A supplied record is the caller's assertion, so the model id did not choose
+// it and there is nothing to report: that is the documented alias remedy.
 func TestADisagreeingTokenizerIsReported(t *testing.T) {
 	cases := []struct {
 		name      string
 		model     string
 		tokenizer string
+		supplied  string // the checkpoint whose record is passed, if any
 		want      string
 		warns     bool
 	}{
-		{"the alias case", "shisa-ai/shisa-de-2", "shisa-ai/shisa-de-2.1",
-			"shisa-ai/shisa-de-2", true},
-		{"2.1 served with DE-2's tokenizer", "shisa-ai/shisa-de-2.1", "shisa-ai/shisa-de-2",
-			"shisa-ai/shisa-de-2.1", true},
-		{"the same checkpoint twice", "shisa-ai/shisa-de-2.1", "shisa-ai/shisa-de-2.1-FP8-dynamic",
-			"shisa-ai/shisa-de-2.1", false},
+		{name: "the alias case", model: "shisa-ai/shisa-de-2", tokenizer: "shisa-ai/shisa-de-2.1",
+			want: "shisa-ai/shisa-de-2", warns: true},
+		{name: "2.1 served with DE-2's tokenizer", model: "shisa-ai/shisa-de-2.1", tokenizer: "shisa-ai/shisa-de-2",
+			want: "shisa-ai/shisa-de-2.1", warns: true},
+		{name: "the same checkpoint twice", model: "shisa-ai/shisa-de-2.1", tokenizer: "shisa-ai/shisa-de-2.1-FP8-dynamic",
+			want: "shisa-ai/shisa-de-2.1", warns: false},
+		{name: "the alias remedy", model: "shisa-ai/shisa-de-2", tokenizer: "shisa-ai/shisa-de-2.1",
+			supplied: "shisa-ai/shisa-de-2.1", want: "shisa-ai/shisa-de-2.1", warns: false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			readout, _ := newPolicyReadout(t, 1)
-			model, err := NewDecisionModel(DecisionModelConfig{
+			config := DecisionModelConfig{
 				BaseURL: "http://stub.invalid", Model: tc.model, Tokenizer: tc.tokenizer,
 				Readout: readout, MaxWorkers: 1,
-			})
+			}
+			if tc.supplied != "" {
+				record, err := CalibrationForCheckpoint(FamilyDE2, tc.supplied, "")
+				if err != nil {
+					t.Fatalf("CalibrationForCheckpoint: %v", err)
+				}
+				config.Calibration = &record
+			}
+			model, err := NewDecisionModel(config)
 			if err != nil {
 				t.Fatalf("NewDecisionModel: %v", err)
 			}
@@ -1926,7 +1935,7 @@ func TestADisagreeingTokenizerIsReported(t *testing.T) {
 				t.Errorf("serving %s with tokenizer %s chose %s, want %s",
 					tc.model, tc.tokenizer, model.Calibration.Model, tc.want)
 			}
-			// The model id decided, so the record is still applied.
+			// The model id decided, or the caller did, so the record is applied.
 			if !model.CalibrationApplied || model.CalibrationLevel != ApplicabilityCheckpoint {
 				t.Errorf("%s is %q applied=%v", tc.model, model.CalibrationLevel, model.CalibrationApplied)
 			}
@@ -1940,6 +1949,35 @@ func TestADisagreeingTokenizerIsReported(t *testing.T) {
 				t.Errorf("the disagreement was reported=%v, want %v: %v", reported, tc.warns, model.Warnings)
 			}
 		})
+	}
+}
+
+// TestACustomFitIsNotSecondGuessed pins that the family-record warning is about
+// the family's record only. A fit of the caller's own on an uncovered checkpoint
+// is their judgement, and telling them to discard it would be wrong.
+func TestACustomFitIsNotSecondGuessed(t *testing.T) {
+	custom, err := CalibrationFor(FamilyDE2)
+	if err != nil {
+		t.Fatalf("CalibrationFor: %v", err)
+	}
+	custom.Model = "my-de2-finetune"
+	custom.FittedOn = "a fit of my own"
+	readout, _ := newPolicyReadout(t, 1)
+	model, err := NewDecisionModel(DecisionModelConfig{
+		BaseURL: "http://stub.invalid", Model: "my-de2-finetune",
+		Readout: readout, MaxWorkers: 1, Calibration: &custom,
+	})
+	if err != nil {
+		t.Fatalf("NewDecisionModel: %v", err)
+	}
+	defer model.Close()
+	if !model.CalibrationApplied {
+		t.Error("a supplied record was not applied")
+	}
+	for _, warning := range model.Warnings {
+		if strings.Contains(warning, "own record") {
+			t.Errorf("a custom fit was second-guessed: %s", warning)
+		}
 	}
 }
 

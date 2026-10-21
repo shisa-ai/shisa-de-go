@@ -134,9 +134,12 @@ lowercases with `str.lower()`, whose full Unicode mapping differs from Go's
 U+0307 in Python. Folding A-Z only means a name matches when the slug appears
 literally, so this port recognises a subset of what Python recognises and never a
 name Python does not; a name that needs non-ASCII folding to match gets raw
-probabilities. The match order is an ordered slice (`checkpointRecords`) rather
-than a sort over a map, because Python's stable sort keeps table order among
-slugs of equal length and a Go map has no order.
+probabilities. The boundary is tested on the adjacent rune rather than its byte,
+because Python lowercases that rune before applying `[a-z0-9.]`: `shisa-de-2.1`
+followed by U+0130 continues the name there (`i`), and a byte test would call it
+a boundary and match. The match order is an ordered slice
+(`checkpointRecords`) rather than a sort over a map, because Python's stable sort
+keeps table order among slugs of equal length and a Go map has no order.
 
 **A tokenizer is not a statement about weights.** Python's `calibration_for`
 consults the tokenizer after the model id, which reads as "the tokenizer names
@@ -152,9 +155,10 @@ which both clients apply as given.
 **`ResolveCalibration` loads a path before matching a name.** The served-name
 matcher is permissive by design, so Python's `resolve_calibration` turns
 `/fits/shisa-de-2.1/deployment.json` into the bundled DE-2.1 record without
-opening the file. This port treats a `.json` suffix, or an existing regular file,
-as a path and loads it, so a deployment's own fit is what a caller gets and a
-misspelt path is an error rather than a silent fallback.
+opening the file. This port treats a `.json` suffix, a rooted path (`/`, `./`,
+`../`, `~`) or an existing regular file as a path and loads it, so a deployment's
+own fit is what a caller gets and a misspelt path is an error rather than a
+silent fallback.
 
 **No `strip_state_quotes`.** Python's `DecisionModel(strip_state_quotes=True)`
 and `--strip-state-quotes` remove delimiter quote characters from the edges of a
@@ -565,11 +569,29 @@ is what the Python client returns and what JSON already erases.
 **Warnings are recorded, not raised.** The Python client calls `warnings.warn`
 for an assumed family and for a calibration record that is held but not applied.
 Go has no warning channel, so `DecisionModel.Warnings` collects them as strings.
-Nothing is printed. The ids inside them are Python's `!r`, but their advice is
-not identical: where Python writes `pass family='de1' or family='de2'` and `pass
-calibration= to apply a record you vouch for`, this port names the Go fields,
-`pass Family to say which contract it was trained for` and `pass Calibration to
-apply a record you vouch for`, because Go has no keyword arguments.
+`doctor` writes them to stderr, which is the stream `warnings.warn` uses, and the
+other commands print nothing. The ids inside them are Python's `!r`, but their
+advice is not identical: where Python writes `pass family='de1' or family='de2'`
+and `pass calibration= to apply a record you vouch for`, this port names the Go
+fields, `pass Family to say which contract it was trained for` and `pass
+Calibration to apply a record you vouch for`, because Go has no keyword
+arguments.
+
+Two warnings have no Python counterpart, because Python resolves the same
+situations silently: a model id and a tokenizer that name different released
+checkpoints, and a supplied record that is the family's while the served
+checkpoint has its own. Neither changes what is applied -- a supplied record is
+the caller's assertion -- so they are reported rather than refused. The first is
+gated on no supplied record, because then the model id did not choose anything;
+its wording is conditional, because DE-2.1 is served with DE-2's tokenizer and
+that correct configuration triggers it too.
+
+**`Applicability` normalises the record's own model.** Python compares
+`record.model.lower()` against the served names; this port runs
+`ReleasedCheckpoint` over the record's model as well, so a record fitted on
+`shisa-ai/shisa-de-2.1-FP8-dynamic` reaches `checkpoint` level for that name where
+Python reports `family`. The shipped records carry canonical ids, so the level
+only differs for a record a caller wrote.
 
 **A repeated option key is refused.** Python's choice criteria are a dict, so a
 repeated key cannot reach a read. This port takes a slice, because a Go map has
@@ -843,10 +865,16 @@ checkpoint, and says so where it appears.
   a policy name the resolver does not know, a `reads` value that is not 1 or 2,
   and `direct` spending one request where the default spends two. The calibration
   tests cover the two arithmetic helpers against hand-computed values, the
-  shipped record's temperatures and provenance, the applicability levels for each
-  family and checkpoint, `Calibration.TemperatureFor` returning the default for a
-  read the record does not describe, and `ResolveCalibration` choosing between a
-  bundled record, a named one and a caller's. The rule that a record with no
+  temperatures and provenance of every shipped record, the name table that
+  selects one (`ReleasedCheckpoint`, including the boundaries, the ASCII-only
+  fold and the adjacent-rune cases), the applicability levels for each family and
+  checkpoint, `Calibration.TemperatureFor` returning the default for a read the
+  record does not describe, `ResolveCalibration` choosing between a bundled
+  record, a named one and a caller's -- including a file under a
+  checkpoint-named directory, which must be opened rather than matched, and a
+  missing path, which must fail -- and the two warnings that report a model id
+  and a tokenizer naming different checkpoints or a supplied family record on a
+  checkpoint that has its own. The rule that a record with no
   per-read fits leaves an answer read after a thought raw is pinned by a record
   that carries a top-level temperature and no `reads`, which is the only shape
   that can tell whether the rule is there.

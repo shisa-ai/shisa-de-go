@@ -658,10 +658,16 @@ func TestResolveCalibrationAcceptsAReleasedCheckpoint(t *testing.T) {
 func TestReleasedCheckpointIsConservativeAboutCase(t *testing.T) {
 	cases := []struct{ name, checkpoint string }{
 		{"SHISA-DE-2.1", "shisa-ai/shisa-de-2.1"},
-		// U+0130 would fold to `i` under strings.ToLower and match; it must not.
+		// U+0130 is not `i`: it is a different letter, so the slug is not present.
+		// (Python's `lower()` would make it `i` plus a combining dot, also no
+		// match; `casefold()` is what maps it, and neither client folds with it.)
 		{"SH\u0130SA-DE-2.1", ""},
-		// U+017F would fold to `s` under Python's lower and match there.
+		// U+017F is not `s` under `str.lower()` either, so neither client matches.
 		{"SHI\u017fA-DE-2.1", ""},
+		// Adjacent to the slug, a rune Python lowercases into `[a-z0-9.]` continues
+		// the name, so the slug is part of a longer one and does not match.
+		{"shisa-de-2.1\u0130", ""},
+		{"\u212Ashisa-de-2.1", ""},
 		// A multi-byte rune next to the slug is a boundary in both clients.
 		{"\u65e5\u672c\u8a9eshisa-de-2.1", "shisa-ai/shisa-de-2.1"},
 		{"shisa-de-2.1\u65e5\u672c\u8a9e", "shisa-ai/shisa-de-2.1"},
@@ -784,10 +790,18 @@ func TestResolveCalibrationLoadsAPathBeforeMatchingAName(t *testing.T) {
 			loaded.FittedOn, ok)
 	}
 
-	// A missing file is an error, not a silent fallback to the bundled record.
-	missing := filepath.Join(dir, "not-here.json")
-	if _, _, err := ResolveCalibration(missing); err == nil {
-		t.Errorf("%s resolved instead of failing", missing)
+	// A missing file is an error, not a silent fallback to the bundled record --
+	// with or without an extension, and whether the path is relative or rooted.
+	for _, missing := range []string{
+		filepath.Join(dir, "not-here.json"),
+		filepath.Join(dir, "deployment"),
+		"/fits/shisa-de-2.1/deployment",
+		"./fits/shisa-de-2.1/deployment",
+		"~/fits/shisa-de-2.1/deployment",
+	} {
+		if got, _, err := ResolveCalibration(missing); err == nil {
+			t.Errorf("%s resolved to %s instead of failing", missing, got.Model)
+		}
 	}
 	// The bundled record is still reachable by its checkpoint id.
 	if got, ok, err := ResolveCalibration("shisa-ai/shisa-de-2.1"); err != nil || !ok || got.Model != embedded.Model {

@@ -15,6 +15,14 @@ import (
 func runDoctor(ctx context.Context, args *args, model *shisade.DecisionModel,
 	stdout, stderr io.Writer) int {
 	report := model.Health(ctx, args.probe)
+	// The library records what the Python client would have sent to
+	// `warnings.warn`, which writes to stderr. `doctor` is where a caller checks
+	// which record is in force, so the warnings belong beside the report: a model
+	// id and a tokenizer that name different checkpoints is exactly the state a
+	// reader is looking for and cannot see in the fields.
+	for _, warning := range model.Warnings {
+		fmt.Fprintf(stderr, "shisa-de doctor: %s\n", warning)
+	}
 	if args.json {
 		// `json.dumps(report, indent=2)`, which is `ensure_ascii=True`: the
 		// Python command line does not pass the flag, so its default applies and

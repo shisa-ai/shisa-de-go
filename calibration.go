@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // Calibration and confidence for DE answers.
@@ -107,10 +109,10 @@ func ReleasedCheckpoint(name string) string {
 			if text[start:start+len(slug)] != slug {
 				continue
 			}
-			if start > 0 && continuesCheckpointName(text[start-1]) {
+			if start > 0 && continuesCheckpointName(text, prevRuneStart(text, start)) {
 				continue
 			}
-			if end := start + len(slug); end < len(text) && continuesCheckpointName(text[end]) {
+			if end := start + len(slug); end < len(text) && continuesCheckpointName(text, end) {
 				continue
 			}
 			return checkpoint
@@ -129,6 +131,16 @@ func ReleasedCheckpoint(name string) string {
 // port recognises a subset of what Python recognises and never a name Python
 // does not. The slugs are ASCII, so the cost is a name that needs non-ASCII case
 // folding to match at all, which gets raw probabilities instead of a fit.
+// prevRuneStart is the offset of the rune that ends at `at`, so a boundary can
+// be tested on a whole rune rather than on a continuation byte.
+func prevRuneStart(text string, at int) int {
+	start := at - 1
+	for start > 0 && text[start]&0xC0 == 0x80 {
+		start--
+	}
+	return start
+}
+
 func asciiLower(text string) string {
 	folded := []byte(text)
 	for i, c := range folded {
@@ -143,11 +155,24 @@ func asciiLower(text string) string {
 // name part of a longer one.
 //
 // Python writes this as the lookaround pair `(?<![a-z0-9.])` and
-// `(?![a-z0-9.])`. Go's regexp has no lookaround, so the boundary is tested
-// directly. The class is ASCII, as Python's is, so a byte at or above 0x80
-// (part of a multi-byte rune) is a boundary in both.
-func continuesCheckpointName(b byte) bool {
-	return b == '.' || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+// `(?![a-z0-9.])`, applied to a fully lowercased string. Folding ASCII only is
+// not enough to reproduce it: Python lowercases `İ` (U+0130) to `i` and `K`
+// (U+212A) to `k`, so both continue a name there, while their bytes here are at
+// or above 0x80. The byte test alone would therefore match a name Python does
+// not. Decoding the adjacent rune and lowercasing it closes that gap, so the
+// names this port recognises are a subset of Python's.
+func continuesCheckpointName(text string, at int) bool {
+	if at < 0 || at >= len(text) {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(text[at:])
+	if r == utf8.RuneError {
+		// An invalid byte is not part of a name; Python keeps it as a lone
+		// surrogate, which is not in `[a-z0-9.]` either.
+		return false
+	}
+	lowered := unicode.ToLower(r)
+	return lowered == '.' || (lowered >= 'a' && lowered <= 'z') || (lowered >= '0' && lowered <= '9')
 }
 
 // TemperBinary is binary temperature scaling: `p^(1/T) / (p^(1/T) + (1-p)^(1/T))`.
@@ -375,13 +400,16 @@ func (c Calibration) Applicability(model, readoutVersion string, options Applica
 			names = append(names, checkpoint)
 			continue
 		}
-		names = append(names, strings.ToLower(name))
+		// Python lowercases the raw name here. Folding ASCII only keeps this side
+		// of the comparison from inventing a match Python would not make, the same
+		// reason ReleasedCheckpoint folds ASCII only.
+		names = append(names, asciiLower(name))
 	}
 	// Both sides of the comparison use one rule: a record fitted on a suffixed
 	// repo name is still that checkpoint's record.
 	recordModel := ReleasedCheckpoint(c.Model)
 	if recordModel == "" {
-		recordModel = strings.ToLower(c.Model)
+		recordModel = asciiLower(c.Model)
 	}
 	for _, name := range names {
 		if recordModel == name {
@@ -615,8 +643,17 @@ func ResolveCalibration(spec string) (Calibration, bool, error) {
 // is an error instead of a silent fallback to a bundled record. A checkpoint id
 // never ends in `.json`, so the two spellings cannot collide.
 func looksLikeRecordPath(spec string) bool {
-	if strings.HasSuffix(strings.ToLower(spec), ".json") {
+	lowered := strings.ToLower(spec)
+	if strings.HasSuffix(lowered, ".json") {
 		return true
+	}
+	// A rooted path is a path even without an extension, so a misspelt one is an
+	// error rather than a fallback to a record whose name appears in a directory
+	// along the way.
+	for _, prefix := range []string{"/", "./", "../", "~"} {
+		if strings.HasPrefix(spec, prefix) {
+			return true
+		}
 	}
 	info, err := os.Stat(expandUser(spec))
 	return err == nil && !info.IsDir()

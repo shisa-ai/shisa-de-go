@@ -428,9 +428,13 @@ shisa-de ask --model shisa-ai/shisa-de-2 --labels refund_request,order_status
 - `APIKey` is a `*string`, so `&empty` disables authentication rather than
   falling back to the environment. A nil `APIKey` reads `SHISA_DE_API_KEY`, then
   `SHISA_API_KEY`, and sends that to a local endpoint too.
-- If the server uses an alias for the checkpoint, pass the alias as `Model` and
-  the real checkpoint as `Tokenizer`. The tokenizer name also tells the client
-  which family the alias is, so a DE-2 alias keeps the DE-2 calibration.
+- If the server uses an alias for the checkpoint, the alias is `Model` and the
+  real checkpoint is `Tokenizer`. That names the checkpoint only when the alias
+  is not itself a released checkpoint id; the tokenizer also tells the client
+  which family the alias is, so a DE-2 alias keeps the DE-2 calibration. An
+  alias that *is* a released id — `shisa-ai/shisa-de-2` serving DE-2.1's
+  weights — needs `Calibration`, as described under
+  [Probabilities and calibration](#probabilities-and-calibration).
 - The server needs `/v1/completions` with `logprobs` and `logprob_token_ids`, and
   `doctor` needs `/v1/models`. vLLM supports both; `docs/READOUT-DE2.md` has the
   exact request shapes. An image question also needs `/v1/chat/completions` with

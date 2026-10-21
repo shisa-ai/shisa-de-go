@@ -1465,3 +1465,41 @@ func TestAskRefusesAnEmptyImage(t *testing.T) {
 		t.Fatalf("ask with no --image exited %d: %s", status, stderr)
 	}
 }
+
+// TestDoctorReportsADisagreeingTokenizerOnStderr pins the one place a command
+// line user can see the alias case.
+//
+// The report's fields cannot show it: with `--model shisa-ai/shisa-de-2
+// --tokenizer shisa-ai/shisa-de-2.1` the record is DE-2's, `match` is
+// `checkpoint` and `applied` is `yes`, which is exactly what a server really
+// serving DE-2 prints. The warning is the difference, and it goes to stderr,
+// where `warnings.warn` writes in the Python client.
+func TestDoctorReportsADisagreeingTokenizerOnStderr(t *testing.T) {
+	server := newCLIServer(t, "shisa-ai/shisa-de-2")
+	installCLIModel(t, server)
+	status, stdout, stderr := invoke(t, "doctor",
+		"--model", "shisa-ai/shisa-de-2", "--tokenizer", "shisa-ai/shisa-de-2.1")
+	if status != 0 {
+		t.Errorf("doctor exited %d:\n%s", status, stdout)
+	}
+	if !strings.Contains(stderr, "the model id names 'shisa-ai/shisa-de-2'") ||
+		!strings.Contains(stderr, "the tokenizer names 'shisa-ai/shisa-de-2.1'") {
+		t.Errorf("the disagreement is not reported on stderr:\n%s", stderr)
+	}
+	// The report itself still says what it always said, which is why the warning
+	// has to carry the signal.
+	for _, line := range []string{"  match         checkpoint", "  applied       yes"} {
+		if !strings.Contains(stdout, line) {
+			t.Errorf("the report has no %q line:\n%s", line, stdout)
+		}
+	}
+	// The same checkpoint twice says nothing.
+	status, _, stderr = invoke(t, "doctor",
+		"--model", "shisa-ai/shisa-de-2", "--tokenizer", "shisa-ai/shisa-de-2-FP8-dynamic")
+	if status != 0 {
+		t.Errorf("doctor exited %d", status)
+	}
+	if strings.Contains(stderr, "the model id names") {
+		t.Errorf("an agreeing tokenizer was reported:\n%s", stderr)
+	}
+}

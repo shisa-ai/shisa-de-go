@@ -1283,6 +1283,18 @@ func TestLiveRecorderRefusesASinglePass(t *testing.T) {
 	}
 }
 
+// liveCalibrationRead is the record's name for the read an answer came from.
+//
+// `Answer.Strategy` names the whole policy, so a thought is `repeat2-think`,
+// while the record keys that read as `think`; the client passes the last stage
+// to `TemperatureFor`, which is the same name.
+func liveCalibrationRead(strategy string) string {
+	if strategy == StrategyRepeatThink {
+		return "think"
+	}
+	return strategy
+}
+
 // TestLiveCalibrationMatchesTheServedCheckpoint pins that the record the client
 // applies belongs to the checkpoint the endpoint serves, and that the answer
 // carries that record's temperature.
@@ -1339,7 +1351,7 @@ func TestLiveCalibrationMatchesTheServedCheckpoint(t *testing.T) {
 	if len(model.Calibration.Reads) == 0 {
 		t.Fatal("the applied record holds no per-read temperatures")
 	}
-	want := model.Calibration.TemperatureFor(answer.Type, answer.Strategy)
+	want := model.Calibration.TemperatureFor(answer.Type, liveCalibrationRead(answer.Strategy))
 	if answer.Temperature != want {
 		t.Errorf("the answer was tempered at %v, its record holds %v", answer.Temperature, want)
 	}
@@ -1353,7 +1365,7 @@ func TestLiveCalibrationMatchesTheServedCheckpoint(t *testing.T) {
 		if err != nil {
 			t.Fatalf("LoadCalibration(%s): %v", other.path, err)
 		}
-		if record.TemperatureFor(answer.Type, answer.Strategy) == want {
+		if record.TemperatureFor(answer.Type, liveCalibrationRead(answer.Strategy)) == want {
 			t.Errorf("%s and %s share a temperature for this read, so this check cannot tell them apart",
 				checkpoint, other.checkpoint)
 		}
