@@ -81,6 +81,11 @@ type completionRequest struct {
 type completionResponse struct {
 	Choices []completionChoice `json:"choices"`
 	Usage   completionUsage    `json:"usage"`
+	// Model is the id the server says it served. A gateway that holds an alias
+	// answers with the canonical id, which is how a client learns that the name it
+	// asked for is not the checkpoint it got. A single-model server echoes the
+	// request, so an empty or equal value means nothing was revealed.
+	Model string `json:"model"`
 }
 
 // The wire shapes of one /v1/chat/completions call.
@@ -112,6 +117,8 @@ type chatTemplateKwargs struct {
 type chatResponse struct {
 	Choices []chatChoice    `json:"choices"`
 	Usage   completionUsage `json:"usage"`
+	// Model is the id the server says it served; see completionResponse.Model.
+	Model string `json:"model"`
 	// PromptLogprobs has one entry per prompt token, and the first is null. Each
 	// entry maps the token's key to its logprob, rank and decoded text;
 	// `prompt_logprobs: 0` returns only the prompt's own token at each position.

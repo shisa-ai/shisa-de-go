@@ -320,11 +320,15 @@ named after the release it was built from is treated as that release and gets it
 base's temperatures. Pass your own `Calibration` for a fine-tune, or a name that
 names no release.
 
-**An alias that outlives the weights it named is the one case a client cannot
-detect.** If a server serves DE-2.1 behind the id `shisa-ai/shisa-de-2`, the id
-still says DE-2, so DE-2's fit is chosen and applied to DE-2.1's answers — the
-over-correction in the table above. Nothing in a response distinguishes the two,
-so say which checkpoint is really behind the alias by passing its record:
+**An alias that outlives the weights it named is caught from the response, when
+the server says so.** If a gateway serves DE-2.1 behind the id
+`shisa-ai/shisa-de-2`, the id still says DE-2, so DE-2's fit would be chosen and
+applied to DE-2.1's answers — the over-correction in the table above. A server
+that holds the alias reports the canonical id it served, and this client uses it:
+the answer is tempered by the record for the id the server named, and
+`Answer.Calibration` and `Answer.ServedModel` record that it happened. A
+single-model server echoes the request, which reveals nothing, so there the id is
+all there is — say which checkpoint is really behind it by passing its record:
 
 ```go
 record, err := shisade.CalibrationForCheckpoint(shisade.FamilyDE2, "shisa-ai/shisa-de-2.1", "")

@@ -73,6 +73,14 @@ type Answer struct {
 	Calibrated bool
 	// Temperature is the temperature that was applied, 1.0 when none was.
 	Temperature float64
+	// Calibration names the record `Temperature` came from, or "" when the answer
+	// is raw. It is not always the client's own record: a server that reports the
+	// canonical id behind an alias can move the read onto another checkpoint's
+	// fit, and this is how the answer says so.
+	Calibration string
+	// ServedModel is the model id the server reported for this answer, or "" when
+	// it reported none.
+	ServedModel string
 	// Requests is the HTTP requests this answer cost.
 	Requests int
 	// MissingFromTop lists the codes the server's top-k did not carry.
@@ -624,8 +632,9 @@ type DecisionModel struct {
 	// Readout is the raw-read client underneath.
 	Readout *Readout
 
-	maxWorkers       int
-	imageTopLogprobs int
+	maxWorkers          int
+	imageTopLogprobs    int
+	calibrationSupplied bool
 }
 
 // NewDecisionModel builds a client.
@@ -682,6 +691,7 @@ func NewDecisionModel(config DecisionModelConfig) (*DecisionModel, error) {
 	model_.Options = options
 
 	supplied := config.Calibration != nil
+	model_.calibrationSupplied = supplied
 	if supplied {
 		model_.Calibration = *config.Calibration
 	} else {
@@ -1246,8 +1256,9 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 			// The image path has no policy: one direct read, and its Raw is the
 			// read's own shape rather than the staged one.
 			read := *result.image
+			record, applied := m.servedRecord(read.ServedModel, m.CalibrationApplied)
 			answer, err := answerFromRead(result.question, read, result.question.Options(),
-				m.Calibration, calibrated && m.CalibrationApplied, "image")
+				record, calibrated && applied, "image")
 			if err != nil {
 				return nil, err
 			}
@@ -1262,9 +1273,10 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 		// Each read is tempered by its own fit. A record without per-read
 		// temperatures was fitted on a read before any thought, so an answer read
 		// after one stays raw under it.
-		covered := len(m.Calibration.Reads) != 0 || read.Thought == nil
+		record, applied := m.servedRecord(read.Read().ServedModel, m.CalibrationApplied)
+		covered := len(record.Reads) != 0 || read.Thought == nil
 		answer, err := answerFromRead(result.question, read.Read(), result.question.Options(),
-			m.Calibration, calibrated && m.CalibrationApplied && covered, read.Components[len(read.Components)-1].Stage)
+			record, calibrated && applied && covered, read.Components[len(read.Components)-1].Stage)
 		if err != nil {
 			return nil, err
 		}
@@ -1386,6 +1398,34 @@ type headResult struct {
 	err   error
 }
 
+// servedRecord is the record that describes the weights a read actually came
+// from.
+//
+// The configured record is chosen from the id the caller named, which a gateway
+// may be using as an alias: `shisa-ai/shisa-de-2` can be answered by DE-2.1, and
+// a name cannot say so. The response can. A server that holds an alias reports
+// the canonical id it served, so when that id names a released checkpoint with
+// its own record, that record is the one fitted on these weights. A server that
+// echoes the request, or reports nothing, leaves the configured selection alone,
+// which is also the only thing a single-model deployment can do.
+//
+// A record the caller passed is never replaced. That is an assertion about the
+// weights, and a response field is not evidence enough to overrule it.
+func (m *DecisionModel) servedRecord(served string, applied bool) (Calibration, bool) {
+	if served == "" || served == m.Model || served == m.Calibration.Model || m.calibrationSupplied {
+		return m.Calibration, applied
+	}
+	checkpoint := ReleasedCheckpoint(served)
+	if checkpoint == "" || checkpoint == m.Calibration.Model {
+		return m.Calibration, applied
+	}
+	record, err := CalibrationForCheckpoint(m.Family, checkpoint, "")
+	if err != nil || record.Model != checkpoint || !record.Fitted() {
+		return m.Calibration, applied
+	}
+	return record, true
+}
+
 // answerFromRead turns one code read into a typed answer, tempering if asked.
 func answerFromRead(question Question, read CodeRead, options []Option, calibration Calibration,
 	calibrated bool, readName string) (Answer, error) {
@@ -1408,10 +1448,16 @@ func answerFromRead(question Question, read CodeRead, options []Option, calibrat
 		raw[letter] = value
 	}
 
+	recordID := ""
+	if applied {
+		recordID = calibration.ID()
+	}
 	common := func() (Answer, error) {
 		return Answer{
 			Calibrated:     applied,
 			Temperature:    temperature,
+			Calibration:    recordID,
+			ServedModel:    read.ServedModel,
 			Requests:       read.Requests,
 			MissingFromTop: append([]string{}, read.MissingFromTop...),
 			Strategy:       StrategyDirect,

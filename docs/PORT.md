@@ -408,6 +408,16 @@ same `noul` question returned `0.998299278` from
 every digit the client reports. Identical logprobs under one tokenizer are the
 same weights, so the two aliases are aliases for DE-2.1.
 
+A gateway that holds an alias reports the canonical id it served, so this port can
+see the substitution that a name cannot show: the response to a request naming
+`shisa-ai/shisa-de-2` carried `"model": "shisa-ai/shisa-de-2.1"` on both the chat
+and the completions endpoints. The client therefore tempers an answer with the
+record for the id the server reported, and records it on the answer
+(`Answer.Calibration`, `Answer.ServedModel`). The Python client does not do this,
+so the same call through the two clients can differ in probability on an aliased
+endpoint; the parity fixtures are generated from Python and therefore cover only
+the echoing case, which is why the served id is not added to `Decision.Meta`.
+
 That makes the default id a calibration trap rather than a naming curiosity.
 `shisa-ai/shisa-de-2` resolves to the DE-2 record, whose `direct` `noul`
 temperature is 2.69, and applies it to DE-2.1's weights, whose own record gives
@@ -1021,11 +1031,12 @@ checkpoint, and says so where it appears.
   `TestLiveCalibrationMatchesTheServedCheckpoint` is the check to run when an
   endpoint changes what it serves. It requires the applied record to be the one
   fitted on the checkpoint the model id names, and an uncovered checkpoint to be
-  reported and left raw. It cannot see through an alias: `SHISA_DE_TOKENIZER` is
-  consulted only when the model id names no released checkpoint, so the alias
-  that matters -- `SHISA_DE_MODEL=shisa-ai/shisa-de-2` serving DE-2.1 -- passes
-  with DE-2's record applied, which is what the client does. Point it at the
-  checkpoint's own id to check a record against the weights it was fitted on.
+  reported and left raw. What it asserts is the record the client chose from the
+  name it was given, and the client now moves that choice onto the id the server
+  reported, so `SHISA_DE_MODEL=shisa-ai/shisa-de-2` served by DE-2.1 passes with
+  DE-2.1's record applied. `SHISA_DE_TOKENIZER` is still consulted only when the
+  model id names no released checkpoint, which is the separate question of which
+  family's contract applies.
 
   The Python side is recorded by `scripts/live_parity.py` during the run rather
   than read from a checked-in file, and the reason is a measurement. The served

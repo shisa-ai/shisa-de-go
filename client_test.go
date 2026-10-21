@@ -2054,3 +2054,127 @@ func TestAFamilyRecordOnACheckpointWithItsOwnRecordIsReported(t *testing.T) {
 			shared.Warnings)
 	}
 }
+
+// TestAServedIdMovesTheRecordOntoTheWeightsItNames covers the one thing a
+// response can say about which checkpoint answered.
+//
+// A gateway that holds an alias reports the canonical id it served, so an
+// endpoint configured as `shisa-ai/shisa-de-2` that answers with
+// `shisa-ai/shisa-de-2.1` is reading DE-2.1's weights. DE-2's record over-corrects
+// those, which is the failure the per-checkpoint records exist to prevent, so the
+// answer has to be tempered by the record for the id the server named.
+func TestAServedIdMovesTheRecordOntoTheWeightsItNames(t *testing.T) {
+	served := func(logprobs map[string]float64) string {
+		return strings.Replace(codeReadBody(logprobs),
+			`"usage"`, `"model":"shisa-ai/shisa-de-2.1","usage"`, 1)
+	}
+	readout, _ := newPolicyReadout(t, 2,
+		served(map[string]float64{"A": -0.1, "B": -3.0}),
+		served(map[string]float64{"A": -0.1, "B": -3.0}))
+	model, err := NewDecisionModel(DecisionModelConfig{
+		BaseURL: "http://stub.invalid", Model: "shisa-ai/shisa-de-2",
+		Tokenizer: "shisa-ai/shisa-de-2",
+		Readout:   readout, MaxWorkers: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewDecisionModel: %v", err)
+	}
+	defer model.Close()
+	if model.Calibration.Model != "shisa-ai/shisa-de-2" {
+		t.Fatalf("the configured record is %s, the case is not exercised", model.Calibration.Model)
+	}
+
+	decision, err := model.Decide(context.Background(), "the mat had a cat on it",
+		map[string]Question{"same": NewNoul("Do they mean the same thing?")}, CallOptions{})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	answer := decision.Answers["same"]
+	want, err := CalibrationForCheckpoint(FamilyDE2, "shisa-ai/shisa-de-2.1", "")
+	if err != nil {
+		t.Fatalf("CalibrationForCheckpoint: %v", err)
+	}
+	if answer.Calibration != want.ID() {
+		t.Errorf("the answer was tempered by %q, want the served checkpoint's %q",
+			answer.Calibration, want.ID())
+	}
+	if answer.ServedModel != "shisa-ai/shisa-de-2.1" {
+		t.Errorf("the answer reports served model %q", answer.ServedModel)
+	}
+	if got, wantTemperature := answer.Temperature, want.TemperatureFor("noul", answer.Strategy); got != wantTemperature {
+		t.Errorf("temperature is %v, want the served record's %v", got, wantTemperature)
+	}
+	// The client's own record is its configuration and does not move underneath it.
+	if model.Calibration.Model != "shisa-ai/shisa-de-2" {
+		t.Errorf("the configured record became %q", model.Calibration.Model)
+	}
+}
+
+// TestAServedIdDoesNotOverruleASuppliedRecord keeps the caller's assertion
+// authoritative: a record passed to the constructor is a statement about the
+// weights, and a response field is not evidence enough to replace it.
+func TestAServedIdDoesNotOverruleASuppliedRecord(t *testing.T) {
+	served := func(logprobs map[string]float64) string {
+		return strings.Replace(codeReadBody(logprobs),
+			`"usage"`, `"model":"shisa-ai/shisa-de-2.1","usage"`, 1)
+	}
+	supplied, err := CalibrationFor(FamilyDE2)
+	if err != nil {
+		t.Fatalf("CalibrationFor: %v", err)
+	}
+	supplied.FittedOn = "a fit I vouch for"
+	readout, _ := newPolicyReadout(t, 2,
+		served(map[string]float64{"A": -0.1, "B": -3.0}),
+		served(map[string]float64{"A": -0.1, "B": -3.0}))
+	model, err := NewDecisionModel(DecisionModelConfig{
+		BaseURL: "http://stub.invalid", Model: "shisa-ai/shisa-de-2",
+		Tokenizer: "shisa-ai/shisa-de-2",
+		Readout:   readout, MaxWorkers: 1, Calibration: &supplied,
+	})
+	if err != nil {
+		t.Fatalf("NewDecisionModel: %v", err)
+	}
+	defer model.Close()
+	decision, err := model.Decide(context.Background(), "the mat had a cat on it",
+		map[string]Question{"same": NewNoul("Do they mean the same thing?")}, CallOptions{})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	if got := decision.Answers["same"].Calibration; got != supplied.ID() {
+		t.Errorf("the answer was tempered by %q, want the supplied %q", got, supplied.ID())
+	}
+}
+
+// TestAnEchoedIdLeavesTheConfiguredRecordAlone is the ordinary case: a
+// single-model server echoes the request, and nothing moves.
+func TestAnEchoedIdLeavesTheConfiguredRecordAlone(t *testing.T) {
+	served := func(logprobs map[string]float64) string {
+		return strings.Replace(codeReadBody(logprobs),
+			`"usage"`, `"model":"shisa-ai/shisa-de-2","usage"`, 1)
+	}
+	readout, _ := newPolicyReadout(t, 2,
+		served(map[string]float64{"A": -0.1, "B": -3.0}),
+		served(map[string]float64{"A": -0.1, "B": -3.0}))
+	model, err := NewDecisionModel(DecisionModelConfig{
+		BaseURL: "http://stub.invalid", Model: "shisa-ai/shisa-de-2",
+		Tokenizer: "shisa-ai/shisa-de-2",
+		Readout:   readout, MaxWorkers: 1,
+	})
+	if err != nil {
+		t.Fatalf("NewDecisionModel: %v", err)
+	}
+	defer model.Close()
+	decision, err := model.Decide(context.Background(), "the mat had a cat on it",
+		map[string]Question{"same": NewNoul("Do they mean the same thing?")}, CallOptions{})
+	if err != nil {
+		t.Fatalf("Decide: %v", err)
+	}
+	answer := decision.Answers["same"]
+	if answer.Calibration != model.Calibration.ID() {
+		t.Errorf("the answer was tempered by %q, want the configured %q",
+			answer.Calibration, model.Calibration.ID())
+	}
+	if answer.ServedModel != "shisa-ai/shisa-de-2" {
+		t.Errorf("the answer reports served model %q", answer.ServedModel)
+	}
+}

@@ -40,10 +40,14 @@ through the other family's contract.
   `shisa-ai/shisa-de-2` and `shisa-ai/shisa-de-2.1` have separate records whose
   temperatures differ enough that applying one to the other is measurably worse
   than leaving the answers raw.
-- An alias that outlives the weights it named cannot be detected from a
-  response. When a server serves one checkpoint under another's id, the caller
-  has to say so by passing `Calibration`; the docs say this where a user meets
-  it, and no code guesses. `Tokenizer` is not that assertion: it is consulted
+- An alias that outlives the weights it named is detected from the response when
+  the server reports the canonical id it served, which a gateway holding an alias
+  does. `CodeRead.ServedModel` carries it, and the client tempers with the record
+  for that id when it names a released checkpoint; `Answer.Calibration` and
+  `Answer.ServedModel` record which read happened. A server that echoes the
+  request reveals nothing, and there the caller has to say which checkpoint is
+  behind the id by passing `Calibration`. A supplied record is never replaced.
+  `Tokenizer` is not that assertion: it is consulted
   only when the model id names no released checkpoint, because DE-2.1 is served
   with DE-2's tokenizer. A disagreement between the two names is reported, never
   resolved silently in favour of the tokenizer.

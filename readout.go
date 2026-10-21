@@ -177,6 +177,11 @@ type Slot struct {
 // CodeRead is what one code read cost and returned. It is the DE-2 form of the
 // Python client's LetterRead.
 type CodeRead struct {
+	// ServedModel is the model id the server reported for this read, or "" when it
+	// reported none. It is the only evidence a response carries about which
+	// checkpoint answered, so a caller that holds per-checkpoint records reads it
+	// before deciding which one applies.
+	ServedModel string
 	// Logprobs is the logprob of every option code, in option order.
 	Logprobs map[string]float64
 	// Probabilities is the softmax over those codes only: tokens outside the
@@ -757,6 +762,13 @@ func (r *Readout) readCodes(ctx context.Context, prompt renderedPrompt, slots []
 		MissingFromTop: []string{},
 		TopLogprobs:    map[string]*float64{},
 	}
+	// Every request in the read names the same model, so the first response that
+	// reports an id settles it for the whole read.
+	noteServed := func(served string) {
+		if result.ServedModel == "" && served != "" {
+			result.ServedModel = served
+		}
+	}
 	if debug && prompt.isText() {
 		result.Prompt = prompt.text
 	}
@@ -801,6 +813,7 @@ func (r *Readout) readCodes(ctx context.Context, prompt renderedPrompt, slots []
 			}
 			return CodeRead{}, err
 		}
+		noteServed(response.Model)
 		choice, err := firstChoice(response, "the code read")
 		if err != nil {
 			return CodeRead{}, err
@@ -1152,6 +1165,7 @@ func (r *Readout) ReadImage(ctx context.Context, state any, question Question, i
 		return CodeRead{}, err
 	}
 	result := CodeRead{
+		ServedModel:    response.Model,
 		Logprobs:       logprobs,
 		Probabilities:  probabilities,
 		Requests:       1,
