@@ -58,7 +58,8 @@ var reportOrder = []string{
 	"calibration_serving_shape", "calibration_level", "calibration_applied", "ok",
 	"family_note", "calibration_match", "calibration_mismatch", "calibration_note",
 	"models_status", "served_models", "model_listed", "slots", "boundary_check",
-	"read_probe", "chat_system_render",
+	"read_probe", "probe_served_model", "probe_calibration", "probe_calibration_applicable",
+	"probe_calibration_warning", "chat_system_render",
 }
 
 // orderedReport is the report as an `Object` in that order, with the keys the
@@ -115,6 +116,14 @@ func writeDoctorReport(out io.Writer, report map[string]any) {
 	fmt.Fprintf(out, "boundary check  %v\n", report["boundary_check"])
 	if probe, ok := report["read_probe"]; ok {
 		fmt.Fprintf(out, "read probe      %v\n", probe)
+	}
+	if served, ok := report["probe_served_model"]; ok {
+		fmt.Fprintf(out, "probe model     %v\n", served)
+		fmt.Fprintf(out, "probe fit       %v\n", report["probe_calibration"])
+		fmt.Fprintf(out, "  applicable    %s\n", pythonBool(report["probe_calibration_applicable"]))
+	}
+	if warning, ok := report["probe_calibration_warning"]; ok {
+		fmt.Fprintf(out, "probe warning   %v\n", warning)
 	}
 	if system, ok := report["chat_system_render"]; ok {
 		fmt.Fprintf(out, "chat system     %v\n", system)

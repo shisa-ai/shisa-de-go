@@ -400,33 +400,49 @@ of the name -- it is an alias for `shisa-ai/shisa-de-2` -- rather than telling t
 caller to pass a DE-2 checkpoint because the default is DE-1, which stopped being
 true.
 
-That measurement is superseded as of 2026-10-21, same endpoint,
-`system_fingerprint` `vllm-0.30.0-tp2-c2e7e64c`. All three names are still listed,
-and they now serve the same weights, which are DE-2.1's: one `direct` read of the
-same `noul` question returned `0.998299278` from
-`shisa-ai/shisa-de-2.1`, `shisa-ai/shisa-de-2` and `shisa-ai/shisa-de-1` alike, to
-every digit the client reports. Identical logprobs under one tokenizer are the
-same weights, so the two aliases are aliases for DE-2.1.
+On 2026-10-21 at the same endpoint, fingerprint
+`vllm-0.30.0-tp2-c2e7e64c`, all three names were listed. One direct noul question
+returned raw `0.998299278` (rounded to nine decimal places) under each name.
+That agreement does not establish identical weights. More directly, requests
+naming either alias returned `"model": "shisa-ai/shisa-de-2.1"`; the DE-2 alias
+was checked on both chat and completions endpoints. This is the server's
+assertion of checkpoint identity, not an independent weight audit.
 
-A gateway that holds an alias reports the canonical id it served, so this port can
-see the substitution that a name cannot show: the response to a request naming
-`shisa-ai/shisa-de-2` carried `"model": "shisa-ai/shisa-de-2.1"` on both the chat
-and the completions endpoints. The client therefore tempers an answer with the
-record for the id the server reported, and records it on the answer
-(`Answer.Calibration`, `Answer.ServedModel`). The Python client does not do this,
-so the same call through the two clients can differ in probability on an aliased
-endpoint; the parity fixtures are generated from Python and therefore cover only
-the echoing case, which is why the served id is not added to `Decision.Meta`.
+Before response-based selection, the DE-2 alias used DE-2's direct noul fit
+(2.69) and reported `0.914502144` on that question. With response-based selection,
+both the alias and canonical DE-2.1 ID reported `0.961568819` at 1.98 in a later
+probe on the same date and fingerprint. Earlier prose used `0.961568822`, which
+was computed from the rounded raw value, not returned by the client.
 
-That makes the default id a calibration trap rather than a naming curiosity.
-`shisa-ai/shisa-de-2` resolves to the DE-2 record, whose `direct` `noul`
-temperature is 2.69, and applies it to DE-2.1's weights, whose own record gives
-1.98. On the read above that is `0.914502148` where the checkpoint's own fit gives
-`0.961568822` -- the same raw answer, reported 4.7 points lower. `--model
-shisa-ai/shisa-de-2.1` is the id that selects the right fit, and
-`TestLiveCalibrationMatchesTheServedCheckpoint` passes against the alias with the
-DE-2 record applied, because it compares the record to the id and the id is the
-alias.
+**Response-selected calibration is a Go extension.** A non-echoed response ID
+selects a record only when the checkpoint is covered and the family and readout
+are compatible. An uncovered ID leaves the answer raw. Missing or echoed IDs
+preserve configuration, and explicit caller records remain authoritative with a
+per-answer diagnostic on disagreement. Conflicting identities within blocks,
+fallbacks or thinking stages fail the read. The client trusts the server's ID;
+a proxy can misreport it. Records are parsed once per client, not per answer.
+
+`Answer.Calibration` is the applied record, empty for raw answers.
+`Answer.ServedModel` is the response ID. Non-echoed responses extend `ToDict()`
+and `Decision.Meta` with durable per-head provenance, including expanded
+multi-label heads. `calibration` in metadata is the uniform applied record,
+empty when all heads are raw, or null for mixed records; `configured_calibration`
+retains the constructor selection. `doctor` describes configuration; its probe
+also reports a differing response ID and the applicability of the selected fit.
+
+The historical Python replay has two cases whose response ID differs from the
+configured ID. The replay explicitly requests raw answers for its uncovered
+checkpoint case to preserve the recorded arithmetic; it validates Go's added
+provenance separately while comparing every legacy field. Automatic response
+selection has independent stub and live tests. The live parity gate supplies the
+same explicit record bytes to both clients, so it tests read and scoring parity,
+not their automatic record-selection policies. No Python client change is
+required by this extension.
+
+The regenerated CLI recording also contains Python's `strip_state_quotes: false`
+health field. That optional feature remains outside this port: the replay requires
+its recorded value to be false and removes only that field before byte-comparing
+the remaining JSON. Response-specific Go probe fields are covered separately.
 
 **The image path resolves an ambiguous answer boundary by token id.** The image
 readout cannot render its prompt locally, so it confirms the answer position from
@@ -1029,14 +1045,13 @@ checkpoint, and says so where it appears.
   follow, which is the Python suite's `test_image_classification_reads_pixels_not_filenames`.
 
   `TestLiveCalibrationMatchesTheServedCheckpoint` is the check to run when an
-  endpoint changes what it serves. It requires the applied record to be the one
-  fitted on the checkpoint the model id names, and an uncovered checkpoint to be
-  reported and left raw. What it asserts is the record the client chose from the
-  name it was given, and the client now moves that choice onto the id the server
-  reported, so `SHISA_DE_MODEL=shisa-ai/shisa-de-2` served by DE-2.1 passes with
-  DE-2.1's record applied. `SHISA_DE_TOKENIZER` is still consulted only when the
-  model id names no released checkpoint, which is the separate question of which
-  family's contract applies.
+  endpoint changes what it serves. It independently resolves the expected record
+  from the response ID (or configuration when missing/echoed), checks readout
+  applicability, and verifies the answer's record and temperature. Uncovered
+  response checkpoints must stay raw. This tests automatic selection separately
+  from the parity gate, which supplies both clients the same explicit record.
+  The tokenizer source can help initial selection only when the configured model
+  ID names no released checkpoint; it cannot override a different response ID.
 
   The Python side is recorded by `scripts/live_parity.py` during the run rather
   than read from a checked-in file, and the reason is a measurement. The served

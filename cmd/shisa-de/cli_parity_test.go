@@ -138,6 +138,16 @@ func TestCLIParity(t *testing.T) {
 			status, stdout, stderr := invoke(t, argv...)
 
 			want := strings.ReplaceAll(tc.Stdout, "{{base_url}}", server.server.URL)
+			// Python's optional quote-stripping feature is outside this port.
+			// Regenerated recordings report its disabled setting; require that
+			// exact value and omit only that documented Python-only field.
+			if tc.Name == "doctor-json" || tc.Name == "doctor-probe-json" {
+				const pythonOnly = "  \"strip_state_quotes\": false,\n"
+				if strings.Count(want, pythonOnly) != 1 {
+					t.Fatal("recording must report quote stripping disabled")
+				}
+				want = strings.Replace(want, pythonOnly, "", 1)
+			}
 			if stdout != want {
 				t.Errorf("stdout is\n%s\nwant\n%s", stdout, want)
 			}

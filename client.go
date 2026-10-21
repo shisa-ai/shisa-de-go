@@ -79,8 +79,15 @@ type Answer struct {
 	// fit, and this is how the answer says so.
 	Calibration string
 	// ServedModel is the model id the server reported for this answer, or "" when
-	// it reported none.
+	// it reported none. It is a server assertion, not verification of weights.
+	// An explicit Calibration is retained even when this id disagrees; see
+	// CalibrationWarning.
 	ServedModel string
+	// CalibrationWarning explains response-time calibration disagreements.
+	CalibrationWarning string
+	// Report extended provenance only when the response changes or qualifies
+	// the configured identity; ordinary Python-compatible output stays unchanged.
+	reportProvenance bool
 	// Requests is the HTTP requests this answer cost.
 	Requests int
 	// MissingFromTop lists the codes the server's top-k did not carry.
@@ -235,9 +242,8 @@ func (a Answer) ToWire() map[string]any {
 	return out
 }
 
-// ToDict is everything, including the fields TypeSafe does not return. Its keys
-// are the Python client's `Answer.to_dict()`, so the two can be compared
-// directly.
+// ToDict includes the Python-compatible answer fields and, for a non-echoed
+// response identity, applied calibration, served model and diagnostic fields.
 func (a Answer) ToDict() map[string]any {
 	out := map[string]any{
 		"type":          a.Type,
@@ -261,6 +267,13 @@ func (a Answer) ToDict() map[string]any {
 	if a.ThoughtClosed != nil {
 		out["thought_tokens"] = a.ThoughtTokens
 		out["thought_closed"] = *a.ThoughtClosed
+	}
+	if a.reportProvenance {
+		out["calibration"] = a.Calibration
+		out["served_model"] = a.ServedModel
+		if a.CalibrationWarning != "" {
+			out["calibration_warning"] = a.CalibrationWarning
+		}
 	}
 	return out
 }
@@ -635,6 +648,8 @@ type DecisionModel struct {
 	maxWorkers          int
 	imageTopLogprobs    int
 	calibrationSupplied bool
+	servedRecordsOnce   sync.Once
+	servedRecords       map[string]Calibration
 }
 
 // NewDecisionModel builds a client.
@@ -961,6 +976,15 @@ func (m *DecisionModel) Health(ctx context.Context, probe bool) map[string]any {
 		} else {
 			answer := decision.Answers["probe"]
 			report["read_probe"] = fmt.Sprintf("passed (%s, %d requests)", answer.Strategy, answer.Requests)
+			if answer.reportProvenance {
+				record, applicable := m.servedRecord(answer.ServedModel, m.CalibrationApplied)
+				report["probe_served_model"] = answer.ServedModel
+				report["probe_calibration"] = record.ID()
+				report["probe_calibration_applicable"] = applicable
+				if answer.CalibrationWarning != "" {
+					report["probe_calibration_warning"] = answer.CalibrationWarning
+				}
+			}
 		}
 		// What an image question will be rendered with. The Python client sets
 		// this whenever it probes, whatever the read probe did, because the two
@@ -1020,6 +1044,10 @@ func (m *DecisionModel) Classify(ctx context.Context, state any, heads map[strin
 				}
 				decision.Raw[key] = map[string]any{
 					"noul": numberOrNil(answer.Noul), "requests": answer.Requests}
+				if answer.reportProvenance {
+					decision.Raw[key]["calibration"] = answer.Calibration
+					decision.Raw[key]["served_model"] = answer.ServedModel
+				}
 			}
 			switch {
 			case options.IncludeProbabilities:
@@ -1262,6 +1290,7 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 			if err != nil {
 				return nil, err
 			}
+			m.noteCalibration(&answer, record, applied)
 			decision.Answers[result.head] = answer
 			decision.Raw[result.head] = imageRaw(read, result.question.Options(), options.Debug)
 			inputTokens += read.PromptTokens
@@ -1280,6 +1309,7 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 		if err != nil {
 			return nil, err
 		}
+		m.noteCalibration(&answer, record, applied)
 		answer.Strategy = read.Strategy
 		answer.Stages = read.LogicalReads()
 		answer.LogicalReads = read.LogicalReads()
@@ -1346,6 +1376,7 @@ func (m *DecisionModel) run(ctx context.Context, state any, questions map[string
 		"calibration_by_head": calibrationByHead,
 		"strategy_by_head":    strategyByHead,
 	}
+	m.addCalibrationProvenance(decision)
 	decision.Meta["think_gate"] = settings.ThinkGate
 	decision.Meta["think_budget"] = settings.ThinkBudget
 	decision.Meta["think_option_cap"] = ThinkOptionCap
@@ -1398,32 +1429,86 @@ type headResult struct {
 	err   error
 }
 
-// servedRecord is the record that describes the weights a read actually came
-// from.
-//
-// The configured record is chosen from the id the caller named, which a gateway
-// may be using as an alias: `shisa-ai/shisa-de-2` can be answered by DE-2.1, and
-// a name cannot say so. The response can. A server that holds an alias reports
-// the canonical id it served, so when that id names a released checkpoint with
-// its own record, that record is the one fitted on these weights. A server that
-// echoes the request, or reports nothing, leaves the configured selection alone,
-// which is also the only thing a single-model deployment can do.
-//
-// A record the caller passed is never replaced. That is an assertion about the
-// weights, and a response field is not evidence enough to overrule it.
+// servedRecord selects from the server's asserted identity. Missing or echoed
+// identities preserve configuration; a different uncovered identity disables
+// automatic calibration. Explicit caller records remain authoritative.
 func (m *DecisionModel) servedRecord(served string, applied bool) (Calibration, bool) {
-	if served == "" || served == m.Model || served == m.Calibration.Model || m.calibrationSupplied {
+	if served == "" || served == m.Model || m.calibrationSupplied {
 		return m.Calibration, applied
 	}
 	checkpoint := ReleasedCheckpoint(served)
-	if checkpoint == "" || checkpoint == m.Calibration.Model {
-		return m.Calibration, applied
+	if checkpoint == "" {
+		return m.Calibration, false
 	}
-	record, err := CalibrationForCheckpoint(m.Family, checkpoint, "")
-	if err != nil || record.Model != checkpoint || !record.Fitted() {
-		return m.Calibration, applied
+	// Keep these private records separate from the exported, caller-mutable
+	// Calibration. Parse each shipped record at most once per client.
+	m.servedRecordsOnce.Do(func() {
+		m.servedRecords = make(map[string]Calibration, len(checkpointRecords))
+		for _, entry := range checkpointRecords {
+			if record, err := LoadCalibration(entry.path); err == nil {
+				m.servedRecords[entry.checkpoint] = record
+			}
+		}
+	})
+	record, ok := m.servedRecords[checkpoint]
+	if !ok {
+		return m.Calibration, false
 	}
-	return record, true
+	level, _ := record.Applicability(served, m.ReadoutVersion, ApplicabilityOptions{Family: m.Family})
+	return record, level == ApplicabilityCheckpoint
+}
+
+// noteCalibration records per-answer diagnostics without mutating shared client
+// configuration. A response identity is a server assertion, not proof of weights.
+func (m *DecisionModel) noteCalibration(answer *Answer, record Calibration, applicable bool) {
+	served := answer.ServedModel
+	answer.reportProvenance = served != "" && served != m.Model
+	if !answer.reportProvenance {
+		return
+	}
+	level, reasons := record.Applicability(served, m.ReadoutVersion, ApplicabilityOptions{Family: m.Family})
+	if m.calibrationSupplied && level != ApplicabilityCheckpoint {
+		answer.CalibrationWarning = "the supplied calibration is retained despite the response model: " + strings.Join(reasons, "; ")
+	} else if !m.calibrationSupplied && !applicable {
+		answer.CalibrationWarning = "no compatible fitted calibration covers the response model; probabilities are raw"
+	}
+}
+
+// addCalibrationProvenance preserves all expanded heads before Classify removes
+// multi-label answers. Ordinary reads retain the reference metadata shape.
+func (m *DecisionModel) addCalibrationProvenance(decision *Decision) {
+	extended := false
+	for _, answer := range decision.Answers {
+		extended = extended || answer.reportProvenance
+	}
+	if !extended {
+		return
+	}
+	records := map[string]string{}
+	served := map[string]string{}
+	warnings := map[string]string{}
+	var uniform any
+	first := true
+	for head, answer := range decision.Answers {
+		records[head] = answer.Calibration
+		served[head] = answer.ServedModel
+		if answer.CalibrationWarning != "" {
+			warnings[head] = answer.CalibrationWarning
+		}
+		if first {
+			uniform = answer.Calibration
+			first = false
+		} else if uniform != answer.Calibration {
+			uniform = nil
+		}
+	}
+	decision.Meta["configured_calibration"] = m.Calibration.ID()
+	decision.Meta["calibration"] = uniform
+	decision.Meta["calibration_record_by_head"] = records
+	decision.Meta["served_model_by_head"] = served
+	if len(warnings) != 0 {
+		decision.Meta["calibration_warnings"] = warnings
+	}
 }
 
 // answerFromRead turns one code read into a typed answer, tempering if asked.

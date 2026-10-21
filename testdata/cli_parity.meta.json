@@ -1,5 +1,5 @@
 {
-  "python_repo": "d172d4977d133fefb9b8c82ffcc0e3d007554551",
+  "python_repo": "77a0e83f872b4747082a4f9ad6dd493f06ba5ac2",
   "stub_base_url": "http://cli-stub.invalid",
   "stub_models": [
     "shisa-ai/shisa-de-2",
@@ -7,5 +7,5 @@
   ],
   "cases": 11,
   "requests": 14,
-  "sha256": "5f66e39967eba7e8a2d5fb21f40f534d8c0d9d85c8b805e75341869f9f82ab48"
+  "sha256": "220dff1cc2b4739150fbf7081c16b3b866ba85dfae390cb167944ead5fbc94ef"
 }

@@ -40,13 +40,15 @@ through the other family's contract.
   `shisa-ai/shisa-de-2` and `shisa-ai/shisa-de-2.1` have separate records whose
   temperatures differ enough that applying one to the other is measurably worse
   than leaving the answers raw.
-- An alias that outlives the weights it named is detected from the response when
-  the server reports the canonical id it served, which a gateway holding an alias
-  does. `CodeRead.ServedModel` carries it, and the client tempers with the record
-  for that id when it names a released checkpoint; `Answer.Calibration` and
-  `Answer.ServedModel` record which read happened. A server that echoes the
-  request reveals nothing, and there the caller has to say which checkpoint is
-  behind the id by passing `Calibration`. A supplied record is never replaced.
+- A response can reveal an alias when the server reports a different checkpoint
+  ID. Treat that ID as a server assertion, not proof of weights. Automatic
+  calibration requires a covered checkpoint and a compatible family/readout;
+  uncovered response IDs stay raw. Missing or echoed IDs preserve configuration.
+  `CodeRead.ServedModel` carries consistent identity across blocks, fallbacks and
+  thinking stages; contradictory identities fail the read. `Answer.Calibration`
+  names the applied record (empty for raw), and non-echoed responses add serialized
+  per-head provenance, including multi-label heads. Explicit supplied records
+  remain authoritative, with response disagreements reported per answer.
   `Tokenizer` is not that assertion: it is consulted
   only when the model id names no released checkpoint, because DE-2.1 is served
   with DE-2's tokenizer. A disagreement between the two names is reported, never
@@ -255,7 +257,10 @@ two passes disagree, the test reports the server rather than the port. Compare
 recorded exchanges offline with `TestClientParity` when the port is what is in
 question. Both halves resolve `SHISA_DE_ENDPOINT` and `SHISA_DE_MODEL`, and the
 gate fails rather than logs when they disagree: two clients against two servers
-is the one comparison the design exists to prevent.
+is the one comparison the design exists to prevent. The gate supplies the same
+explicit calibration file to both clients and checks its digest and record ID.
+Automatic response-based calibration is tested separately; a parity run does not
+establish that the supplied fit covers the deployed weights.
 
 `doctor` and `explain` also spend real requests. They read the endpoint from
 `SHISA_DE_ENDPOINT` and the key from `SHISA_DE_API_KEY`, then `SHISA_API_KEY`.

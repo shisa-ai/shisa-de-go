@@ -320,15 +320,24 @@ named after the release it was built from is treated as that release and gets it
 base's temperatures. Pass your own `Calibration` for a fine-tune, or a name that
 names no release.
 
-**An alias that outlives the weights it named is caught from the response, when
-the server says so.** If a gateway serves DE-2.1 behind the id
-`shisa-ai/shisa-de-2`, the id still says DE-2, so DE-2's fit would be chosen and
-applied to DE-2.1's answers — the over-correction in the table above. A server
-that holds the alias reports the canonical id it served, and this client uses it:
-the answer is tempered by the record for the id the server named, and
-`Answer.Calibration` and `Answer.ServedModel` record that it happened. A
-single-model server echoes the request, which reveals nothing, so there the id is
-all there is — say which checkpoint is really behind it by passing its record:
+**Response model IDs can reveal aliases.** When a response reports a different
+released checkpoint, the client selects that checkpoint's fitted record only if
+its family and readout are compatible. A different, uncovered response ID leaves
+the answer raw. Missing or echoed IDs preserve the configured selection. These
+IDs are server assertions, not independent verification of the weights; a proxy
+that rewrites them can misidentify a checkpoint.
+
+`Answer.Calibration` names the applied record (empty for raw answers), and
+`Answer.ServedModel` retains the reported ID. For a non-echoed ID, `ToDict()` also
+includes these fields, and `Decision.Meta` includes `configured_calibration`,
+`calibration_record_by_head` and `served_model_by_head`. Its `calibration` is the
+uniform applied record, empty when all answers are raw, or null when records
+differ. Per-head provenance survives multi-label aggregation. A supplied record
+is never replaced; `Answer.CalibrationWarning` and the metadata warnings report
+any disagreement. A read rejects conflicting identities across its blocks,
+fallbacks and thinking stages.
+
+If the server does not reveal the checkpoint, pass its record explicitly:
 
 ```go
 record, err := shisade.CalibrationForCheckpoint(shisade.FamilyDE2, "shisa-ai/shisa-de-2.1", "")
@@ -341,8 +350,10 @@ model, err := shisade.NewDecisionModel(shisade.DecisionModelConfig{
 })
 ```
 
-`shisa-de doctor` prints the record it chose and the checkpoint it was fitted on,
-and writes the warnings to stderr, so the answer is visible before it is trusted. `--calibration shisa-ai/shisa-de-2.1`
+`shisa-de doctor` prints the configured record and construction-time warnings.
+`doctor --probe` also reports a differing response model and whether its selected
+record is applicable; the probe itself requests raw probabilities.
+`--calibration shisa-ai/shisa-de-2.1`
 does the same on the command line, and naming the family (`--calibration de2`)
 means that family's record, which is DE-2's — not the fit for whichever checkpoint
 the endpoint happens to serve.
@@ -437,7 +448,8 @@ shisa-de ask --model shisa-ai/shisa-de-2 --labels refund_request,order_status
   is not itself a released checkpoint id; the tokenizer also tells the client
   which family the alias is, so a DE-2 alias keeps the DE-2 calibration. An
   alias that *is* a released id — `shisa-ai/shisa-de-2` serving DE-2.1's
-  weights — needs `Calibration`, as described under
+  weights — needs `Calibration` if the response does not reveal the checkpoint,
+  as described under
   [Probabilities and calibration](#probabilities-and-calibration).
 - The server needs `/v1/completions` with `logprobs` and `logprob_token_ids`, and
   `doctor` needs `/v1/models`. vLLM supports both; `docs/READOUT-DE2.md` has the

@@ -51,6 +51,16 @@ import (
 // follow. The rest are the DE-2 half of the Python `tests/test_live.py`; the DE-1
 // case is absent because this port has no DE-1 read. `docs/PORT.md` records both.
 //
+// The gate hands both clients one calibration record file, because they do not
+// select the same one: this port tempers with the record for the checkpoint the
+// response named and the Python client with the record its configured model id
+// names, which differ on the hosted alias. Automatic selection is therefore
+// checked separately, by `TestLiveCalibrationMatchesTheServedCheckpoint`, and
+// every calibration expectation in this suite is derived from the identity the
+// answer reports rather than from the client's configured record; see
+// `live_calibration_test.go`. The offline parts of both are the `TestLive*`
+// functions that need no endpoint, so they run in the ordinary suite.
+//
 // These tests spend real requests and are not deterministic in the way an
 // offline test is: a server that changes its mind between two runs makes them
 // fail. That is what they are for, so a failure here is a finding about the
@@ -72,15 +82,28 @@ func liveSkip(t *testing.T) {
 // matches the Python suite's environment contract.
 func liveModel(t *testing.T, overrides OptionOverrides) (*DecisionModel, *liveRecorder) {
 	t.Helper()
+	return liveModelWithCalibration(t, overrides, nil)
+}
+
+// liveModelWithCalibration is liveModel with a record supplied, which is the
+// caller's assertion and is applied as given.
+//
+// The parity gate uses it to hand both clients the same bytes: the two clients do
+// not select the same record from an aliased id, so a comparison of tempered
+// answers is only a comparison of the ports when both were given one record.
+func liveModelWithCalibration(t *testing.T, overrides OptionOverrides,
+	calibration *Calibration) (*DecisionModel, *liveRecorder) {
+	t.Helper()
 	liveSkip(t)
 
 	recorder := &liveRecorder{base: http.DefaultTransport, fingerprints: map[string]int{}}
 	config := DecisionModelConfig{
-		BaseURL:    os.Getenv(EndpointEnv),
-		Model:      liveModelID(),
-		Tokenizer:  os.Getenv("SHISA_DE_TOKENIZER"),
-		HTTPClient: &http.Client{Timeout: 600 * time.Second, Transport: recorder},
-		Overrides:  overrides,
+		BaseURL:     os.Getenv(EndpointEnv),
+		Model:       liveModelID(),
+		Tokenizer:   os.Getenv("SHISA_DE_TOKENIZER"),
+		Calibration: calibration,
+		HTTPClient:  &http.Client{Timeout: 600 * time.Second, Transport: recorder},
+		Overrides:   overrides,
 	}
 	model, err := FromPretrained(liveModelID(), config)
 	if err != nil {
@@ -306,6 +329,18 @@ type livePythonMeta struct {
 	ImagesReason string   `json:"images_reason"`
 	SelfDelta    float64  `json:"self_delta"`
 	Unstable     []string `json:"unstable"`
+	// Calibration is the record both clients were given, and the file it was read
+	// from with the digest of its bytes. The gate loads the same file and compares
+	// the digest, which is what makes "both clients were given one record"
+	// checkable rather than asserted.
+	Calibration       string `json:"calibration"`
+	CalibrationModel  string `json:"calibration_model"`
+	CalibrationFile   string `json:"calibration_file"`
+	CalibrationSHA256 string `json:"calibration_sha256"`
+	// ServedModels is what the responses said answered. A record is fitted on one
+	// checkpoint, so a recording that does not say which one answered cannot be
+	// re-read against the right fit.
+	ServedModels []string `json:"served_models"`
 	SHA256       string   `json:"sha256"`
 }
 
@@ -329,10 +364,18 @@ func livePythonRepo() string {
 // has since answered differently, so comparing against it would report the
 // endpoint's drift as the port's.
 //
+// `calibration` is the record file the recorder hands its models. The gate always
+// passes one, because the two clients do not select the same record from an
+// aliased model id: this port tempers with the record for the id the response
+// reported and the Python client with the one its configured id names, so against
+// a gateway holding an alias their probabilities differ by far more than the
+// tolerance. That difference is a real difference between the clients, not a port
+// defect, and the shared record is what removes it from the comparison.
+//
 // The script runs the set twice and records how far its own passes were apart,
 // which is what lets the comparison below tell "the server moved" from "the port
 // differs".
-func recordPythonAnswers(t *testing.T) (livePython, livePythonMeta) {
+func recordPythonAnswers(t *testing.T, calibration string) (livePython, livePythonMeta) {
 	t.Helper()
 	repo := livePythonRepo()
 	if repo == "" {
@@ -357,7 +400,8 @@ func recordPythonAnswers(t *testing.T) (livePython, livePythonMeta) {
 
 	dir := t.TempDir()
 	out := filepath.Join(dir, "live_python.json")
-	command := exec.Command("python3", script, "--out", out, "--quiet")
+	command := exec.Command("python3", script, "--out", out, "--quiet",
+		"--calibration", calibration)
 	command.Env = append(os.Environ(), "SHISA_DE_PYTHON_REPO="+repo)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
@@ -440,6 +484,50 @@ func liveSameEndpoint(a, b string) bool {
 	return normalize(a) == normalize(b)
 }
 
+// liveParityRecord is the calibration record both halves of the gate are given,
+// and the file it was read from.
+//
+// Both clients are handed one record explicitly because they do not select the
+// same one: this port tempers with the record for the checkpoint the response
+// named, the Python client with the record its configured model id names. Against
+// the hosted gateway, which answers `shisa-ai/shisa-de-2` with DE-2.1's weights,
+// those are different fits and the tempered distributions differ by far more than
+// the tolerance. That is a documented difference between the clients, not a port
+// defect, so the gate removes it and compares the tempering arithmetic instead.
+//
+// Which record: the one for the checkpoint the configured identity names, by the
+// same order the clients resolve it in (model id, then tokenizer), and the
+// family's record when neither names a released checkpoint. The gate then logs
+// what the responses said answered, so a run against an alias is visible rather
+// than implied. Automatic selection is a different question and has its own
+// check, `TestLiveCalibrationMatchesTheServedCheckpoint`, which is the one that
+// reads the served identity.
+func liveParityRecord(t *testing.T) (Calibration, string) {
+	t.Helper()
+	checkpoint := ReleasedCheckpoint(liveModelID())
+	if checkpoint == "" {
+		checkpoint = ReleasedCheckpoint(os.Getenv("SHISA_DE_TOKENIZER"))
+	}
+	name := ""
+	if checkpoint != "" {
+		name = CheckpointCalibrationFiles[checkpoint]
+	}
+	if name == "" {
+		// This port reads DE-2 only, and `FromPretrained` refuses anything else, so
+		// the family record is DE-2's.
+		name = CalibrationFiles[FamilyDE2]
+	}
+	path, err := filepath.Abs(name)
+	if err != nil {
+		t.Fatalf("resolving the record path %s: %v", name, err)
+	}
+	record, err := LoadCalibrationFile(path)
+	if err != nil {
+		t.Fatalf("loading the record at %s: %v", path, err)
+	}
+	return record, path
+}
+
 // TestLiveParityAgainstPython is the M6 gate.
 //
 // The same fixed questions go through both clients against the same served
@@ -454,10 +542,19 @@ func liveSameEndpoint(a, b string) bool {
 // a server that has since answered differently. When the recorder's own passes
 // disagree beyond the tolerance, this reports the server's repeatability rather
 // than a parity failure, because that is what it is.
+//
+// Both clients are given the same calibration record file, which is what makes
+// the tempered probabilities comparable: they select a record differently from an
+// aliased model id. The recording carries the file's name and the digest of its
+// bytes, and this side hashes its own copy, so "the same record" is checked
+// rather than assumed. The answer's own `Calibration` is then required to name
+// that record, which is the one provenance check a supplied record cannot make
+// ambiguous.
 func TestLiveParityAgainstPython(t *testing.T) {
 	liveSkip(t)
 
-	recorded, meta := recordPythonAnswers(t)
+	record, recordPath := liveParityRecord(t)
+	recorded, meta := recordPythonAnswers(t, recordPath)
 	set := loadLiveQuestions(t)
 	// The recorder leaves the image questions out when the endpoint will not answer
 	// an image request, so the count it should have recorded depends on that.
@@ -508,7 +605,43 @@ func TestLiveParityAgainstPython(t *testing.T) {
 			"offline with TestClientParity.", meta.Unstable)
 	}
 
-	model, recorder := liveModel(t, OptionOverrides{})
+	// Both halves were given one record. The recording says which file it read and
+	// what those bytes hashed to; this side hashes its own copy of the same path
+	// and compares the record's identifier, which both clients spell the same way.
+	// A recorder that fell back to its own selection, or a file that changed
+	// between the two halves, is a broken comparison rather than a port finding.
+	raw, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatalf("re-reading the record at %s: %v", recordPath, err)
+	}
+	digest := sha256.Sum256(raw)
+	if meta.CalibrationFile != filepath.Base(recordPath) {
+		t.Fatalf("the Python client was given %q and this side %q; the gate needs one record",
+			meta.CalibrationFile, filepath.Base(recordPath))
+	}
+	if meta.CalibrationSHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatalf("the Python client read %s and this side read bytes hashing to %s; "+
+			"the two clients were not given the same record", meta.CalibrationSHA256, digest)
+	}
+	if meta.Calibration != record.ID() {
+		t.Fatalf("the Python client recorded the record %q and this side loaded %q from the "+
+			"same file; the two clients read one file and made different records of it",
+			meta.Calibration, record.ID())
+	}
+	if meta.CalibrationModel != record.Model {
+		t.Fatalf("the record both clients were given is fitted on %q and the recording says %q",
+			record.Model, meta.CalibrationModel)
+	}
+	t.Logf("both clients were given %s from %s", record.ID(), filepath.Base(recordPath))
+	if len(meta.ServedModels) != 0 {
+		t.Logf("the responses named %v; the record is fitted on %s",
+			meta.ServedModels, record.Model)
+	}
+
+	model, recorder := liveModelWithCalibration(t, OptionOverrides{}, &record)
+	if !model.CalibrationApplied {
+		t.Fatalf("the supplied record is not applied: %v", model.CalibrationReasons)
+	}
 	if version := model.ReadoutVersion; version != meta.ReadoutVersion {
 		t.Fatalf("the readout is %s and the recording is %s", version, meta.ReadoutVersion)
 	}
@@ -528,7 +661,7 @@ func TestLiveParityAgainstPython(t *testing.T) {
 		if _, ok := gates[*question.Gate]; !ok {
 			gate := *question.Gate
 			overrides := OptionOverrides{ReasoningProb: &gate}
-			eager, eagerRecorder := liveModel(t, overrides)
+			eager, eagerRecorder := liveModelWithCalibration(t, overrides, &record)
 			gates[gate] = eager
 			recorders = append(recorders, eagerRecorder)
 		}
@@ -569,6 +702,11 @@ func TestLiveParityAgainstPython(t *testing.T) {
 				t.Fatalf("no answer for %s", question.Head)
 			}
 			compareLiveAnswer(t, question.Image != "", got, want, decision.Raw[question.Head])
+			// A supplied record is never replaced by the served id, so both clients
+			// temper with it and the answer has to say so. `Calibrated` against the
+			// recording already says whether it tempered; this says which record did,
+			// and a client that named a different one would otherwise pass.
+			liveAssertCalibration(t, client, got, liveAnswerRead(question.Image != "", got))
 		})
 	}
 
@@ -1010,24 +1148,19 @@ func TestLiveDE2ThinksWhenTheRepeatedReadIsUnsure(t *testing.T) {
 			result.Usage["thought_tokens"], answer.ThoughtTokens)
 	}
 	// The record carries a fit for the thinking read (`think:choice`), so a
-	// `repeat2-think` answer against a checkpoint the record covers is calibrated
-	// at that fit. The expectation is read from the record rather than written as
-	// a literal, because the suite can be pointed at another served checkpoint:
-	// one the shipped record does not cover answers uncalibrated at 1.0, which is
-	// what the Python suite's own `calibrated is False` asserts.
-	covered := len(model.Calibration.Reads) != 0
-	wantCalibrated := model.CalibrationApplied && covered
-	wantTemperature := 1.0
-	if wantCalibrated {
-		wantTemperature = model.Calibration.TemperatureFor("choice", "think")
-	}
-	if answer.Calibrated != wantCalibrated {
-		t.Errorf("calibrated is %v and this checkpoint's record gives %v",
-			answer.Calibrated, wantCalibrated)
-	}
-	if answer.Temperature != wantTemperature {
-		t.Errorf("the temperature is %v and the record's thinking fit is %v",
-			answer.Temperature, wantTemperature)
+	// `repeat2-think` answer is tempered at that fit when the record describes the
+	// weights that answered. The expectation is derived from the identity the
+	// answer reports rather than read out of `model.Calibration`, which is the
+	// record the configured model id chose: an endpoint serving another checkpoint
+	// behind that id tempers with that checkpoint's fit, and one the record does
+	// not cover answers raw at 1.0, which is what the Python suite's own
+	// `calibrated is False` asserts for a checkpoint its record does not fit.
+	//
+	// The read is the policy's last stage, which is where the answer's
+	// distribution comes from: `repeat2-think` is `think` to the record.
+	expectation := liveAssertCalibration(t, model, answer, liveAnswerRead(false, answer))
+	if !expectation.Applied {
+		t.Logf("no record describes the answer: %s", expectation.Reason)
 	}
 	if answer.Confidence == nil {
 		t.Error("the answer carries no confidence")
@@ -1283,38 +1416,94 @@ func TestLiveRecorderRefusesASinglePass(t *testing.T) {
 	}
 }
 
-// liveCalibrationRead is the record's name for the read an answer came from.
+// TestLiveRecorderRefusesAMissingRecord checks that the recorder will not fall
+// back to its own record when the file the gate named is not there.
 //
-// `Answer.Strategy` names the whole policy, so a thought is `repeat2-think`,
-// while the record keys that read as `think`; the client passes the last stage
-// to `TemperatureFor`, which is the same name.
-func liveCalibrationRead(strategy string) string {
-	if strategy == StrategyRepeatThink {
-		return "think"
+// The gate hands both clients one record because they select different ones from
+// an aliased id. A recorder that quietly used its own choice instead would
+// record a run whose halves held different fits, and the Go side would report the
+// difference as a port defect. It exits 5 and writes nothing, and the check runs
+// before the capability probe, so a mistyped path costs no request.
+func TestLiveRecorderRefusesAMissingRecord(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("no python3 to run the recorder with")
 	}
-	return strategy
+	dir := t.TempDir()
+	out := filepath.Join(dir, "unused.json")
+	missing := filepath.Join(dir, "missing.json")
+	command := exec.Command("python3", filepath.Join("scripts", "live_parity.py"),
+		"--out", out, "--calibration", missing)
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	err := command.Run()
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 5 {
+		t.Fatalf("the recorder answered %v to a missing record, want exit status 5: %q",
+			err, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "no calibration record") {
+		t.Errorf("the refusal does not say why: %q", stderr.String())
+	}
+	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the recorder wrote %s anyway: %v", out, err)
+	}
 }
 
-// TestLiveCalibrationMatchesTheServedCheckpoint pins that the record the client
-// applies belongs to the checkpoint the endpoint serves, and that the answer
-// carries that record's temperature.
+// TestLiveCalibrationMatchesTheServedCheckpoint pins that the record which
+// tempered the answer belongs to the checkpoint the endpoint served, and that the
+// answer says so.
 //
-// This is the check to run when an endpoint changes what it serves. It reads
-// through the endpoint, so it fails against a server that is not there. It
-// cannot see through an alias: a server that answers to `shisa-ai/shisa-de-2`
-// while serving DE-2.1's weights is indistinguishable from one serving DE-2, so
-// point it at the checkpoint's own id. `SHISA_DE_TOKENIZER` is read only when the
-// model id names no released checkpoint, which is the one configuration where the
-// tokenizer selects the record; against a released-id alias this check passes
-// with that id's record applied, because that is what the client does.
+// This is the check to run when an endpoint changes what it serves, and the one
+// that covers automatic selection now that the parity gate hands both clients an
+// explicit record. It reads through the endpoint, so it fails against a server
+// that is not there.
+//
+// It can see through an alias, and only through one the response reveals. A
+// gateway that holds `shisa-ai/shisa-de-2` and answers with DE-2.1's weights
+// reports the canonical id it served, and the client tempers with that
+// checkpoint's record; a server that echoes the request or reports nothing
+// leaves the choice with the configured model id, which is all a single-model
+// deployment can do. So this test derives its expectation from the identity the
+// answer reports (`live_calibration_test.go`), and falls back to the configured
+// one exactly where the client does. `SHISA_DE_TOKENIZER` is consulted only when
+// the model id names no released checkpoint, which is the one configuration
+// where the tokenizer selects the record.
+//
+// The client's own `Calibration` field is checked as configuration, not as the
+// answer's provenance: `servedRecord` never moves it, and on an aliased endpoint
+// it names a different record than the answer does.
 func TestLiveCalibrationMatchesTheServedCheckpoint(t *testing.T) {
 	model, _ := liveModel(t, OptionOverrides{})
-	// The expectation is the client's own rule, so the test does not disagree
-	// with the code about which name decides.
-	checkpoint := ReleasedCheckpoint(liveModelID())
-	if checkpoint == "" {
-		checkpoint = ReleasedCheckpoint(os.Getenv("SHISA_DE_TOKENIZER"))
+
+	// What the client holds is the configured identity's record. The expectation
+	// is derived from an answer that reported nothing, which is the case where the
+	// configured identity decides.
+	held := liveExpectedCalibration(model, Answer{})
+	if held.Source != liveIdentityModel && held.Source != liveIdentityTokenizer {
+		t.Fatalf("the held record was derived from %q, want the configured identity", held.Source)
 	}
+	if held.Applied {
+		if got := model.Calibration.ID(); got != held.Record.ID() {
+			t.Errorf("the client holds %q for %s and the record for that checkpoint is %q",
+				got, held.Checkpoint, held.Record.ID())
+		}
+		if !model.CalibrationApplied || model.CalibrationLevel != ApplicabilityCheckpoint {
+			t.Errorf("serving %s is %q applied=%v, want %q applied",
+				liveModelID(), model.CalibrationLevel, model.CalibrationApplied, ApplicabilityCheckpoint)
+		}
+	} else {
+		// Not a released checkpoint, so the record must be held and not applied,
+		// and the caller has to be told.
+		if model.CalibrationApplied {
+			t.Errorf("a record was applied to %s, which the configured identity does not cover",
+				liveModelID())
+		}
+		if len(model.Warnings) == 0 {
+			t.Error("an unapplied record was not reported")
+		}
+		t.Logf("the configured identity does not cover a released checkpoint: %s", held.Reason)
+	}
+
 	result, err := model.Classify(context.Background(), liveSpam,
 		map[string]HeadSpec{"intent": {Options: []Option{
 			{Key: "spam", Description: "Unsolicited bulk or scam message"},
@@ -1323,53 +1512,40 @@ func TestLiveCalibrationMatchesTheServedCheckpoint(t *testing.T) {
 		t.Fatalf("Classify: %v", err)
 	}
 	answer := result.Answers["intent"]
-	if checkpoint == "" {
-		// Not a released checkpoint, so the record must be held and not
-		// applied, and the caller has to be told.
-		if model.CalibrationApplied || answer.Calibrated {
-			t.Errorf("a record was applied to %s, which names no released checkpoint", liveModelID())
-		}
-		if len(model.Warnings) == 0 {
-			t.Error("an unapplied record was not reported")
-		}
-		t.Logf("%s names no released checkpoint; the record for %s is reported and not applied",
-			liveModelID(), model.Calibration.Model)
+	read := liveAnswerRead(false, answer)
+
+	// The answer is where the served identity shows: it reports the id the
+	// response named, which on an aliased endpoint is not the configured one.
+	expectation := liveAssertCalibration(t, model, answer, read)
+	if expectation.Source == liveIdentityServed {
+		t.Logf("the response named %s, so the answer was read with the record for %s",
+			pythonQuote(answer.ServedModel), expectation.Checkpoint)
+	}
+	if !expectation.Applied {
+		t.Logf("no record describes the answer: %s", expectation.Reason)
 		return
 	}
-	if got := model.Calibration.Model; got != checkpoint {
-		t.Errorf("serving %s applied the record fitted on %s, want %s",
-			liveModelID(), got, checkpoint)
+	want := expectation.Record.TemperatureFor(answer.Type, read)
+	if want == 1.0 {
+		t.Logf("the record for %s holds no fit for the %s read, so the answer is raw",
+			expectation.Checkpoint, read)
+		return
 	}
-	if !model.CalibrationApplied || model.CalibrationLevel != ApplicabilityCheckpoint {
-		t.Errorf("serving %s is %q applied=%v, want %q applied",
-			liveModelID(), model.CalibrationLevel, model.CalibrationApplied, ApplicabilityCheckpoint)
-	}
-	// The answer's own provenance, not the record compared with itself: an
-	// empty per-read table would otherwise assert nothing at all.
-	if !answer.Calibrated {
-		t.Error("the answer is not marked calibrated")
-	}
-	if len(model.Calibration.Reads) == 0 {
-		t.Fatal("the applied record holds no per-read temperatures")
-	}
-	want := model.Calibration.TemperatureFor(answer.Type, liveCalibrationRead(answer.Strategy))
-	if answer.Temperature != want {
-		t.Errorf("the answer was tempered at %v, its record holds %v", answer.Temperature, want)
-	}
-	// The record's fit is the one thing this can distinguish: DE-2 and DE-2.1
-	// do not share a temperature, so a wrong record shows up here.
+	// The record's fit is the one thing this can distinguish: DE-2 and DE-2.1 do
+	// not share a temperature, so a wrong record shows up here. If they did, the
+	// check would pass on either record and say nothing.
 	for _, other := range checkpointRecords {
-		if other.checkpoint == checkpoint {
+		if other.checkpoint == expectation.Checkpoint {
 			continue
 		}
 		record, err := LoadCalibration(other.path)
 		if err != nil {
 			t.Fatalf("LoadCalibration(%s): %v", other.path, err)
 		}
-		if record.TemperatureFor(answer.Type, liveCalibrationRead(answer.Strategy)) == want {
-			t.Errorf("%s and %s share a temperature for this read, so this check cannot tell them apart",
-				checkpoint, other.checkpoint)
+		if record.TemperatureFor(answer.Type, read) == want {
+			t.Errorf("%s and %s share a temperature for the %s read, so this check cannot tell them apart",
+				expectation.Checkpoint, other.checkpoint, read)
 		}
 	}
-	t.Logf("%s applies the record for %s at %v: %s", liveModelID(), checkpoint, want, model.Calibration.ID())
+	t.Logf("%s tempered the answer at %v from %s", expectation.Checkpoint, want, expectation.Record.ID())
 }

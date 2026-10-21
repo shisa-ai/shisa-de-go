@@ -443,6 +443,17 @@ func ReadPolicy(ctx context.Context, readout *Readout, state any, question Quest
 	if err != nil {
 		return PolicyRead{}, err
 	}
+	// The three responses of a thinking read each name the checkpoint that
+	// answered: the repeated read, the thought, and the read after it. One answer
+	// cannot be assembled from two checkpoints, so they are compared here, and a
+	// thought that conflicts fails before the read after it is spent.
+	var identity servedIdentity
+	if err := identity.note(first.ServedModel, "the repeated read"); err != nil {
+		return PolicyRead{}, err
+	}
+	if err := identity.note(thought.ServedModel, "the thinking read"); err != nil {
+		return PolicyRead{}, err
+	}
 	// The model's own close token may be missing when the budget cut the thought,
 	// so the close is always written here and the codes are read after it.
 	prefixID, err := readout.AnswerPrefixID()
@@ -456,6 +467,16 @@ func ReadPolicy(ctx context.Context, readout *Readout, state any, question Quest
 	second, err := readout.ReadCodesAfterThought(ctx, after, slots, debug)
 	if err != nil {
 		return PolicyRead{}, err
+	}
+	if err := identity.note(second.ServedModel, "the read after the thought"); err != nil {
+		return PolicyRead{}, err
+	}
+	// The answer is the read after the thought, so that read carries the identity.
+	// A response that reported its own id keeps it; one that reported none takes
+	// the id another response of this policy read settled, which is how a thought
+	// that was the only one to name a checkpoint reaches the answer.
+	if second.ServedModel == "" {
+		second.ServedModel = identity.model
 	}
 	return done(StrategyRepeatThink, []PolicyComponent{
 		{Stage: StrategyRepeat, Read: first},

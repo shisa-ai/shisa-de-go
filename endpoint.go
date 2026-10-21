@@ -81,10 +81,8 @@ type completionRequest struct {
 type completionResponse struct {
 	Choices []completionChoice `json:"choices"`
 	Usage   completionUsage    `json:"usage"`
-	// Model is the id the server says it served. A gateway that holds an alias
-	// answers with the canonical id, which is how a client learns that the name it
-	// asked for is not the checkpoint it got. A single-model server echoes the
-	// request, so an empty or equal value means nothing was revealed.
+	// Model is the server's asserted model id. It may reveal the checkpoint
+	// behind an alias, or merely echo the request. It does not verify weights.
 	Model string `json:"model"`
 }
 

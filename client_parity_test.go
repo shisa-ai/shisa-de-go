@@ -360,6 +360,13 @@ func TestClientParity(t *testing.T) {
 		t.Run(one.Name, func(t *testing.T) {
 			transport := newParityTransport(t, one.Name, one.Exchanges)
 			model := buildParityModel(t, fixture, one, transport, pinned)
+			// This historical Python case deliberately returned raw answers for
+			// an uncovered configured id despite a released response id. Request
+			// raw output explicitly to replay that arithmetic; automatic response
+			// selection is tested in TestResponseCalibrationSelection.
+			if one.Name == "decide-other-checkpoint" {
+				one.Options.Calibrated = boolPointer(false)
+			}
 			got := runParityCase(t, model, one)
 			transport.mu.Lock()
 			unmatched, used := len(transport.unmatched), len(transport.used)
@@ -584,6 +591,22 @@ func compareDecision(t *testing.T, want decisionFixture, got *Decision, model *D
 		if err != nil {
 			t.Errorf("head %q: %v", head, err)
 		} else {
+			// Response provenance extends the historical Python dictionary only
+			// for non-echoed identities. Assert it, then compare every legacy key.
+			if actual.reportProvenance {
+				recorded["served_model"] = actual.ServedModel
+				recorded["calibration"] = actual.Calibration
+				if actual.ServedModel != model.Readout.model {
+					t.Fatalf("replayed served id %q, want recorded request model %q", actual.ServedModel, model.Readout.model)
+				}
+				wantID := ""
+				if actual.Calibrated {
+					wantID = model.Calibration.ID()
+				}
+				if actual.Calibration != wantID {
+					t.Fatalf("unexpected replay record %q", actual.Calibration)
+				}
+			}
 			compareMap(t, "answer "+head, jsonShapeMap(t, recorded),
 				jsonShapeMap(t, actual.ToDict()))
 		}
@@ -597,7 +620,26 @@ func compareDecision(t *testing.T, want decisionFixture, got *Decision, model *D
 	compareMap(t, "usage", rawToAny(t, want.Usage), jsonShapeMap(t, got.Usage))
 	// The endpoint is where the Go client was pointed, which in the replay is
 	// the stub; everything else in the meta block is the client's own decision.
-	compareMap(t, "meta", withoutKey(rawToAny(t, want.Meta), "base_url"),
+	wantMeta := rawToAny(t, want.Meta)
+	if _, extended := got.Meta["configured_calibration"]; extended {
+		records := map[string]string{}
+		served := map[string]string{}
+		uniform := ""
+		for head, answer := range got.Answers {
+			if answer.Calibrated {
+				records[head] = model.Calibration.ID()
+				uniform = model.Calibration.ID()
+			} else {
+				records[head] = ""
+			}
+			served[head] = model.Readout.model
+		}
+		wantMeta["configured_calibration"] = model.Calibration.ID()
+		wantMeta["calibration"] = uniform
+		wantMeta["calibration_record_by_head"] = records
+		wantMeta["served_model_by_head"] = served
+	}
+	compareMap(t, "meta", withoutKey(jsonShapeMap(t, wantMeta), "base_url"),
 		withoutKey(jsonShapeMap(t, got.Meta), "base_url"))
 }
 

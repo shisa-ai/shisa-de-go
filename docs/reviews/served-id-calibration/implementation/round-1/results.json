@@ -1,0 +1,292 @@
+{
+  "schemaVersion": 1,
+  "runId": "served-id-calibration-implementation-implementation-round-1-20261021012913-b33bc4715c7772cc",
+  "finishedAt": "2026-10-21T01:37:15.470Z",
+  "topic": "served-id-calibration",
+  "mode": "implementation",
+  "stage": "implementation",
+  "requestedReviewers": [
+    "astra",
+    "ds4",
+    "glm"
+  ],
+  "results": [
+    {
+      "reviewerId": "shisa-deepseek-v4.1-flash-jouzu-cli",
+      "kind": "jouzu-cli",
+      "requestedModel": "catalog:ai.shisa.api-router:Shisa%20AI:57024af9495fc6b0/DeepSeek-V4.1-Flash",
+      "reportPath": "docs/reviews/served-id-calibration/implementation/round-1/reports/shisa-deepseek-v4.1-flash-jouzu-cli.md",
+      "promptPath": "docs/reviews/served-id-calibration/implementation/round-1/prompts/shisa-deepseek-v4.1-flash-jouzu-cli.md",
+      "exitCode": 0,
+      "durationMs": 178377,
+      "highOrCriticalCount": 1,
+      "timedOut": false,
+      "aborted": false
+    },
+    {
+      "reviewerId": "shisa-glm-5.3-jouzu-cli",
+      "kind": "jouzu-cli",
+      "requestedModel": "catalog:ai.shisa.api-router:Shisa%20AI:57024af9495fc6b0/glm-5.3",
+      "reportPath": "docs/reviews/served-id-calibration/implementation/round-1/reports/shisa-glm-5.3-jouzu-cli.md",
+      "promptPath": "docs/reviews/served-id-calibration/implementation/round-1/prompts/shisa-glm-5.3-jouzu-cli.md",
+      "exitCode": 0,
+      "durationMs": 481762,
+      "highOrCriticalCount": 1,
+      "timedOut": false,
+      "aborted": false,
+      "alias": "glm",
+      "attempts": [
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "ranVia": "shisa-glm-5.3-jouzu-cli",
+      "failoverUsed": false,
+      "failoverSummaryPath": "docs/reviews/served-id-calibration/implementation/round-1/reports/glm-failover-summary.md"
+    },
+    {
+      "reviewerId": "shisa-gpt-6-astra-jouzu-cli",
+      "kind": "jouzu-cli",
+      "requestedModel": "catalog:ai.shisa.api-router:Shisa%20AI:57024af9495fc6b0/gpt-6-astra",
+      "reportPath": "docs/reviews/served-id-calibration/implementation/round-1/reports/shisa-gpt-6-astra-jouzu-cli.md",
+      "promptPath": "docs/reviews/served-id-calibration/implementation/round-1/prompts/shisa-gpt-6-astra-jouzu-cli.md",
+      "exitCode": 0,
+      "durationMs": 286227,
+      "highOrCriticalCount": 2,
+      "timedOut": false,
+      "aborted": false,
+      "alias": "astra",
+      "attempts": [
+        "shisa-gpt-6-astra-jouzu-cli"
+      ],
+      "ranVia": "shisa-gpt-6-astra-jouzu-cli",
+      "failoverUsed": false,
+      "failoverSummaryPath": "docs/reviews/served-id-calibration/implementation/round-1/reports/astra-failover-summary.md"
+    }
+  ],
+  "fallbackAliases": {
+    "glm": {
+      "chain": [
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        },
+        {
+          "id": "glm-zai-glm-5.3-jouzu-cli",
+          "reason": "Jouzu catalog provider for model glm-5.3 is unresolved: no matching active Shisa catalog provider was found. Run `jouzu --list-models`, then configure this reviewer with the exact catalog runtime provider id."
+        }
+      ],
+      "lastSuccessfulReviewerId": "shisa-glm-5.3-jouzu-cli",
+      "lastSuccessfulAt": "2026-10-21T01:37:15.465Z",
+      "lastSwitchAt": "2026-10-18T07:15:39.091Z",
+      "lastErrors": {}
+    },
+    "astra": {
+      "chain": [
+        "shisa-gpt-6-astra-jouzu-cli",
+        "openai-codex-gpt-6-astra-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        },
+        {
+          "id": "glm-zai-glm-5.3-jouzu-cli",
+          "reason": "Jouzu catalog provider for model glm-5.3 is unresolved: no matching active Shisa catalog provider was found. Run `jouzu --list-models`, then configure this reviewer with the exact catalog runtime provider id."
+        }
+      ],
+      "lastSuccessfulReviewerId": "shisa-gpt-6-astra-jouzu-cli",
+      "lastSuccessfulAt": "2026-10-21T01:33:59.914Z",
+      "lastSwitchAt": "2026-10-15T08:23:23.337Z",
+      "lastErrors": {
+        "openai-codex-gpt-6-astra-jouzu-cli": {
+          "at": "2026-10-15T08:19:14.692Z",
+          "error": "(node:1210601) ExperimentalWarning: SQLite is an experimental feature and might change at any time\n(Use `node --trace-warnings ...` to show where the warning was created)",
+          "exitCode": 143
+        }
+      }
+    },
+    "gpt-6-astra": {
+      "chain": [
+        "shisa-gpt-6-astra-jouzu-cli",
+        "openai-codex-gpt-6-astra-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        },
+        {
+          "id": "glm-zai-glm-5.3-jouzu-cli",
+          "reason": "Jouzu catalog provider for model glm-5.3 is unresolved: no matching active Shisa catalog provider was found. Run `jouzu --list-models`, then configure this reviewer with the exact catalog runtime provider id."
+        }
+      ],
+      "lastErrors": {}
+    },
+    "luna": {
+      "chain": [
+        "shisa-gpt-5.6-luna-jouzu-cli",
+        "openai-codex-gpt-5.6-luna-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        },
+        {
+          "id": "glm-zai-glm-5.3-jouzu-cli",
+          "reason": "Jouzu catalog provider for model glm-5.3 is unresolved: no matching active Shisa catalog provider was found. Run `jouzu --list-models`, then configure this reviewer with the exact catalog runtime provider id."
+        }
+      ],
+      "lastSuccessfulReviewerId": "shisa-gpt-5.6-luna-jouzu-cli",
+      "lastSuccessfulAt": "2026-10-13T21:35:56.949Z",
+      "lastErrors": {}
+    },
+    "gpt-5.6-luna": {
+      "chain": [
+        "shisa-gpt-5.6-luna-jouzu-cli",
+        "openai-codex-gpt-5.6-luna-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        },
+        {
+          "id": "glm-zai-glm-5.3-jouzu-cli",
+          "reason": "Jouzu catalog provider for model glm-5.3 is unresolved: no matching active Shisa catalog provider was found. Run `jouzu --list-models`, then configure this reviewer with the exact catalog runtime provider id."
+        }
+      ],
+      "lastErrors": {}
+    },
+    "sol": {
+      "chain": [
+        "shisa-gpt-6.1-sol-jouzu-cli",
+        "openai-codex-gpt-6.1-sol-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        },
+        {
+          "id": "glm-zai-glm-5.3-jouzu-cli",
+          "reason": "Jouzu catalog provider for model glm-5.3 is unresolved: no matching active Shisa catalog provider was found. Run `jouzu --list-models`, then configure this reviewer with the exact catalog runtime provider id."
+        }
+      ],
+      "lastSuccessfulReviewerId": "shisa-gpt-6.1-sol-jouzu-cli",
+      "lastSuccessfulAt": "2026-10-20T23:49:39.339Z",
+      "lastSwitchAt": "2026-10-20T05:55:14.505Z",
+      "lastErrors": {}
+    },
+    "sol6": {
+      "chain": [
+        "shisa-gpt-6-sol-jouzu-cli",
+        "openai-codex-gpt-6-sol",
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        },
+        {
+          "id": "glm-zai-glm-5.3-jouzu-cli",
+          "reason": "Jouzu catalog provider for model glm-5.3 is unresolved: no matching active Shisa catalog provider was found. Run `jouzu --list-models`, then configure this reviewer with the exact catalog runtime provider id."
+        }
+      ],
+      "lastSuccessfulReviewerId": "shisa-gpt-6-sol-jouzu-cli",
+      "lastSuccessfulAt": "2026-10-20T06:16:44.449Z",
+      "lastErrors": {}
+    },
+    "sol56": {
+      "chain": [
+        "shisa-gpt-5.6-sol-jouzu-cli",
+        "openai-codex-gpt-5.6-sol-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        },
+        {
+          "id": "glm-zai-glm-5.3-jouzu-cli",
+          "reason": "Jouzu catalog provider for model glm-5.3 is unresolved: no matching active Shisa catalog provider was found. Run `jouzu --list-models`, then configure this reviewer with the exact catalog runtime provider id."
+        }
+      ],
+      "lastErrors": {}
+    },
+    "gpt-5.6-sol": {
+      "chain": [
+        "shisa-gpt-5.6-sol-jouzu-cli",
+        "openai-codex-gpt-5.6-sol-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        },
+        {
+          "id": "glm-zai-glm-5.3-jouzu-cli",
+          "reason": "Jouzu catalog provider for model glm-5.3 is unresolved: no matching active Shisa catalog provider was found. Run `jouzu --list-models`, then configure this reviewer with the exact catalog runtime provider id."
+        }
+      ],
+      "lastErrors": {}
+    },
+    "terra": {
+      "chain": [
+        "shisa-gpt-5.6-terra-jouzu-cli",
+        "openai-codex-gpt-5.6-terra-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        },
+        {
+          "id": "glm-zai-glm-5.3-jouzu-cli",
+          "reason": "Jouzu catalog provider for model glm-5.3 is unresolved: no matching active Shisa catalog provider was found. Run `jouzu --list-models`, then configure this reviewer with the exact catalog runtime provider id."
+        }
+      ],
+      "lastErrors": {}
+    },
+    "gpt-5.6-terra": {
+      "chain": [
+        "shisa-gpt-5.6-terra-jouzu-cli",
+        "openai-codex-gpt-5.6-terra-jouzu-cli",
+        "shisa-glm-5.3-jouzu-cli"
+      ],
+      "rejected": [
+        {
+          "id": "glm-zai-glm-5.3-pi-cli",
+          "reason": "disabled"
+        },
+        {
+          "id": "glm-zai-glm-5.3-jouzu-cli",
+          "reason": "Jouzu catalog provider for model glm-5.3 is unresolved: no matching active Shisa catalog provider was found. Run `jouzu --list-models`, then configure this reviewer with the exact catalog runtime provider id."
+        }
+      ],
+      "lastErrors": {}
+    }
+  },
+  "totalHighOrCritical": 4,
+  "failedReviewerCount": 0,
+  "successfulReviewerCount": 3,
+  "allReviewerExecutionsFailed": false,
+  "round": 1,
+  "maxCycles": 3,
+  "beyondMaxCycles": false,
+  "overLimitApproved": false,
+  "hasExecutionErrors": false,
+  "retentionMode": "repository"
+}
