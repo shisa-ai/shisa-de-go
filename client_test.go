@@ -1960,11 +1960,14 @@ func TestACustomFitIsNotSecondGuessed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CalibrationFor: %v", err)
 	}
-	custom.Model = "my-de2-finetune"
+	custom.Model = "my-own-fit"
 	custom.FittedOn = "a fit of my own"
 	readout, _ := newPolicyReadout(t, 1)
+	// The served checkpoint has its own record and the supplied one is neither
+	// it nor the family's, so this is the branch the guard is about: the level is
+	// `family` and only the "is it the family's record" test keeps it quiet.
 	model, err := NewDecisionModel(DecisionModelConfig{
-		BaseURL: "http://stub.invalid", Model: "my-de2-finetune",
+		BaseURL: "http://stub.invalid", Model: "shisa-ai/shisa-de-2.1",
 		Readout: readout, MaxWorkers: 1, Calibration: &custom,
 	})
 	if err != nil {
@@ -1973,6 +1976,10 @@ func TestACustomFitIsNotSecondGuessed(t *testing.T) {
 	defer model.Close()
 	if !model.CalibrationApplied {
 		t.Error("a supplied record was not applied")
+	}
+	if model.CalibrationLevel != ApplicabilityFamily {
+		t.Fatalf("the supplied record is %q, want %q so the guard is exercised",
+			model.CalibrationLevel, ApplicabilityFamily)
 	}
 	for _, warning := range model.Warnings {
 		if strings.Contains(warning, "own record") {
@@ -2018,5 +2025,32 @@ func TestAFamilyRecordOnACheckpointWithItsOwnRecordIsReported(t *testing.T) {
 	// The record for the served checkpoint is the one that should have been used.
 	if got, err := CalibrationForCheckpoint(FamilyDE2, "shisa-ai/shisa-de-2.1", ""); err != nil || got.Model != "shisa-ai/shisa-de-2.1" {
 		t.Fatalf("CalibrationForCheckpoint = %q, %v", got.Model, err)
+	}
+
+	// The same mistake through the tokenizer: DE-2.1 served with DE-2's tokenizer
+	// reaches `checkpoint` level for the DE-2 record, so a guard on the level
+	// would stay quiet while DE-2's fit is applied to DE-2.1.
+	readout2, _ := newPolicyReadout(t, 1)
+	shared, err := NewDecisionModel(DecisionModelConfig{
+		BaseURL: "http://stub.invalid", Model: "shisa-ai/shisa-de-2.1",
+		Tokenizer: "shisa-ai/shisa-de-2", Readout: readout2, MaxWorkers: 1,
+		Calibration: &family,
+	})
+	if err != nil {
+		t.Fatalf("NewDecisionModel: %v", err)
+	}
+	defer shared.Close()
+	if shared.CalibrationLevel != ApplicabilityCheckpoint {
+		t.Errorf("the shared-tokenizer record is %q, the case is not exercised", shared.CalibrationLevel)
+	}
+	found = false
+	for _, warning := range shared.Warnings {
+		if strings.Contains(warning, "own record") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a family record on a DE-2.1 endpoint sharing DE-2's tokenizer was not reported: %v",
+			shared.Warnings)
 	}
 }

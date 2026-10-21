@@ -109,10 +109,10 @@ func ReleasedCheckpoint(name string) string {
 			if text[start:start+len(slug)] != slug {
 				continue
 			}
-			if start > 0 && continuesCheckpointName(text, prevRuneStart(text, start)) {
+			if start > 0 && continuesCheckpointName(text, prevRuneStart(text, start), true) {
 				continue
 			}
-			if end := start + len(slug); end < len(text) && continuesCheckpointName(text, end) {
+			if end := start + len(slug); end < len(text) && continuesCheckpointName(text, end, false) {
 				continue
 			}
 			return checkpoint
@@ -121,16 +121,6 @@ func ReleasedCheckpoint(name string) string {
 	return ""
 }
 
-// asciiLower folds A-Z to a-z and leaves every other byte alone.
-//
-// Python's `str.lower()` applies the full Unicode mapping, and Go's
-// `strings.ToLower` applies the simple one, so the two disagree for a few code
-// points: U+0130 lowercases to `i` in Go and to `i` plus U+0307 in Python, which
-// would make `SH\u0130SA-DE-2.1` name DE-2.1 here and nothing there. Folding
-// ASCII only means a name matches only when the slug appears literally, so this
-// port recognises a subset of what Python recognises and never a name Python
-// does not. The slugs are ASCII, so the cost is a name that needs non-ASCII case
-// folding to match at all, which gets raw probabilities instead of a fit.
 // prevRuneStart is the offset of the rune that ends at `at`, so a boundary can
 // be tested on a whole rune rather than on a continuation byte.
 func prevRuneStart(text string, at int) int {
@@ -141,6 +131,16 @@ func prevRuneStart(text string, at int) int {
 	return start
 }
 
+// asciiLower folds A-Z to a-z and leaves every other byte alone.
+//
+// Python's `str.lower()` applies the full Unicode mapping, and Go's
+// `strings.ToLower` applies the simple one, so the two disagree for a few code
+// points: U+0130 lowercases to `i` in Go and to `i` plus U+0307 in Python.
+// Folding ASCII only means a name matches only when the slug appears literally,
+// so this port recognises a subset of what Python recognises and never a name
+// Python does not. The slugs are ASCII, so the cost is a name that needs
+// non-ASCII case folding to match at all, which gets raw probabilities instead of
+// a fit.
 func asciiLower(text string) string {
 	folded := []byte(text)
 	for i, c := range folded {
@@ -161,7 +161,7 @@ func asciiLower(text string) string {
 // or above 0x80. The byte test alone would therefore match a name Python does
 // not. Decoding the adjacent rune and lowercasing it closes that gap, so the
 // names this port recognises are a subset of Python's.
-func continuesCheckpointName(text string, at int) bool {
+func continuesCheckpointName(text string, at int, preceding bool) bool {
 	if at < 0 || at >= len(text) {
 		return false
 	}
@@ -169,6 +169,13 @@ func continuesCheckpointName(text string, at int) bool {
 	if r == utf8.RuneError {
 		// An invalid byte is not part of a name; Python keeps it as a lone
 		// surrogate, which is not in `[a-z0-9.]` either.
+		return false
+	}
+	if preceding && r == '\u0130' {
+		// Python expands U+0130 to `i` plus U+0307, so the character adjacent to
+		// the slug is the combining dot, which is not in the class: the slug
+		// starts a name there. The following side sees the `i` instead, so this
+		// test is directional on purpose.
 		return false
 	}
 	lowered := unicode.ToLower(r)
@@ -655,8 +662,23 @@ func looksLikeRecordPath(spec string) bool {
 			return true
 		}
 	}
-	info, err := os.Stat(expandUser(spec))
-	return err == nil && !info.IsDir()
+	if info, err := os.Stat(expandUser(spec)); err == nil && !info.IsDir() {
+		return true
+	}
+	// A name with a separator is a checkpoint selector only when it starts with an
+	// organisation the shipped records live under. Anything else with a separator
+	// is a path the caller meant: `fits/shisa-de-2.1/deployment` must not become
+	// the bundled DE-2.1 record because a directory along the way is named after
+	// it.
+	if first, _, ok := strings.Cut(lowered, "/"); ok {
+		for _, record := range checkpointRecords {
+			if org, _, _ := strings.Cut(record.checkpoint, "/"); org == first {
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
 
 // calibrationSpecError reports a spec that resolved to nothing.

@@ -338,7 +338,7 @@ model, err := shisade.NewDecisionModel(shisade.DecisionModelConfig{
 ```
 
 `shisa-de doctor` prints the record it chose and the checkpoint it was fitted on,
-so the answer is visible before it is trusted. `--calibration shisa-ai/shisa-de-2.1`
+and writes the warnings to stderr, so the answer is visible before it is trusted. `--calibration shisa-ai/shisa-de-2.1`
 does the same on the command line, and naming the family (`--calibration de2`)
 means that family's record, which is DE-2's — not the fit for whichever checkpoint
 the endpoint happens to serve.

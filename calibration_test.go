@@ -674,6 +674,10 @@ func TestReleasedCheckpointIsConservativeAboutCase(t *testing.T) {
 		// Both slugs present: the longer one wins, as in Python.
 		{"shisa-de-2/shisa-de-2.1", "shisa-ai/shisa-de-2.1"},
 		{"shisa-de-2.1/shisa-de-2", "shisa-ai/shisa-de-2.1"},
+		// U+0130 before the longer slug is a boundary: Python expands it to `i`
+		// plus U+0307, so the combining dot abuts the slug. Rejecting it there
+		// would fall through to the shorter checkpoint and apply the wrong record.
+		{"\u0130shisa-de-2.1/shisa-de-2", "shisa-ai/shisa-de-2.1"},
 	}
 	for _, tc := range cases {
 		if got := ReleasedCheckpoint(tc.name); got != tc.checkpoint {
@@ -798,6 +802,10 @@ func TestResolveCalibrationLoadsAPathBeforeMatchingAName(t *testing.T) {
 		"/fits/shisa-de-2.1/deployment",
 		"./fits/shisa-de-2.1/deployment",
 		"~/fits/shisa-de-2.1/deployment",
+		// A relative path whose first segment is not an organisation the shipped
+		// records live under, so it is a path and not a selector.
+		"fits/shisa-de-2.1/deployment",
+		"models/shisa-de-2.1/deployment",
 	} {
 		if got, _, err := ResolveCalibration(missing); err == nil {
 			t.Errorf("%s resolved to %s instead of failing", missing, got.Model)

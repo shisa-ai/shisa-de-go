@@ -723,7 +723,7 @@ func NewDecisionModel(config DecisionModelConfig) (*DecisionModel, error) {
 	// has more than one record, so naming the family no longer names one fit. Only
 	// the family's own record is reported -- a custom fit on an uncovered
 	// checkpoint is the caller's judgement and is not second-guessed.
-	if supplied && level == ApplicabilityFamily {
+	if supplied {
 		familyRecord, familyErr := CalibrationFor(family)
 		own, ownErr := CalibrationForCheckpoint(family, model, tokenizerSource)
 		if familyErr == nil && ownErr == nil &&

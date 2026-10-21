@@ -1003,9 +1003,11 @@ checkpoint, and says so where it appears.
   `TestLiveCalibrationMatchesTheServedCheckpoint` is the check to run when an
   endpoint changes what it serves. It requires the applied record to be the one
   fitted on the checkpoint the model id names, and an uncovered checkpoint to be
-  reported and left raw. It cannot see through an alias, so it is pointed at the
-  checkpoint's own id, or at the alias with `SHISA_DE_TOKENIZER` naming the
-  checkpoint behind it.
+  reported and left raw. It cannot see through an alias: `SHISA_DE_TOKENIZER` is
+  consulted only when the model id names no released checkpoint, so the alias
+  that matters -- `SHISA_DE_MODEL=shisa-ai/shisa-de-2` serving DE-2.1 -- passes
+  with DE-2's record applied, which is what the client does. Point it at the
+  checkpoint's own id to check a record against the weights it was fitted on.
 
   The Python side is recorded by `scripts/live_parity.py` during the run rather
   than read from a checked-in file, and the reason is a measurement. The served

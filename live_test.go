@@ -1303,9 +1303,10 @@ func liveCalibrationRead(strategy string) string {
 // through the endpoint, so it fails against a server that is not there. It
 // cannot see through an alias: a server that answers to `shisa-ai/shisa-de-2`
 // while serving DE-2.1's weights is indistinguishable from one serving DE-2, so
-// point it at the checkpoint's own id. When the id names no released checkpoint,
-// set `SHISA_DE_TOKENIZER` to the checkpoint behind it and this checks that
-// route instead.
+// point it at the checkpoint's own id. `SHISA_DE_TOKENIZER` is read only when the
+// model id names no released checkpoint, which is the one configuration where the
+// tokenizer selects the record; against a released-id alias this check passes
+// with that id's record applied, because that is what the client does.
 func TestLiveCalibrationMatchesTheServedCheckpoint(t *testing.T) {
 	model, _ := liveModel(t, OptionOverrides{})
 	// The expectation is the client's own rule, so the test does not disagree
