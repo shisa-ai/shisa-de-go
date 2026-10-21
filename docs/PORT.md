@@ -400,6 +400,24 @@ of the name -- it is an alias for `shisa-ai/shisa-de-2` -- rather than telling t
 caller to pass a DE-2 checkpoint because the default is DE-1, which stopped being
 true.
 
+That measurement is superseded as of 2026-10-21, same endpoint,
+`system_fingerprint` `vllm-0.30.0-tp2-c2e7e64c`. All three names are still listed,
+and they now serve the same weights, which are DE-2.1's: one `direct` read of the
+same `noul` question returned `0.998299278` from
+`shisa-ai/shisa-de-2.1`, `shisa-ai/shisa-de-2` and `shisa-ai/shisa-de-1` alike, to
+every digit the client reports. Identical logprobs under one tokenizer are the
+same weights, so the two aliases are aliases for DE-2.1.
+
+That makes the default id a calibration trap rather than a naming curiosity.
+`shisa-ai/shisa-de-2` resolves to the DE-2 record, whose `direct` `noul`
+temperature is 2.69, and applies it to DE-2.1's weights, whose own record gives
+1.98. On the read above that is `0.914502148` where the checkpoint's own fit gives
+`0.961568822` -- the same raw answer, reported 4.7 points lower. `--model
+shisa-ai/shisa-de-2.1` is the id that selects the right fit, and
+`TestLiveCalibrationMatchesTheServedCheckpoint` passes against the alias with the
+DE-2 record applied, because it compares the record to the id and the id is the
+alias.
+
 **The image path resolves an ambiguous answer boundary by token id.** The image
 readout cannot render its prompt locally, so it confirms the answer position from
 the server's side: the last prompt token must be the terminator's own id.
