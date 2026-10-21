@@ -10,7 +10,8 @@ Tokenizer source: `shisa-ai/shisa-de-2`, cached `refs/main` revision
 
 - `go build ./...`, `go vet ./...`, `go test ./... -count=1`: pass.
 - `go test -race ./... -count=1`: pass for all three packages.
-- `python3 -m unittest discover -s scripts -p 'test_*.py'`: 74 tests pass.
+- `python3 -m unittest discover -s scripts -p 'test_*.py'`: 82 tests pass after
+  round-2 fixes (74 before round 2).
 - CLI recording regenerated from the existing Python checkout; no Python client
   files were edited. The Go replay documents the Python-only disabled
   `strip_state_quotes` report field.
@@ -35,5 +36,19 @@ own passes differed by 0.011. No tolerance was relaxed. A subsequent attempt
 using a local snapshot directory failed because Go's tokenizer repository
 resolver does not accept that form. The successful runs used the supported hub
 source above. These failed attempts are not counted as passes.
+
+## Final round-2 rerun
+
+On the same date, production endpoint, fingerprint and tokenizer revision above,
+the final fixes passed both ten-case parity runs again. Python self-delta was
+zero; the maximum cross-client probability delta was 7.77e-16 for the DE-2 alias
+and 2.22e-16 for the canonical DE-2.1 ID. Automatic calibration passed for both
+IDs, and the canonical thinking check passed. The alias thinking path also passed
+inside its parity run. These additional results do not replace or erase the
+preliminary outcomes recorded above.
+
+Round 2 had no HIGH/CRITICAL findings. All MEDIUM/LOW findings were fixed with
+regression coverage. Astra used its configured OpenAI fallback; ds4 and glm ran
+on their primary configurations. No third review round was needed.
 
 Development endpoint: not tested; its URL has not been supplied.

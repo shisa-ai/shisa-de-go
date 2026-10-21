@@ -53,11 +53,12 @@ without its fingerprint is not reproducible.
 The exit status is 0 for a repeatable run, 3 when the passes disagreed on the
 chosen value, 4 when the endpoint's vision capability could not be measured, and
 5 when the record named by `--calibration` cannot be used -- missing, unreadable,
-or not a calibration record; for 0 and 3 the output and the metadata are written
-first, so a caller that treats 3 as "recorded, but the server moved" can read
-them. The Go test does exactly that. An unusable record aborts before anything
-is sent, because falling back to automatic selection would compare two different
-records and report the difference as a port defect.
+or not a usable calibration record (bad JSON, a missing provenance key, or a
+temperature that is not a finite number); for 0 and 3 the output and the
+metadata are written first, so a caller that treats 3 as "recorded, but the
+server moved" can read them. The Go test does exactly that. An unusable record
+aborts before anything is sent, because falling back to automatic selection
+would compare two different records and report the difference as a port defect.
 """
 
 from __future__ import annotations
@@ -68,6 +69,7 @@ import datetime
 import functools
 import hashlib
 import json
+import math
 import os
 import pathlib
 import subprocess
@@ -93,11 +95,11 @@ def client() -> types.SimpleNamespace:
     a `shisa_de` checkout on `sys.path`.
     """
     from shisa_de import Choice, DecisionModel, Noul, Score
-    from shisa_de.calibration import load_calibration_file
+    from shisa_de.calibration import calibration_from_dict
     from shisa_de.readout import READOUT_VERSIONS
     return types.SimpleNamespace(
         Choice=Choice, DecisionModel=DecisionModel, Noul=Noul, Score=Score,
-        READOUT_VERSIONS=READOUT_VERSIONS, load_calibration_file=load_calibration_file)
+        READOUT_VERSIONS=READOUT_VERSIONS, calibration_from_dict=calibration_from_dict)
 
 
 @functools.cache
@@ -441,14 +443,64 @@ class LoadedRecord:
 NO_RECORD = LoadedRecord(None, "", "")
 
 
+def _check_temperature_table(target: pathlib.Path, where: str, table: Any) -> None:
+    """Refuse a temperature table whose values cannot temper a distribution.
+
+    The client's loader copies these values without converting them, so a `null`
+    or a string survives construction and fails later: `Calibration.fitted`
+    raises on it, or -- worse -- skips it because another entry short-circuits
+    the `any()` and the failure waits until an answer is scored, after the probe
+    and the recording have already spent requests. A temperature has to be a real
+    finite number to scale a logit, and that is all this checks; whether a number
+    is a good fit is not the recorder's judgement.
+    """
+    if not isinstance(table, dict):
+        raise RecordError(
+            f"{target} is not a calibration record: {where} is not a table of temperatures")
+    for name, value in table.items():
+        # `bool` is an `int` in Python and a JSON `true` is not a temperature.
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RecordError(
+                f"{target} is not a calibration record: {where} has a non-numeric "
+                f"temperature for {name!r} ({value!r})")
+        if not math.isfinite(value):
+            raise RecordError(
+                f"{target} is not a calibration record: {where} has a non-finite "
+                f"temperature for {name!r} ({value!r})")
+
+
+def _check_temperatures(target: pathlib.Path, record: Any) -> None:
+    """Refuse a record with any unusable temperature, before a request is spent.
+
+    Every table is checked, not the one a particular read would use: the run asks
+    for the direct, repeated and thinking reads, so a bad value in any of them is
+    a bad record for this run.
+    """
+    _check_temperature_table(target, "temperatures", record.temperatures)
+    reads = record.reads
+    if not isinstance(reads, dict):
+        raise RecordError(
+            f"{target} is not a calibration record: reads is not a table of reads")
+    for name, table in reads.items():
+        _check_temperature_table(target, f"reads[{name!r}]", table)
+
+
 def load_record(spec: str | None) -> LoadedRecord:
     """The record to hand every model, the path it came from, and its digest.
+
+    The file is read once. Its bytes are decoded, parsed and hashed, and the
+    record is built from that parsed document through the client's own
+    `calibration_from_dict`, so the digest and the record describe one set of
+    bytes: reopening the path to build the record would let a replacement between
+    the two reads produce a digest of contents the run did not use.
 
     A path is read as a path: a mistyped one raises rather than falling back to
     the client's own selection, because that fallback would record a run in which
     the two clients held different records and the caller would have no way to
-    see it. A file that exists but is not a readable calibration record raises the
-    same way, so a bad record cannot become a run whose halves are uncomparable.
+    see it. A file that exists but is not a usable calibration record raises the
+    same way -- bad JSON, a missing provenance key, a temperature that is not a
+    finite number -- so a bad record cannot become a run whose halves are
+    uncomparable, or fail after the first request.
 
     No client import happens for an empty spec or a missing file, so the argument
     handling can be tested without a `shisa_de` checkout.
@@ -465,12 +517,20 @@ def load_record(spec: str | None) -> LoadedRecord:
         raise RecordError(
             f"cannot read the calibration record at {target}: {exc.strerror or exc}") from exc
     try:
-        record = client().load_calibration_file(target)
-    except (ValueError, KeyError, TypeError) as exc:
-        # `json.loads` raises ValueError, a document missing a required key raises
-        # KeyError, and one whose fields have the wrong shape raises TypeError. All
-        # three mean the same thing here: the file is not a calibration record.
+        # Decoded as UTF-8 and parsed from `raw`, which is the buffer that is
+        # hashed below; `UnicodeDecodeError` and `JSONDecodeError` are both
+        # `ValueError`.
+        document = json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
         raise RecordError(f"{target} is not a calibration record: {exc}") from exc
+    try:
+        record = client().calibration_from_dict(document, origin=str(target))
+    except (KeyError, TypeError, ValueError) as exc:
+        # A missing required key raises KeyError, a field of the wrong shape or
+        # type raises TypeError, and a value the loader converts raises
+        # ValueError. All three mean the same thing here: not a record.
+        raise RecordError(f"{target} is not a calibration record: {exc}") from exc
+    _check_temperatures(target, record)
     return LoadedRecord(record=record, path=str(target),
                         sha256=hashlib.sha256(raw).hexdigest())
 

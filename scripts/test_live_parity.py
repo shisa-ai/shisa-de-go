@@ -72,18 +72,24 @@ RECORD = {
 
 
 class _FakeRecord:
-    """The fields of a record the recorder's provenance names.
+    """A faithful stub of the client's `calibration_from_dict`.
 
-    It fails the way the client's `calibration_from_dict` fails -- a missing key
-    raises KeyError and a field of the wrong shape raises TypeError -- so a case
-    about an unusable record is a case about the recorder, not about this fake.
+    It copies the document the way the client's loader does -- required keys
+    indexed, temperature values copied without converting them, read tables built
+    with `dict(...)` -- and raises the same exceptions for the same shapes. A case
+    about an unusable record is then a case about the recorder's validation rather
+    than about this fake being stricter than the real loader.
     """
 
-    def __init__(self, raw: dict) -> None:
+    def __init__(self, raw: dict, origin: str = "") -> None:
         if not isinstance(raw, dict):
             raise TypeError("a calibration record is a JSON object")
+        self.origin = origin
         self.model = raw["model"]
-        dict(raw["temperatures"])
+        self.readout_version = raw["readout_version"]
+        self.serving_shape = raw["serving_shape"]
+        self.temperatures = dict(raw["temperatures"])
+        self.reads = {name: dict(values) for name, values in (raw.get("reads") or {}).items()}
         self.id = f"{raw['model']}|{raw['readout_version']}|{raw['serving_shape']}"
 
 
@@ -259,9 +265,13 @@ class RecordFileCase(EnvCase):
         self.root = pathlib.Path(self.directory.name)
 
     def fake_client(self):
-        return types.SimpleNamespace(
-            load_calibration_file=lambda target: _FakeRecord(
-                json.loads(pathlib.Path(target).read_text())))
+        """The loader's dict entry point, and no file entry point at all.
+
+        `load_record` must build the record from the bytes it read, so a fake that
+        offered `load_calibration_file` could hide a reopen; this one has only the
+        API the recorder is supposed to use.
+        """
+        return types.SimpleNamespace(calibration_from_dict=_FakeRecord)
 
     def load(self, spec):
         with mock.patch.object(live_parity, "client", self.fake_client):
@@ -338,6 +348,119 @@ class RecordFileCase(EnvCase):
         source = pathlib.Path(live_parity.__file__).read_text()
         self.assertIn('"--calibration"', source)
 
+    def test_the_record_is_built_from_the_bytes_that_were_hashed(self):
+        """One read, so the digest and the record cannot describe different bytes.
+
+        A recorder that hashed one buffer and built the record from a second read
+        of the path would still produce a plausible digest, and only a comparison
+        against the file's current contents would notice. The count is the direct
+        statement of the guarantee; the replacement afterwards shows what it buys.
+        """
+        path = self.root / "record.json"
+        path.write_text(json.dumps(RECORD))
+        original = path.read_bytes()
+        reads = []
+        real = pathlib.Path.read_bytes
+
+        def counted(target):
+            reads.append(target)
+            return real(target)
+
+        with mock.patch.object(pathlib.Path, "read_bytes", counted):
+            loaded = self.load(str(path))
+        self.assertEqual(len(reads), 1, "the record file was read more than once")
+        self.assertEqual(loaded.sha256, hashlib.sha256(original).hexdigest())
+        self.assertEqual(loaded.record.model, RECORD["model"])
+
+        path.write_text(json.dumps(dict(RECORD, model="shisa-ai/shisa-de-2")))
+        self.assertEqual(loaded.sha256, hashlib.sha256(original).hexdigest())
+        self.assertEqual(loaded.record.model, RECORD["model"])
+
+    def test_the_real_loader_does_not_reopen_the_file(self):
+        """The client's own loader, driven from the buffer, with the file refused.
+
+        The client's file entry point is the thing that would reopen the path, so
+        both reads it could use raise here. This is the case a fake client cannot
+        make: it proves the record came from the bytes that were hashed even when
+        the loader is the real one.
+        """
+        if not (live_parity.PY_REPO / "shisa_de").is_dir():
+            self.skipTest(f"no shisa_de checkout under {live_parity.PY_REPO}")
+        path = self.root / "record.json"
+        path.write_text(json.dumps(RECORD))
+        raw = path.read_bytes()
+        live_parity.client()  # import with a normal filesystem, before the refusal
+
+        def refuse(*args, **kwargs):
+            raise AssertionError(f"the record file was reopened: {args or kwargs}")
+
+        # The recorder's own read goes through `Path.open`, so that one call is
+        # allowed and every later one is refused; `read_text` is the loader's file
+        # entry point and is refused outright.
+        real_open = pathlib.Path.open
+        opens = []
+
+        def once(target, *args, **kwargs):
+            opens.append(target)
+            if len(opens) > 1:
+                raise AssertionError(f"the record file was reopened: {target}")
+            return real_open(target, *args, **kwargs)
+
+        with mock.patch.object(pathlib.Path, "read_text", refuse), \
+                mock.patch.object(pathlib.Path, "open", once):
+            loaded = live_parity.load_record(str(path))
+        self.assertEqual(len(opens), 1, "the record file was opened more than once")
+        self.assertEqual(loaded.sha256, hashlib.sha256(raw).hexdigest())
+        self.assertEqual(loaded.record.model, RECORD["model"])
+        self.assertTrue(loaded.record.fitted, "the real loader did not build a usable record")
+
+    def test_a_null_temperature_is_refused(self):
+        """The loader copies a null through, and `fitted` then raises on it."""
+        path = self.root / "null.json"
+        path.write_text(json.dumps(dict(RECORD, temperatures={"noul": None})))
+        with self.assertRaises(live_parity.RecordError) as caught:
+            self.load(str(path))
+        self.assertIn("non-numeric temperature for 'noul'", str(caught.exception))
+
+    def test_a_null_temperature_in_a_read_table_is_refused(self):
+        """`fitted` short-circuits past this one, so it would fail while scoring."""
+        path = self.root / "null-read.json"
+        path.write_text(json.dumps(dict(RECORD, reads={"direct": {"choice": 1.5, "noul": None}})))
+        with self.assertRaises(live_parity.RecordError) as caught:
+            self.load(str(path))
+        self.assertIn("reads['direct'] has a non-numeric temperature for 'noul'",
+                      str(caught.exception))
+
+    def test_a_non_numeric_temperature_is_refused(self):
+        for name, value in (("string", "hot"), ("boolean", True), ("list", [1.5])):
+            with self.subTest(name):
+                path = self.root / f"{name}.json"
+                path.write_text(json.dumps(dict(RECORD, temperatures={"choice": value})))
+                with self.assertRaises(live_parity.RecordError) as caught:
+                    self.load(str(path))
+                self.assertIn("non-numeric temperature for 'choice'", str(caught.exception))
+
+    def test_a_non_finite_temperature_is_refused(self):
+        """`json.loads` reads a `NaN` literal, so a record can carry one.
+
+        The Go loader refuses the document as invalid JSON, so accepting it here
+        would record a run the other half cannot replay.
+        """
+        for name, value in (("nan", float("nan")), ("infinity", float("inf"))):
+            with self.subTest(name):
+                path = self.root / f"{name}.json"
+                path.write_text(json.dumps(dict(RECORD, temperatures={"noul": value})))
+                with self.assertRaises(live_parity.RecordError) as caught:
+                    self.load(str(path))
+                self.assertIn("non-finite temperature for 'noul'", str(caught.exception))
+
+    def test_a_read_table_that_is_not_a_table_is_refused(self):
+        path = self.root / "read-not-a-table.json"
+        path.write_text(json.dumps(dict(RECORD, reads={"direct": 3})))
+        with self.assertRaises(live_parity.RecordError) as caught:
+            self.load(str(path))
+        self.assertIn("is not a calibration record", str(caught.exception))
+
 
 class _FakeProbe:
     """The capability probe, counting how often it was asked.
@@ -387,8 +510,7 @@ class SharedRecordCase(EnvCase):
             Choice=lambda instructions, options: ("choice", instructions, options),
             Score=lambda instructions, levels: ("score", instructions, levels),
             READOUT_VERSIONS={"de2": "de2-codebook-v1"},
-            load_calibration_file=lambda target: _FakeRecord(
-                json.loads(pathlib.Path(target).read_text())))
+            calibration_from_dict=_FakeRecord)
 
     def run_main(self, *arguments):
         self.probe = _FakeProbe()
@@ -490,6 +612,30 @@ class SharedRecordCase(EnvCase):
         self.assertEqual(status, 5)
         self.assertIn("is not a calibration record", stderr.getvalue())
         self.assert_nothing_was_sent(out)
+
+    def test_a_record_with_an_unusable_temperature_stops_before_anything_is_sent(self):
+        """The client's loader accepts these, so only this check can refuse them.
+
+        A null or a string reaches model construction, which spends the probe and
+        then raises `TypeError` from `Calibration.fitted` -- an exit outside the
+        documented statuses, after a request. Each case here asserts the status,
+        the message, and that nothing was sent or written.
+        """
+        cases = (
+            ("null", {"temperatures": {"noul": None}}),
+            ("string", {"temperatures": {"choice": "hot"}}),
+            ("null-read", {"reads": {"direct": {"noul": None}}}),
+        )
+        for name, override in cases:
+            with self.subTest(name):
+                _FakeModel.built = []
+                path = self.write_record(dict(RECORD, **override))
+                out = self.root / f"answers-{name}.json"
+                with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                    status = self.run_main("--out", str(out), "--calibration", str(path))
+                self.assertEqual(status, 5, stderr.getvalue())
+                self.assertIn("temperature", stderr.getvalue())
+                self.assert_nothing_was_sent(out)
 
 
 class _FakeResponse:

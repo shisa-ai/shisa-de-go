@@ -55,7 +55,8 @@ const (
 // liveAnswerIdentity is the checkpoint an answer's weights came from, and which
 // name said so.
 func liveAnswerIdentity(model *DecisionModel, answer Answer) (string, liveIdentitySource) {
-	if served := answer.ServedModel; served != "" && served != model.Model {
+	if served := answer.ServedModel; served != "" && served != model.Model &&
+		(model.Readout == nil || served != model.Readout.model) {
 		return ReleasedCheckpoint(served), liveIdentityServed
 	}
 	// Nothing was reported, or the server echoed the request: the response says
@@ -166,7 +167,8 @@ func liveAssertCalibration(t *testing.T, model *DecisionModel, answer Answer, re
 	t.Helper()
 	expectation := liveExpectedCalibration(model, answer)
 	want := 1.0
-	if expectation.Applied {
+	covered := read != "think" || len(expectation.Record.Reads) != 0
+	if expectation.Applied && covered {
 		want = expectation.Record.TemperatureFor(answer.Type, read)
 	}
 	// `answerFromRead` reports a temperature of exactly 1.0 as not applied: a

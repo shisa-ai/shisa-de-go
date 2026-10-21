@@ -295,7 +295,9 @@ type Decision struct {
 	// Usage is the request and token accounting for the whole call.
 	Usage map[string]any
 	// Meta is the provenance: model, family, readout version, policy and
-	// calibration.
+	// calibration. For non-echoed identities, calibration is the uniform applied
+	// record (empty for raw, nil for mixed); configured_calibration and per-head
+	// maps retain the constructor selection and each answer's provenance.
 	Meta map[string]any
 }
 
@@ -650,6 +652,7 @@ type DecisionModel struct {
 	calibrationSupplied bool
 	servedRecordsOnce   sync.Once
 	servedRecords       map[string]Calibration
+	servedRecordErrors  map[string]error
 }
 
 // NewDecisionModel builds a client.
@@ -977,10 +980,11 @@ func (m *DecisionModel) Health(ctx context.Context, probe bool) map[string]any {
 			answer := decision.Answers["probe"]
 			report["read_probe"] = fmt.Sprintf("passed (%s, %d requests)", answer.Strategy, answer.Requests)
 			if answer.reportProvenance {
-				record, applicable := m.servedRecord(answer.ServedModel, m.CalibrationApplied)
+				record, _ := m.servedRecord(answer.ServedModel, m.CalibrationApplied)
+				level, _ := record.Applicability(answer.ServedModel, m.ReadoutVersion, ApplicabilityOptions{Family: m.Family})
 				report["probe_served_model"] = answer.ServedModel
 				report["probe_calibration"] = record.ID()
-				report["probe_calibration_applicable"] = applicable
+				report["probe_calibration_applicable"] = level == ApplicabilityCheckpoint
 				if answer.CalibrationWarning != "" {
 					report["probe_calibration_warning"] = answer.CalibrationWarning
 				}
@@ -1429,11 +1433,17 @@ type headResult struct {
 	err   error
 }
 
+// echoedModel recognizes both declared identity and the actual request ID when
+// the caller injected a differently configured Readout.
+func (m *DecisionModel) echoedModel(served string) bool {
+	return served == "" || served == m.Model || (m.Readout != nil && served == m.Readout.model)
+}
+
 // servedRecord selects from the server's asserted identity. Missing or echoed
 // identities preserve configuration; a different uncovered identity disables
 // automatic calibration. Explicit caller records remain authoritative.
 func (m *DecisionModel) servedRecord(served string, applied bool) (Calibration, bool) {
-	if served == "" || served == m.Model || m.calibrationSupplied {
+	if m.echoedModel(served) || m.calibrationSupplied {
 		return m.Calibration, applied
 	}
 	checkpoint := ReleasedCheckpoint(served)
@@ -1444,9 +1454,12 @@ func (m *DecisionModel) servedRecord(served string, applied bool) (Calibration, 
 	// Calibration. Parse each shipped record at most once per client.
 	m.servedRecordsOnce.Do(func() {
 		m.servedRecords = make(map[string]Calibration, len(checkpointRecords))
+		m.servedRecordErrors = make(map[string]error)
 		for _, entry := range checkpointRecords {
 			if record, err := LoadCalibration(entry.path); err == nil {
 				m.servedRecords[entry.checkpoint] = record
+			} else {
+				m.servedRecordErrors[entry.checkpoint] = err
 			}
 		}
 	})
@@ -1462,15 +1475,28 @@ func (m *DecisionModel) servedRecord(served string, applied bool) (Calibration, 
 // configuration. A response identity is a server assertion, not proof of weights.
 func (m *DecisionModel) noteCalibration(answer *Answer, record Calibration, applicable bool) {
 	served := answer.ServedModel
-	answer.reportProvenance = served != "" && served != m.Model
+	answer.reportProvenance = !m.echoedModel(served)
 	if !answer.reportProvenance {
 		return
 	}
 	level, reasons := record.Applicability(served, m.ReadoutVersion, ApplicabilityOptions{Family: m.Family})
 	if m.calibrationSupplied && level != ApplicabilityCheckpoint {
-		answer.CalibrationWarning = "the supplied calibration is retained despite the response model: " + strings.Join(reasons, "; ")
+		if len(reasons) == 0 {
+			answer.CalibrationWarning = "the supplied record holds no fitted temperature; probabilities are raw"
+		} else {
+			answer.CalibrationWarning = "the supplied calibration is retained despite the response model: " + strings.Join(reasons, "; ")
+		}
 	} else if !m.calibrationSupplied && !applicable {
-		answer.CalibrationWarning = "no compatible fitted calibration covers the response model; probabilities are raw"
+		checkpoint := ReleasedCheckpoint(served)
+		var loadErr error
+		if checkpoint != "" {
+			loadErr = m.servedRecordErrors[checkpoint]
+		}
+		if loadErr != nil {
+			answer.CalibrationWarning = "cannot load the response checkpoint's bundled calibration: " + loadErr.Error()
+		} else {
+			answer.CalibrationWarning = "no compatible fitted calibration covers the response model; probabilities are raw"
+		}
 	}
 }
 

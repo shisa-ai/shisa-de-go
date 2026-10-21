@@ -333,21 +333,16 @@ version, and the test fails when the fixture disagrees with it.
   and call the difference a defect. `TestLiveParityAgainstPython` records both
   clients in one session and measures the server's own repeatability so it can
   say which one moved.
-- The port's own live measurements are the M6 gate: the fixed question set
-  through both clients in one session, agreeing to 2.2e-19 up to 5.6e-16,
-  against `vllm-0.30.0-tp2-ca69195e` on 2026-10-12. The same nine text questions
-  measured 1e-19 to a few multiples of 1e-16 against the same fingerprint on
-  2026-10-10, before the image question joined the set. The worst key moves
-  between runs, so quote the range rather than one run's maximum. Anything else
-  measured here is the Python client's result replayed, and should be said that
-  way rather than restated as if this code had been measured against a server.
-- The Python suite's `test_de2_thinks_when_the_repeated_read_is_unsure` expects
-  `calibrated is False`, which is stale against the hosted `shisa-ai/shisa-de-2`
-  -- the checkpoint the shipped record was fitted on, where the Python client
-  returns `True` at 6.8 today -- and correct against any other served checkpoint,
-  where the record does not apply. `docs/PORT.md` records both sides. The Go test
-  derives the expectation from the model's own applicability rather than writing
-  the temperature down; do not replace it with a literal.
+- The M6 gate measured probability deltas of 2.2e-19 to 5.6e-16 against
+  `vllm-0.30.0-tp2-ca69195e` on 2026-10-12, before explicit shared-record
+  comparison. On 2026-10-21 the shared-record gate passed ten questions for both
+  the DE-2 alias and canonical DE-2.1 ID against `vllm-0.30.0-tp2-c2e7e64c`;
+  their maximum deltas were 1.22e-15 and 2.55e-15, with Python self-delta zero.
+  These are individual runs, not noise bounds. Keep dates and fingerprints
+  beside measurements and distinguish live measurements from recorded replay.
+- The live thinking test derives the fit from the response identity and final
+  read stage, not a literal temperature or the constructor's configured record.
+  A legacy record without per-read fits leaves a post-thought answer raw.
 - The image read is live-covered by the gate's `image-color` question, which
   compares both clients on one image against the hosted endpoint
   (`vllm-0.30.0-tp2-ca69195e`, 2026-10-12), and by the two image cases in the

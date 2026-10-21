@@ -430,11 +430,11 @@ empty when all heads are raw, or null for mixed records; `configured_calibration
 retains the constructor selection. `doctor` describes configuration; its probe
 also reports a differing response ID and the applicability of the selected fit.
 
-The historical Python replay has two cases whose response ID differs from the
-configured ID. The replay explicitly requests raw answers for its uncovered
-checkpoint case to preserve the recorded arithmetic; it validates Go's added
-provenance separately while comparing every legacy field. Automatic response
-selection has independent stub and live tests. The live parity gate supplies the
+The historical Python replay has two cases whose configured model differs from
+its injected readout's request ID. Their responses echo the actual request, so
+configuration remains authoritative and the complete legacy replay passes without
+raw-output overrides or provenance exceptions. Automatic response selection has
+independent stub and live tests. The live parity gate supplies the
 same explicit record bytes to both clients, so it tests read and scoring parity,
 not their automatic record-selection policies. No Python client change is
 required by this extension.
@@ -1016,15 +1016,14 @@ checkpoint, and says so where it appears.
   temperature, the confidence, the thought length and closure to match and every
   probability to agree within 1e-9. The image answer additionally has to carry
   the same `system_render` verdict on both sides, which is the judgement that
-  read makes and the one field a text answer has no counterpart for. The measured
-  deltas are 2.2e-19 to 5.6e-16, over ten questions against
-  `vllm-0.30.0-tp2-ca69195e` on 2026-10-12, which is what a `temperature: 0` read
-  against a deterministic server should give. The same nine-question set measured
-  1e-19 to a few multiples of 1e-16 against the same fingerprint on 2026-10-10;
-  the image question is the tenth and the range is the two sessions' together.
-  (The worst key moves between runs -- 2.22e-16 and 5.55e-16 on two of them -- so
-  the figure is the range and not one run's maximum.) The tolerance is six orders
-  of magnitude above that and not more; the temperature is compared exactly,
+  read makes and the one field a text answer has no counterpart for. Before
+  explicit shared-record comparison, measured deltas ranged from 2.2e-19 to
+  5.6e-16 over ten questions against `vllm-0.30.0-tp2-ca69195e` on 2026-10-12.
+  On 2026-10-21 against `vllm-0.30.0-tp2-c2e7e64c`, the shared-record gate passed
+  all ten cases for both the DE-2 alias and canonical DE-2.1 ID. Their maximum
+  probability deltas were 1.22e-15 and 2.55e-15 respectively, with Python's own
+  repeat delta zero. These are run-specific measurements, not bounds on future
+  serving noise. The tolerance remains 1e-9; temperature is compared exactly,
   because on a peaked answer two fits can produce the same distribution and only
   the temperature says which one was applied.
 

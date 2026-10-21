@@ -569,7 +569,7 @@ Things to know:
 | Command | What it does |
 | --- | --- |
 | `shisa-de doctor` | Checks the endpoint, the model id, the tokenizer, the answer boundary, and whether the calibration belongs to the served model. Exits non-zero on a problem |
-| `shisa-de doctor --probe` | Also spends one question on the read, and reports how the server renders the image path |
+| `shisa-de doctor --probe` | Also probes the read, reports a differing response model and fit applicability, and checks the image-path system rendering |
 | `shisa-de ask` | Classifies `--state` (text or JSON) against `--labels`, optionally with `--image` |
 | `shisa-de explain` | Prints the prompt, the answer slots, the one request with the answer codes by token id, the distribution, and a `curl` line that reproduces the request without Python |
 
